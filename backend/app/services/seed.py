@@ -9,6 +9,7 @@ from app.models.entities import (
     CoordinationItem,
     Department,
     DepartmentTask,
+    DepartmentTaskDepartment,
     NotificationRecord,
     ParentTask,
     Permission,
@@ -25,10 +26,11 @@ from app.models.entities import (
 from app.services.auth import hash_password
 from app.services.permissions import PERMISSIONS, ROLE_DEFAULTS, refresh_role_permissions
 
-BASE_DEPARTMENTS = ["总经办", "研发部", "数据部", "质量部", "信息中心"]
+BASE_DEPARTMENTS = ["研发部", "数据部", "质量部", "信息中心"]
 
 ROLE_DEFINITIONS = [
     ("admin", "系统管理员", "系统全局配置与用户管理"),
+    ("general_manager", "总经理", "跨部门查看与管理公司任务推进"),
     ("secretary", "总经办/秘书", "全局监控与会议材料导出"),
     ("parent_owner", "母任务负责人", "母任务全生命周期管理"),
     ("department_owner", "部门负责人", "部门任务承接与进度跟踪"),
@@ -57,6 +59,7 @@ def clear_business_data(db: Session, *, include_sync_runs: bool = True) -> None:
         WeeklyUpdateRevision,
         WeeklyUpdate,
         SubTask,
+        DepartmentTaskDepartment,
         DepartmentTask,
         ParentTask,
         StrategicGoal,
@@ -80,8 +83,6 @@ def clear_business_data(db: Session, *, include_sync_runs: bool = True) -> None:
 def seed_demo_data(db: Session) -> None:
     if not settings.seed_demo_data:
         return
-
-    clear_business_data(db)
 
     departments: dict[str, Department] = {}
     for name in BASE_DEPARTMENTS:

@@ -35,6 +35,21 @@ def ensure_runtime_schema() -> None:
             created_at TIMESTAMPTZ DEFAULT now()
         )
         """,
+        "ALTER TABLE department_tasks ADD COLUMN IF NOT EXISTS pending_split_count INTEGER DEFAULT 0",
+        "ALTER TABLE department_tasks ADD COLUMN IF NOT EXISTS pending_split_codes JSONB",
+        """
+        CREATE TABLE IF NOT EXISTS department_task_departments (
+            department_task_id INTEGER NOT NULL REFERENCES department_tasks(id) ON DELETE CASCADE,
+            department_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
+            PRIMARY KEY (department_task_id, department_id)
+        )
+        """,
+        """
+        INSERT INTO department_task_departments (department_task_id, department_id)
+        SELECT id, department_id
+        FROM department_tasks
+        ON CONFLICT DO NOTHING
+        """,
     ]
     with engine.begin() as connection:
         for statement in statements:

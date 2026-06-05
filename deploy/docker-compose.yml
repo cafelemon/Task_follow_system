@@ -1,3 +1,5 @@
+name: task-follow-system
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -27,6 +29,7 @@ services:
       TASK_FOLLOW_ADMIN_PASSWORD_HASH: ${TASK_FOLLOW_ADMIN_PASSWORD_HASH:-}
     volumes:
       - ../data/attachments:/data/attachments
+      - ../base_download:/data/base_download:ro
     depends_on:
       postgres:
         condition: service_healthy

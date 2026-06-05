@@ -165,6 +165,41 @@ body {
   min-height: 230px;
 }
 
+.department-task-layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.department-task-layout.no-sidebar {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.department-directory {
+  position: sticky;
+  top: 16px;
+  padding: 12px 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.department-directory > .ant-typography {
+  display: block;
+  padding: 0 16px 8px;
+}
+
+.parent-task-card {
+  min-height: 190px;
+  border-radius: 8px;
+}
+
+.parent-task-card.selected {
+  border-color: #2563c9;
+  box-shadow: 0 0 0 1px rgba(37, 99, 201, 0.16);
+}
+
 .full-width {
   width: 100%;
 }
@@ -213,5 +248,13 @@ body {
   .progress-panel {
     flex-direction: column;
     gap: 24px;
+  }
+
+  .department-task-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .department-directory {
+    position: static;
   }
 }

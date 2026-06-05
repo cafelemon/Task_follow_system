@@ -99,6 +99,7 @@ def serialize_parent_task(task: ParentTask) -> dict:
 
 
 def serialize_department_task(task: DepartmentTask) -> dict:
+    departments = task.departments or ([task.department] if task.department else [])
     return {
         "id": task.id,
         "code": task.code,
@@ -107,12 +108,16 @@ def serialize_department_task(task: DepartmentTask) -> dict:
         "parent_task": task.parent_task.title if task.parent_task else None,
         "department_id": task.department_id,
         "department": task.department.name if task.department else None,
+        "department_ids": [department.id for department in departments],
+        "departments": [{"id": department.id, "name": department.name} for department in departments],
         "owner_id": task.owner_id,
         "owner": task.owner.name if task.owner else None,
         "status": task.status,
         "progress": task.progress,
         "due_date": task.due_date.isoformat() if task.due_date else None,
         "sub_task_count": len(task.sub_tasks),
+        "pending_split_count": task.pending_split_count or 0,
+        "pending_split_codes": task.pending_split_codes or [],
     }
 
 

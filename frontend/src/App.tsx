@@ -317,32 +317,107 @@ function ParentTasks() {
 }
 
 function DepartmentTasks() {
-  const { data } = useApi<AnyRecord[]>('/department-tasks', []);
-  const grouped = useMemo(() => {
-    const map = new Map<string, AnyRecord[]>();
-    (data || []).forEach((item) => map.set(item.department, [...(map.get(item.department) || []), item]));
-    return Array.from(map.entries());
-  }, [data]);
+  const [selectedDepartmentId, setSelectedDepartmentId] = useState<number | null>(null);
+  const [activeParentId, setActiveParentId] = useState<number | null>(null);
+  const query = selectedDepartmentId ? `/department-tasks/overview?department_id=${selectedDepartmentId}` : '/department-tasks/overview';
+  const { data } = useApi<AnyRecord>(query, [selectedDepartmentId]);
+  const parentTasks: AnyRecord[] = data?.parent_tasks || [];
+  const activeParent = parentTasks.find((item) => item.id === activeParentId) || parentTasks[0];
+  useEffect(() => {
+    if (!parentTasks.length) {
+      setActiveParentId(null);
+      return;
+    }
+    if (!parentTasks.some((item) => item.id === activeParentId)) {
+      setActiveParentId(parentTasks[0].id);
+    }
+  }, [data?.selected_department_id, parentTasks.length]);
+  const departmentTaskColumns: ColumnsType<AnyRecord> = [
+    { title: '任务编号', dataIndex: 'code', width: 120 },
+    { title: '部门任务', dataIndex: 'title' },
+    { title: '负责部门', dataIndex: 'departments', render: (value) => <Space wrap>{(value || []).map((item: AnyRecord) => <Tag key={item.id}>{item.name}</Tag>)}</Space> },
+    { title: '负责人', dataIndex: 'owner', width: 100 },
+    { title: '状态', dataIndex: 'status', width: 110, render: (value) => <StatusTag value={value} /> },
+    { title: '进度', dataIndex: 'progress', width: 150, render: (value) => <Progress percent={value} size="small" /> },
+    {
+      title: '待拆解',
+      dataIndex: 'pending_split_count',
+      width: 120,
+      render: (value, row) => value ? <Tag color="orange">{value} 个：{(row.pending_split_codes || []).join('、')}</Tag> : <Tag>无</Tag>
+    }
+  ];
   return (
-    <PageShell title="部门任务总览" subtitle="按组织架构查看各部门任务承接与完成情况">
-      <Space direction="vertical" size={16} className="full-width">
-        {grouped.map(([department, rows]) => (
-          <Card key={department} title={department} extra={<Progress percent={Math.round(rows.reduce((sum, item) => sum + item.progress, 0) / rows.length)} size="small" />}>
+    <PageShell title="部门任务总览" subtitle="按部门查看母任务、部门级任务与待拆解子任务">
+      <div className={data?.can_switch_department ? 'department-task-layout' : 'department-task-layout no-sidebar'}>
+        {data?.can_switch_department && (
+          <aside className="department-directory">
+            <Typography.Text type="secondary">部门目录</Typography.Text>
+            <Menu
+              mode="inline"
+              selectedKeys={[String(data?.selected_department_id || selectedDepartmentId || 'all')]}
+              items={[
+                { key: 'all', label: '全部部门' },
+                ...((data?.departments || []).map((item: AnyRecord) => ({ key: String(item.id), label: item.name })))
+              ]}
+              onClick={({ key }) => setSelectedDepartmentId(key === 'all' ? null : Number(key))}
+            />
+          </aside>
+        )}
+        <Space direction="vertical" size={16} className="full-width">
+          <Row gutter={[12, 12]}>
+            {parentTasks.map((task) => (
+              <Col xs={24} md={12} xl={8} key={task.id}>
+                <Card
+                  hoverable
+                  className={`parent-task-card ${activeParent?.id === task.id ? 'selected' : ''}`}
+                  onClick={() => setActiveParentId(task.id)}
+                  extra={<StatusTag value={task.status} />}
+                >
+                  <Space direction="vertical" size={8} className="full-width">
+                    <Typography.Text type="secondary">{task.code}</Typography.Text>
+                    <Typography.Title level={5}>{task.title}</Typography.Title>
+                    <Space wrap>
+                      <Tag color="blue">{task.department_task_count} 个部门任务</Tag>
+                      <Tag color="green">{task.sub_task_count} 个子任务</Tag>
+                      {task.pending_split_count ? <Tag color="orange">{task.pending_split_count} 个待拆解</Tag> : null}
+                      {task.risk_count ? <Tag color="red">{task.risk_count} 个风险</Tag> : null}
+                    </Space>
+                    <Progress percent={task.progress || 0} size="small" />
+                  </Space>
+                </Card>
+              </Col>
+            ))}
+          </Row>
+          <Card
+            title={activeParent ? `${activeParent.code} ${activeParent.title}` : '部门任务'}
+            extra={activeParent ? <Tag>{activeParent.department_task_count || 0} 项</Tag> : null}
+          >
             <Table
               rowKey="id"
-              pagination={false}
-              dataSource={rows}
-              columns={[
-                { title: '任务编号', dataIndex: 'code' },
-                { title: '任务名称', dataIndex: 'title' },
-                { title: '负责人', dataIndex: 'owner' },
-                { title: '状态', dataIndex: 'status', render: (value) => <StatusTag value={value} /> },
-                { title: '进度', dataIndex: 'progress', render: (value) => <Progress percent={value} size="small" /> }
-              ]}
+              dataSource={activeParent?.department_tasks || []}
+              columns={departmentTaskColumns}
+              expandable={{
+                expandedRowRender: (row) => (
+                  <Table
+                    rowKey="id"
+                    size="small"
+                    pagination={false}
+                    dataSource={row.sub_tasks || []}
+                    columns={[
+                      { title: '子任务编号', dataIndex: 'code', width: 140 },
+                      { title: '具体任务', dataIndex: 'title' },
+                      { title: '执行人', dataIndex: 'executor', width: 100 },
+                      { title: '风险', dataIndex: 'risk_level', width: 100, render: (value) => <StatusTag value={value} /> },
+                      { title: '截止日期', dataIndex: 'due_date', width: 120 }
+                    ]}
+                  />
+                ),
+                rowExpandable: (row) => Boolean((row.sub_tasks || []).length)
+              }}
             />
           </Card>
-        ))}
-      </Space>
+        </Space>
+      </div>
     </PageShell>
   );
 }

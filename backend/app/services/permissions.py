@@ -30,6 +30,15 @@ PERMISSIONS: list[tuple[str, str]] = [
 
 ROLE_DEFAULTS: dict[str, list[str]] = {
     "admin": [code for code, _ in PERMISSIONS],
+    "general_manager": [
+        "task.create_parent",
+        "task.split_department",
+        "dashboard.view_all",
+        "meeting.export",
+        "risk.mark",
+        "notification.nudge",
+        "timeline.view",
+    ],
     "secretary": [
         "task.create_parent",
         "task.split_department",
@@ -70,6 +79,15 @@ def user_permission_codes(user: User) -> set[str]:
     return {permission.code for role in user.roles for permission in role.permissions}
 
 
+def user_role_codes(user: User) -> set[str]:
+    return {role.code for role in user.roles}
+
+
+def can_view_department_directory(user: User) -> bool:
+    roles = user_role_codes(user)
+    return user.is_admin or "permission.manage" in user_permission_codes(user) or "general_manager" in roles
+
+
 def require_permission(code: str):
     def dependency(current_user: User = Depends(get_current_user)) -> User:
         if code not in user_permission_codes(current_user):
@@ -98,8 +116,26 @@ def can_access_sub_task(db: Session, user: User, sub_task: SubTask) -> bool:
         parent_task = db.get(ParentTask, department_task.parent_task_id)
         if parent_task and parent_task.owner_id == user.id:
             return True
-    if "dashboard.view_department" in codes and user.department_id:
-        return bool(department_task and department_task.department_id == user.department_id)
+    if user.department_id and department_task:
+        department_ids = {department.id for department in department_task.departments}
+        department_ids.add(department_task.department_id)
+        return user.department_id in department_ids
+    return False
+
+
+def can_access_department_task(db: Session, user: User, task: DepartmentTask) -> bool:
+    codes = user_permission_codes(user)
+    if "dashboard.view_all" in codes or "permission.manage" in codes:
+        return True
+    if task.owner_id == user.id:
+        return True
+    parent_task = db.get(ParentTask, task.parent_task_id)
+    if parent_task and parent_task.owner_id == user.id:
+        return True
+    if user.department_id:
+        department_ids = {department.id for department in task.departments}
+        department_ids.add(task.department_id)
+        return user.department_id in department_ids
     return False
 
 

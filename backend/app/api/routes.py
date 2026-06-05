@@ -48,7 +48,9 @@ from app.services.business import (
     upsert_weekly_update,
 )
 from app.services.permissions import (
+    can_access_department_task,
     can_access_sub_task,
+    can_view_department_directory,
     get_current_user,
     refresh_role_permissions,
     require_admin,
@@ -376,11 +378,84 @@ def create_parent_task(
 
 
 @router.get("/department-tasks")
-def list_department_tasks(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> list[dict]:
+def list_department_tasks(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[dict]:
     return [
         serialize_department_task(task)
         for task in db.scalars(select(DepartmentTask).order_by(DepartmentTask.id)).all()
+        if can_access_department_task(db, current_user, task)
     ]
+
+
+@router.get("/department-tasks/overview")
+def department_tasks_overview(
+    department_id: int | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    can_switch = can_view_department_directory(current_user)
+    all_tasks = [
+        task
+        for task in db.scalars(select(DepartmentTask).order_by(DepartmentTask.code)).all()
+        if can_access_department_task(db, current_user, task)
+    ]
+    visible_department_ids: set[int] = set()
+    for task in all_tasks:
+        departments = task.departments or ([task.department] if task.department else [])
+        visible_department_ids.update(department.id for department in departments)
+    if not can_switch and current_user.department_id:
+        visible_department_ids = {current_user.department_id}
+    selected_department_id = department_id if can_switch and department_id else None
+    if not selected_department_id and not can_switch and current_user.department_id:
+        selected_department_id = current_user.department_id
+    if selected_department_id:
+        all_tasks = [
+            task
+            for task in all_tasks
+            if selected_department_id
+            in ({department.id for department in task.departments} | {task.department_id})
+        ]
+    departments = [
+        {"id": department.id, "name": department.name}
+        for department in db.scalars(select(Department).order_by(Department.name)).all()
+        if department.id in visible_department_ids
+    ]
+    parent_groups = []
+    for parent in db.scalars(select(ParentTask).order_by(ParentTask.code)).all():
+        tasks = [task for task in all_tasks if task.parent_task_id == parent.id]
+        if not tasks:
+            continue
+        sub_tasks = [sub_task for task in tasks for sub_task in task.sub_tasks]
+        parent_groups.append(
+            {
+                **serialize_parent_task(parent),
+                "department_task_count": len(tasks),
+                "sub_task_count": len(sub_tasks),
+                "pending_split_count": sum(task.pending_split_count or 0 for task in tasks),
+                "risk_count": len(
+                    [
+                        sub_task
+                        for sub_task in sub_tasks
+                        if sub_task.risk_level in {"high", "medium", "low"}
+                    ]
+                ),
+                "department_tasks": [
+                    {
+                        **serialize_department_task(task),
+                        "sub_tasks": [serialize_sub_task(sub_task) for sub_task in task.sub_tasks],
+                    }
+                    for task in tasks
+                ],
+            }
+        )
+    return {
+        "can_switch_department": can_switch,
+        "selected_department_id": selected_department_id,
+        "departments": departments,
+        "parent_tasks": parent_groups,
+    }
 
 
 @router.post("/department-tasks", status_code=201)
@@ -393,6 +468,9 @@ def create_department_task(
     if not parent_task:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Parent task not found")
     task = DepartmentTask(code=generate_code(db, DepartmentTask, "DT"), **payload.model_dump())
+    department = db.get(Department, payload.department_id)
+    if department:
+        task.departments = [department]
     db.add(task)
     db.flush()
     db.add(
@@ -411,8 +489,15 @@ def create_department_task(
 
 
 @router.get("/sub-tasks")
-def list_sub_tasks(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> list[dict]:
-    return [serialize_sub_task(task) for task in db.scalars(select(SubTask).order_by(SubTask.id)).all()]
+def list_sub_tasks(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[dict]:
+    return [
+        serialize_sub_task(task)
+        for task in db.scalars(select(SubTask).order_by(SubTask.id)).all()
+        if can_access_sub_task(db, current_user, task)
+    ]
 
 
 @router.post("/sub-tasks", status_code=201)

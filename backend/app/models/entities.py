@@ -78,6 +78,13 @@ class RolePermission(Base):
     permission_id: Mapped[int] = mapped_column(ForeignKey("permissions.id"), primary_key=True)
 
 
+class DepartmentTaskDepartment(Base):
+    __tablename__ = "department_task_departments"
+
+    department_task_id: Mapped[int] = mapped_column(ForeignKey("department_tasks.id"), primary_key=True)
+    department_id: Mapped[int] = mapped_column(ForeignKey("departments.id"), primary_key=True)
+
+
 class AuthSession(Base):
     __tablename__ = "auth_sessions"
 
@@ -136,9 +143,12 @@ class DepartmentTask(Base):
     status: Mapped[str] = mapped_column(String(32), default="in_progress")
     progress: Mapped[int] = mapped_column(Integer, default=0)
     due_date: Mapped[date | None] = mapped_column(Date)
+    pending_split_count: Mapped[int] = mapped_column(Integer, default=0)
+    pending_split_codes: Mapped[list[str] | None] = mapped_column(JSONB)
 
     parent_task: Mapped[ParentTask] = relationship(back_populates="department_tasks")
     department: Mapped[Department] = relationship()
+    departments: Mapped[list[Department]] = relationship(secondary="department_task_departments")
     owner: Mapped[User] = relationship()
     sub_tasks: Mapped[list["SubTask"]] = relationship(back_populates="department_task")
 

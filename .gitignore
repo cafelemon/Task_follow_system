@@ -36,6 +36,7 @@ yarn-error.log*
 pnpm-debug.log*
 
 # Runtime data
+base_download/
 data/attachments/*
 !data/attachments/.gitkeep
 data/postgres/
