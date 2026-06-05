@@ -1,0 +1,51 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: task_follow
+      POSTGRES_USER: task_user
+      POSTGRES_PASSWORD: task_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U task_user -d task_follow"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    build:
+      context: ../backend
+    environment:
+      TASK_FOLLOW_DATABASE_URL: postgresql+psycopg://task_user:task_password@postgres:5432/task_follow
+      TASK_FOLLOW_ATTACHMENT_ROOT: /data/attachments
+      TASK_FOLLOW_WEB_BASE_URL: http://localhost:8080
+      TASK_FOLLOW_SEED_DEMO_DATA: "true"
+      TASK_FOLLOW_ADMIN_USERNAME: ${TASK_FOLLOW_ADMIN_USERNAME:-jiafei0108}
+      TASK_FOLLOW_ADMIN_NAME: ${TASK_FOLLOW_ADMIN_NAME:-贾飞}
+      TASK_FOLLOW_ADMIN_PASSWORD: ${TASK_FOLLOW_ADMIN_PASSWORD:-}
+      TASK_FOLLOW_ADMIN_PASSWORD_HASH: ${TASK_FOLLOW_ADMIN_PASSWORD_HASH:-}
+    volumes:
+      - ../data/attachments:/data/attachments
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ../frontend
+    depends_on:
+      - backend
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - frontend
+      - backend
+
+volumes:
+  postgres_data:

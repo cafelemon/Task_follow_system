@@ -1,0 +1,217 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: #1f2937;
+  background: #f5f7fb;
+}
+
+.app-layout {
+  min-height: 100vh;
+}
+
+.login-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: #eef3f8;
+}
+
+.login-panel {
+  width: min(420px, 100%);
+}
+
+.login-panel h3 {
+  margin: 0 0 4px;
+}
+
+.app-sider {
+  background: #ffffff !important;
+  border-right: 1px solid #e5e7eb;
+  position: relative;
+}
+
+.brand {
+  height: 68px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+}
+
+.brand-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: #2563c9;
+  color: #fff;
+  font-weight: 700;
+}
+
+.brand strong,
+.brand span {
+  display: block;
+}
+
+.brand span {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.sider-user {
+  position: absolute;
+  bottom: 16px;
+  left: 18px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.app-header {
+  height: 54px;
+  padding: 0 24px;
+  background: #ffffff;
+  border-bottom: 1px solid #e5e7eb;
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 24px;
+}
+
+.app-header h4 {
+  margin: 0;
+}
+
+.app-content {
+  padding: 24px;
+  overflow: auto;
+}
+
+.page-shell {
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+.page-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.page-heading h3 {
+  margin: 0 0 6px;
+}
+
+.metric-card {
+  border-top: 4px solid #2563c9;
+}
+
+.section-row {
+  margin-top: 16px;
+}
+
+.progress-panel {
+  min-height: 260px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 80px;
+}
+
+.compact-desc {
+  min-width: 160px;
+}
+
+.risk-tile {
+  padding: 18px 10px;
+  border-radius: 8px;
+  text-align: center;
+  border: 1px solid #e5e7eb;
+}
+
+.risk-tile strong,
+.risk-tile span {
+  display: block;
+}
+
+.risk-tile strong {
+  font-size: 28px;
+}
+
+.risk-tile.red {
+  color: #dc2626;
+  background: #fff1f2;
+}
+
+.risk-tile.orange {
+  color: #d97706;
+  background: #fff7ed;
+}
+
+.risk-tile.green {
+  color: #16a34a;
+  background: #f0fdf4;
+}
+
+.goal-card,
+.task-card {
+  min-height: 230px;
+}
+
+.full-width {
+  width: 100%;
+}
+
+.mb16 {
+  margin-bottom: 16px;
+}
+
+.danger-text {
+  color: #dc2626;
+}
+
+.success-text {
+  color: #16a34a;
+}
+
+.permission-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.json-panel {
+  margin-top: 18px;
+}
+
+.json-panel pre {
+  max-height: 420px;
+  overflow: auto;
+  margin: 0;
+  padding: 14px;
+  border-radius: 8px;
+  background: #111827;
+  color: #f9fafb;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 960px) {
+  .app-header {
+    grid-template-columns: 1fr;
+    height: auto;
+    padding: 12px 16px;
+  }
+
+  .progress-panel {
+    flex-direction: column;
+    gap: 24px;
+  }
+}
