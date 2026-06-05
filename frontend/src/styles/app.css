@@ -97,6 +97,10 @@ body {
   margin: 0 auto;
 }
 
+.page-back {
+  margin-bottom: 8px;
+}
+
 .page-heading {
   display: flex;
   justify-content: space-between;
@@ -115,18 +119,6 @@ body {
 
 .section-row {
   margin-top: 16px;
-}
-
-.progress-panel {
-  min-height: 260px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 80px;
-}
-
-.compact-desc {
-  min-width: 160px;
 }
 
 .risk-tile {
@@ -165,6 +157,48 @@ body {
   min-height: 230px;
 }
 
+.card-link {
+  color: inherit;
+  display: block;
+  height: 100%;
+}
+
+.card-link:hover {
+  color: inherit;
+}
+
+.goal-card {
+  height: 100%;
+  border-radius: 8px;
+}
+
+.goal-card .ant-card-body {
+  height: 100%;
+}
+
+.parent-task-layout {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.page-directory {
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 120px);
+  overflow: auto;
+  padding: 12px 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.page-directory > .ant-typography {
+  display: block;
+  padding: 0 16px 8px;
+}
+
 .department-task-layout {
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
@@ -198,6 +232,18 @@ body {
 .parent-task-card.selected {
   border-color: #2563c9;
   box-shadow: 0 0 0 1px rgba(37, 99, 201, 0.16);
+}
+
+@media (max-width: 900px) {
+  .parent-task-layout,
+  .department-task-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .page-directory,
+  .department-directory {
+    position: static;
+  }
 }
 
 .full-width {
@@ -243,11 +289,6 @@ body {
     grid-template-columns: 1fr;
     height: auto;
     padding: 12px 16px;
-  }
-
-  .progress-panel {
-    flex-direction: column;
-    gap: 24px;
   }
 
   .department-task-layout {

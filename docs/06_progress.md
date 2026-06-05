@@ -6,7 +6,7 @@
 
 ## 2. 当前状态
 
-当前状态：1.0.0 可运行初版已完成登录、人员、角色权限、清样例数据和 Base 同步入口实现；真实 Base 导入暂被 lark-cli 环境阻塞。
+当前状态：1.3.0 交互与周更新合并已完成并通过本地验证，聚焦返回按钮位置、母任务管理动作、移除进度条和子任务内周更新。
 
 记录日期：2026-06-05。
 
@@ -44,6 +44,9 @@
 - 已将人员管理和角色权限拆分为两个管理员模块，其中角色权限仅系统管理员可见。
 - 已清空当前 seed 业务样例数据，保留管理员、部门、角色和权限基础数据。
 - 已新增 Base 同步预览和导入入口；接口执行 lark-cli 时带超时，不猜字段、不手工造任务。
+- 已基于本地 Excel 导出修正任务层级：战略目标 4 个、母任务 33 个、部门级任务 85 个、有效子任务 107 个。
+- 已开始 1.2.0 页面修订：战略目标支持进入母任务列表，母任务详情展示部门级任务，部门任务页改为部门级任务树状总览。
+- 已开始 1.3.0 页面修订：母任务支持新增、编辑和归档隐藏；每周更新合并进子任务执行；全站不再展示进度条。
 
 ## 4. 待确认问题
 
@@ -55,6 +58,7 @@
 - lark-cli 宿主机命令卡住、backend 容器内未安装 lark-cli，需先修复后才能真实导入 2026任务跟踪表。
 - 组织与人才发展中心观察角色的最终查看边界。
 - 会议材料导出的正式格式。
+- 1.3.0 完成后需继续确认母任务归档后历史查询和恢复入口是否需要补充。
 
 ## 5. 下一步
 
@@ -62,6 +66,7 @@
 - 在 Base CLI 可用后执行 `POST /api/sync/base-2026/preview`，确认表、字段和记录数量。
 - 确认字段映射后执行一次性导入，让任务列表和会议看板使用真实数据。
 - 继续补登录、人员、角色权限、Base 同步的后端自动化测试和前端交互测试。
+- 完成 1.3.0 后做一次桌面宽屏和窄屏页面检查，重点看母任务管理、子任务执行和子任务更新页。
 
 ## 6. 最近验证
 
@@ -92,3 +97,29 @@
 - `GET /api/meeting-board` 返回空看板结构，等待真实 Base 任务导入。
 - `POST /api/sync/base-2026/preview` 在 Docker backend 内返回 `{"ok":false,"stage":"version","message":"lark-cli not found"}`。
 - 宿主机执行 `lark-cli --version` 超过 6 秒未返回，已终止挂起进程；真实 Base 导入暂不执行。
+
+1.2.0 页面层级和权限修订后的验证结果：
+
+- `python3 -m compileall backend/app` 通过。
+- `npm run build` 通过。
+- `docker compose -f deploy/docker-compose.yml up --build -d` 已重建并启动服务；首次构建遇到 npm 网络 `ECONNRESET`，提权重试后成功。
+- `GET http://127.0.0.1:8080/api/health` 返回 `{"status":"ok","version":"1.2.0"}`。
+- 前端入口 HTML 已加载 1.2.0 新构建资源。
+- 容器内登录管理员接口返回 200，`GET /api/auth/me` 返回 `features.can_view_parent_tasks=true`。
+- `GET /api/goals` 返回 4 个战略目标，`GET /api/parent-tasks` 返回 33 个母任务。
+- 使用真实目标 ID 验证 `GET /api/goals/{goal_id}/parent-tasks` 可返回关联母任务。
+- 使用真实母任务 ID 验证 `GET /api/parent-tasks/{parent_task_id}` 和 `GET /api/parent-tasks/{parent_task_id}/department-tasks` 可返回母任务详情和部门级任务。
+- `GET /api/department-tasks/overview` 返回 85 个部门级任务，管理员 `can_switch_department=true`。
+
+1.3.0 交互与周更新合并后的验证结果：
+
+- `python3 -m compileall backend/app` 通过。
+- `npm run build` 通过。
+- 静态检查未发现前端 `Progress` 组件、进度列或旧“每周更新”菜单。
+- `docker compose -f deploy/docker-compose.yml up --build -d` 已重建并启动服务。
+- `GET http://127.0.0.1:8080/api/health` 返回 `{"status":"ok","version":"1.3.0"}`。
+- 容器内管理员登录接口返回 200，`/api/auth/me` 返回母任务新增、删除和管理能力字段为 true。
+- 容器内接口验证：母任务列表 33、子任务 107。
+- `GET /api/weekly-updates/current` 可返回空草稿结构；`POST /api/weekly-updates` 可保存草稿并提交为 submitted。
+- `PUT /api/parent-tasks/{id}` 可编辑母任务基础字段。
+- 使用临时母任务验证 `DELETE /api/parent-tasks/{id}` 归档隐藏：创建后列表从 33 变 34，归档后回到 33。

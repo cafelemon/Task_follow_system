@@ -88,6 +88,52 @@ def can_view_department_directory(user: User) -> bool:
     return user.is_admin or "permission.manage" in user_permission_codes(user) or "general_manager" in roles
 
 
+def has_full_parent_task_access(user: User) -> bool:
+    roles = user_role_codes(user)
+    return (
+        user.is_admin
+        or "permission.manage" in user_permission_codes(user)
+        or bool({"general_manager", "secretary", "observer"} & roles)
+    )
+
+
+def can_manage_parent_tasks(user: User) -> bool:
+    roles = user_role_codes(user)
+    return (
+        user.is_admin
+        or "permission.manage" in user_permission_codes(user)
+        or bool({"general_manager", "secretary"} & roles)
+    )
+
+
+def can_access_parent_task(user: User, task: ParentTask) -> bool:
+    if task.status == "archived":
+        return False
+    if has_full_parent_task_access(user):
+        return True
+    return task.owner_id == user.id
+
+
+def can_edit_parent_task(user: User, task: ParentTask) -> bool:
+    if task.status == "archived":
+        return False
+    if can_manage_parent_tasks(user):
+        return True
+    return task.owner_id == user.id
+
+
+def can_view_parent_task_page(db: Session, user: User) -> bool:
+    if has_full_parent_task_access(user):
+        return True
+    return bool(
+        db.scalar(
+            select(ParentTask.id)
+            .where(ParentTask.owner_id == user.id, ParentTask.status != "archived")
+            .limit(1)
+        )
+    )
+
+
 def require_permission(code: str):
     def dependency(current_user: User = Depends(get_current_user)) -> User:
         if code not in user_permission_codes(current_user):

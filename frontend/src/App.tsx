@@ -4,22 +4,20 @@ import {
   Card,
   Checkbox,
   Col,
+  DatePicker,
   Descriptions,
   Divider,
   Form,
   Input,
-  InputNumber,
   Layout,
   List,
   Menu,
   Modal,
-  Progress,
   Row,
   Select,
   Space,
   Statistic,
   Table,
-  Tabs,
   Tag,
   Timeline,
   Typography,
@@ -29,12 +27,11 @@ import type { ColumnsType } from 'antd/es/table';
 import {
   AlertOutlined,
   ApartmentOutlined,
+  ArrowLeftOutlined,
   BellOutlined,
   CheckCircleOutlined,
-  ClockCircleOutlined,
   DashboardOutlined,
   DatabaseOutlined,
-  FileTextOutlined,
   FolderOutlined,
   HistoryOutlined,
   LockOutlined,
@@ -44,10 +41,20 @@ import {
   TeamOutlined,
   UserOutlined
 } from '@ant-design/icons';
-import { useEffect, useMemo, useState } from 'react';
-import { Link, Navigate, Route, BrowserRouter as Router, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import {
+  Link,
+  Navigate,
+  Route,
+  BrowserRouter as Router,
+  Routes,
+  useBeforeUnload,
+  useLocation,
+  useNavigate,
+  useParams
+} from 'react-router-dom';
 import dayjs from 'dayjs';
-import { getJson, postJson, putJson } from './api/client';
+import { deleteJson, getJson, postJson, putJson } from './api/client';
 import type { AnyRecord } from './api/client';
 import { PageShell } from './components/PageShell';
 import { StatusTag } from './components/StatusTag';
@@ -81,7 +88,6 @@ const baseMenuItems = [
   { key: '/parent-tasks', icon: <FolderOutlined />, label: <Link to="/parent-tasks">母任务管理</Link> },
   { key: '/department-tasks', icon: <ApartmentOutlined />, label: <Link to="/department-tasks">部门任务</Link> },
   { key: '/sub-tasks', icon: <CheckCircleOutlined />, label: <Link to="/sub-tasks">子任务执行</Link> },
-  { key: '/weekly-updates', icon: <FileTextOutlined />, label: <Link to="/weekly-updates">每周更新</Link> },
   { key: '/meeting-board', icon: <ScheduleOutlined />, label: <Link to="/meeting-board">会议看板</Link> },
   { key: '/risks', icon: <AlertOutlined />, label: <Link to="/risks">风险与逾期</Link> },
   { key: '/timeline', icon: <HistoryOutlined />, label: <Link to="/timeline">历史时间线</Link> },
@@ -140,7 +146,10 @@ function AppLayout() {
   const { data: auth, error, loading } = useApi<AnyRecord>('/auth/me', []);
   const selectedKey = `/${location.pathname.split('/')[1] || 'dashboard'}`;
   const isAdmin = Boolean(auth?.user?.is_admin || (auth?.permission_codes || []).includes('permission.manage'));
-  const menuItems = isAdmin ? [...baseMenuItems, ...adminMenuItems] : baseMenuItems;
+  const canViewParentTasks = Boolean(auth?.features?.can_view_parent_tasks || isAdmin);
+  const visibleBaseMenuItems = baseMenuItems.filter((item) => item.key !== '/parent-tasks' || canViewParentTasks);
+  const menuItems = isAdmin ? [...visibleBaseMenuItems, ...adminMenuItems] : visibleBaseMenuItems;
+  const headerDate = `${dayjs().format('YYYY年MM月DD日')}--${auth?.week_key || '-'}`;
   const logout = async () => {
     await postJson('/auth/logout', {});
     navigate('/login');
@@ -174,16 +183,9 @@ function AppLayout() {
           <Space split={<Divider type="vertical" />}>
             <span>{auth?.user?.name}</span>
             <span>{auth?.user?.department}</span>
-            <span>{auth?.user?.title}</span>
-            <Tag color="blue">{auth?.week_key}</Tag>
-            {isAdmin && <Tag color="geekblue">系统管理员</Tag>}
+            <Tag color="blue">{headerDate}</Tag>
           </Space>
           <Space>
-            <Button icon={<FolderOutlined />}>新建任务</Button>
-            <Button icon={<FileTextOutlined />}>填写周更新</Button>
-            <Button icon={<ScheduleOutlined />} href="/api/meeting-board/export">
-              导出会议材料
-            </Button>
             <Button onClick={logout}>退出</Button>
           </Space>
         </Header>
@@ -192,10 +194,13 @@ function AppLayout() {
             <Route path="/" element={<Navigate to="/dashboard" />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/goals" element={<Goals />} />
+            <Route path="/goals/:goalId" element={<GoalDetail />} />
             <Route path="/parent-tasks" element={<ParentTasks />} />
+            <Route path="/parent-tasks/:parentTaskId" element={<ParentTaskDetail />} />
             <Route path="/department-tasks" element={<DepartmentTasks />} />
             <Route path="/sub-tasks" element={<SubTasks />} />
-            <Route path="/weekly-updates" element={<WeeklyUpdates />} />
+            <Route path="/sub-tasks/:subTaskId/update" element={<SubTaskUpdate />} />
+            <Route path="/weekly-updates" element={<Navigate to="/sub-tasks" replace />} />
             <Route path="/meeting-board" element={<MeetingBoard />} />
             <Route path="/risks" element={<Risks />} />
             <Route path="/timeline" element={<TimelinePage />} />
@@ -216,7 +221,6 @@ function Dashboard() {
   const cards = data?.cards || {};
   const weekly = data?.weekly_progress || {};
   const risk = data?.risk_summary || {};
-  const completion = weekly.expected ? Math.round((weekly.submitted / weekly.expected) * 100) : 0;
 
   return (
     <PageShell title="工作台" subtitle="按角色查看任务推进、周更新和风险概览">
@@ -236,15 +240,18 @@ function Dashboard() {
       </Row>
       <Row gutter={[16, 16]} className="section-row">
         <Col xs={24} xl={15}>
-          <Card title="本周任务更新进度">
-            <div className="progress-panel">
-              <Progress type="circle" percent={completion} size={180} />
-              <Descriptions column={1} className="compact-desc">
-                <Descriptions.Item label="应更新">{weekly.expected || 0}</Descriptions.Item>
-                <Descriptions.Item label="已更新">{weekly.submitted || 0}</Descriptions.Item>
-                <Descriptions.Item label="未更新">{weekly.missing || 0}</Descriptions.Item>
-              </Descriptions>
-            </div>
+          <Card title="本周任务更新情况">
+            <Row gutter={16}>
+              {[
+                ['应更新', weekly.expected],
+                ['已提交', weekly.submitted],
+                ['未提交', weekly.missing]
+              ].map(([label, value]) => (
+                <Col xs={24} md={8} key={String(label)}>
+                  <Statistic title={label} value={Number(value || 0)} />
+                </Col>
+              ))}
+            </Row>
           </Card>
         </Col>
         <Col xs={24} xl={9}>
@@ -276,15 +283,52 @@ function Goals() {
     <PageShell title="战略目标" subtitle="对齐公司战略，展示顶层目标与任务关联度">
       <Row gutter={[16, 16]}>
         {(data || []).map((goal) => (
-          <Col xs={24} lg={8} key={goal.id}>
-            <Card loading={loading} className="goal-card">
-              <Space direction="vertical" size={12}>
-                <Tag color="blue">{goal.code}</Tag>
-                <Typography.Title level={4}>{goal.name}</Typography.Title>
-                <Typography.Text type="secondary">{goal.description}</Typography.Text>
-                <Progress percent={goal.progress} />
-              </Space>
-            </Card>
+          <Col xs={24} sm={12} xl={6} key={goal.id}>
+            <Link to={`/goals/${goal.id}`} className="card-link">
+              <Card loading={loading} hoverable className="goal-card">
+                <Space direction="vertical" size={12} className="full-width">
+                  <Tag color="blue">{goal.code}</Tag>
+                  <Typography.Title level={4}>{goal.name}</Typography.Title>
+                  <Typography.Text type="secondary">{goal.description}</Typography.Text>
+                </Space>
+              </Card>
+            </Link>
+          </Col>
+        ))}
+      </Row>
+    </PageShell>
+  );
+}
+
+function GoalDetail() {
+  const navigate = useNavigate();
+  const { goalId } = useParams();
+  const { data: goals } = useApi<AnyRecord[]>('/goals', []);
+  const { data: tasks, loading } = useApi<AnyRecord[]>(`/goals/${goalId}/parent-tasks`, [goalId]);
+  const goal = (goals || []).find((item) => String(item.id) === String(goalId));
+  return (
+    <PageShell
+      title={goal ? `${goal.code} ${goal.name}` : '战略目标详情'}
+      subtitle="查看该战略目标下关联的母任务项"
+      back={<Button size="small" icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回</Button>}
+    >
+      <Row gutter={[16, 16]}>
+        {(tasks || []).map((task) => (
+          <Col xs={24} md={12} xl={8} key={task.id}>
+            <Link to={`/parent-tasks/${task.id}`} className="card-link">
+              <Card loading={loading} hoverable className="task-card" extra={<StatusTag value={task.status} />}>
+                <Space direction="vertical" className="full-width">
+                  <Typography.Text type="secondary">{task.code}</Typography.Text>
+                  <Typography.Title level={4}>{task.title}</Typography.Title>
+                  <span>{task.department || '-'} · {task.owner || '-'}</span>
+                  <Space wrap>
+                    <Tag color="blue">{task.department_task_count || 0} 个部门任务</Tag>
+                    <Tag color="green">{task.sub_task_count || 0} 个子任务</Tag>
+                    {task.pending_split_count ? <Tag color="orange">{task.pending_split_count} 个待拆解</Tag> : null}
+                  </Space>
+                </Space>
+              </Card>
+            </Link>
           </Col>
         ))}
       </Row>
@@ -293,52 +337,255 @@ function Goals() {
 }
 
 function ParentTasks() {
-  const { data, loading } = useApi<AnyRecord[]>('/parent-tasks', []);
+  const navigate = useNavigate();
+  const { data: auth } = useApi<AnyRecord>('/auth/me', []);
+  const { data, loading, reload } = useApi<AnyRecord[]>('/parent-tasks', []);
+  const { data: goals } = useApi<AnyRecord[]>('/goals', []);
+  const { data: departments } = useApi<AnyRecord[]>('/departments', []);
+  const { data: people } = useApi<AnyRecord[]>('/user-options', []);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [editing, setEditing] = useState<AnyRecord | null>(null);
+  const [createForm] = Form.useForm();
+  const [editForm] = Form.useForm();
+  const [deleteForm] = Form.useForm();
+  const canManageParentTasks = Boolean(auth?.features?.can_manage_parent_tasks);
+  const goalOptions = (goals || []).map((item) => ({ value: item.id, label: `${item.code} ${item.name}` }));
+  const departmentOptions = (departments || []).map((item) => ({ value: item.id, label: item.name }));
+  const peopleOptions = (people || []).map((item) => ({ value: item.id, label: item.name }));
+
+  const normalizeParentTaskValues = (values: AnyRecord) => ({
+    ...values,
+    due_date: values.due_date ? values.due_date.format('YYYY-MM-DD') : null
+  });
+  const createParentTask = async () => {
+    const values = await createForm.validateFields();
+    await postJson('/parent-tasks', normalizeParentTaskValues(values));
+    message.success('母任务已新增');
+    setCreateOpen(false);
+    createForm.resetFields();
+    reload();
+  };
+  const openEdit = (task: AnyRecord) => {
+    setEditing(task);
+    editForm.setFieldsValue({
+      title: task.title,
+      description: task.description,
+      goal_id: task.goal_id,
+      department_id: task.department_id,
+      owner_id: task.owner_id,
+      priority: task.priority,
+      due_date: task.due_date ? dayjs(task.due_date) : null
+    });
+  };
+  const saveEdit = async () => {
+    const values = await editForm.validateFields();
+    if (!editing) return;
+    await putJson(`/parent-tasks/${editing.id}`, normalizeParentTaskValues(values));
+    message.success('母任务已更新');
+    setEditing(null);
+    reload();
+  };
+  const archiveParentTask = async () => {
+    const values = await deleteForm.validateFields();
+    await deleteJson(`/parent-tasks/${values.parent_task_id}`);
+    message.success('母任务已归档');
+    setDeleteOpen(false);
+    deleteForm.resetFields();
+    reload();
+  };
+
   return (
-    <PageShell title="母任务管理" subtitle="集中管理公司级核心任务，跟踪任务进度与责任归属">
-      <Row gutter={[16, 16]}>
-        {(data || []).map((task) => (
-          <Col xs={24} lg={8} key={task.id}>
-            <Card loading={loading} className="task-card" extra={<StatusTag value={task.status} />}>
-              <Space direction="vertical" className="full-width">
-                <Typography.Text type="secondary">{task.code}</Typography.Text>
-                <Typography.Title level={4}>{task.title}</Typography.Title>
-                <span>{task.department} · {task.owner}</span>
-                <span>截止 {task.due_date || '-'}</span>
-                <Progress percent={task.progress} />
-                <Link to="/task-detail">查看任务详情</Link>
-              </Space>
-            </Card>
-          </Col>
-        ))}
+    <PageShell
+      title="母任务管理"
+      subtitle="集中管理公司级核心任务和责任归属"
+      extra={canManageParentTasks ? (
+        <Space>
+          <Button type="primary" onClick={() => setCreateOpen(true)}>新增母任务</Button>
+          <Button danger onClick={() => setDeleteOpen(true)}>删除母任务</Button>
+        </Space>
+      ) : null}
+    >
+      <div className="parent-task-layout">
+        <aside className="page-directory">
+          <Typography.Text type="secondary">母任务目录</Typography.Text>
+          <Menu
+            mode="inline"
+            items={(data || []).map((task) => ({ key: String(task.id), label: `${task.code} ${task.title}` }))}
+            onClick={({ key }) => navigate(`/parent-tasks/${key}`)}
+          />
+        </aside>
+        <Row gutter={[16, 16]} className="full-width">
+          {(data || []).map((task) => (
+            <Col xs={24} lg={12} xl={8} key={task.id}>
+              <Card
+                loading={loading}
+                className="task-card"
+                extra={<StatusTag value={task.status} />}
+                actions={[
+                  <Link to={`/parent-tasks/${task.id}`} key="detail">查看任务详情</Link>,
+                  task.can_edit ? <Button type="link" key="edit" onClick={() => openEdit(task)}>编辑</Button> : null
+                ].filter(Boolean)}
+              >
+                <Space direction="vertical" className="full-width">
+                  <Typography.Text type="secondary">{task.code}</Typography.Text>
+                  <Typography.Title level={4}>{task.title}</Typography.Title>
+                  <span>{task.department || '-'} · {task.owner || '-'}</span>
+                  <span>截止 {task.due_date || '-'}</span>
+                  <Space wrap>
+                    <Tag color="blue">{task.department_task_count || 0} 个部门任务</Tag>
+                    <Tag color="green">{task.sub_task_count || 0} 个子任务</Tag>
+                    {task.pending_split_count ? <Tag color="orange">{task.pending_split_count} 个待拆解</Tag> : null}
+                  </Space>
+                </Space>
+              </Card>
+            </Col>
+          ))}
+        </Row>
+      </div>
+      <Modal title="新增母任务" open={createOpen} onOk={createParentTask} onCancel={() => setCreateOpen(false)} destroyOnClose>
+        <ParentTaskForm form={createForm} goalOptions={goalOptions} departmentOptions={departmentOptions} peopleOptions={peopleOptions} />
+      </Modal>
+      <Modal title="编辑母任务" open={Boolean(editing)} onOk={saveEdit} onCancel={() => setEditing(null)} destroyOnClose>
+        <ParentTaskForm form={editForm} goalOptions={goalOptions} departmentOptions={departmentOptions} peopleOptions={peopleOptions} />
+      </Modal>
+      <Modal title="删除母任务" open={deleteOpen} onOk={archiveParentTask} onCancel={() => setDeleteOpen(false)} okText="归档隐藏" okButtonProps={{ danger: true }} destroyOnClose>
+        <Alert type="warning" showIcon className="mb16" message="删除会按归档处理，隐藏该母任务默认入口，不会物理删除部门任务、子任务和历史记录。" />
+        <Form form={deleteForm} layout="vertical">
+          <Form.Item name="parent_task_id" label="选择母任务" rules={[{ required: true, message: '请选择要归档的母任务' }]}>
+            <Select options={(data || []).map((task) => ({ value: task.id, label: `${task.code} ${task.title}` }))} />
+          </Form.Item>
+        </Form>
+      </Modal>
+    </PageShell>
+  );
+}
+
+function ParentTaskForm({ form, goalOptions, departmentOptions, peopleOptions }: {
+  form: any;
+  goalOptions: { value: number; label: string }[];
+  departmentOptions: { value: number; label: string }[];
+  peopleOptions: { value: number; label: string }[];
+}) {
+  return (
+    <Form form={form} layout="vertical" initialValues={{ priority: 'normal' }}>
+      <Form.Item name="title" label="母任务名称" rules={[{ required: true, message: '请输入母任务名称' }]}>
+        <Input />
+      </Form.Item>
+      <Form.Item name="description" label="说明">
+        <Input.TextArea rows={3} />
+      </Form.Item>
+      <Row gutter={16}>
+        <Col xs={24} md={12}>
+          <Form.Item name="goal_id" label="战略目标" rules={[{ required: true, message: '请选择战略目标' }]}>
+            <Select options={goalOptions} />
+          </Form.Item>
+        </Col>
+        <Col xs={24} md={12}>
+          <Form.Item name="department_id" label="牵头部门" rules={[{ required: true, message: '请选择牵头部门' }]}>
+            <Select options={departmentOptions} />
+          </Form.Item>
+        </Col>
       </Row>
+      <Row gutter={16}>
+        <Col xs={24} md={12}>
+          <Form.Item name="owner_id" label="母任务负责人" rules={[{ required: true, message: '请选择负责人' }]}>
+            <Select showSearch optionFilterProp="label" options={peopleOptions} />
+          </Form.Item>
+        </Col>
+        <Col xs={24} md={12}>
+          <Form.Item name="due_date" label="截止时间">
+            <DatePicker className="full-width" />
+          </Form.Item>
+        </Col>
+      </Row>
+      <Form.Item name="priority" label="优先级">
+        <Select
+          options={[
+            { value: 'low', label: '低' },
+            { value: 'normal', label: '普通' },
+            { value: 'high', label: '高' }
+          ]}
+        />
+      </Form.Item>
+    </Form>
+  );
+}
+
+function ParentTaskDetail() {
+  const navigate = useNavigate();
+  const { parentTaskId } = useParams();
+  const { data: task } = useApi<AnyRecord>(`/parent-tasks/${parentTaskId}`, [parentTaskId]);
+  const { data: departmentTasks } = useApi<AnyRecord[]>(`/parent-tasks/${parentTaskId}/department-tasks`, [parentTaskId]);
+  const columns: ColumnsType<AnyRecord> = [
+    { title: '任务编号', dataIndex: 'code', width: 130 },
+    { title: '部门级任务', dataIndex: 'title' },
+    { title: '负责部门', dataIndex: 'departments', render: (value) => <Space wrap>{(value || []).map((item: AnyRecord) => <Tag key={item.id}>{item.name}</Tag>)}</Space> },
+    { title: '负责人', dataIndex: 'owner', width: 100 },
+    { title: '状态', dataIndex: 'status', width: 110, render: (value) => <StatusTag value={value} /> },
+    {
+      title: '待拆解',
+      dataIndex: 'pending_split_count',
+      width: 120,
+      render: (value) => value ? <Tag color="orange">{value} 个</Tag> : <Tag>无</Tag>
+    }
+  ];
+  return (
+    <PageShell
+      title={task ? `${task.code} ${task.title}` : '母任务详情'}
+      subtitle="查看该母任务下的部门级任务与有效子任务"
+      back={<Button size="small" icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回</Button>}
+    >
+      <Card className="mb16">
+        <Descriptions column={3}>
+          <Descriptions.Item label="战略目标">{task?.goal || '-'}</Descriptions.Item>
+          <Descriptions.Item label="负责人">{task?.owner || '-'}</Descriptions.Item>
+          <Descriptions.Item label="牵头部门">{task?.department || '-'}</Descriptions.Item>
+          <Descriptions.Item label="状态"><StatusTag value={task?.status} /></Descriptions.Item>
+          <Descriptions.Item label="截止日期">{task?.due_date || '-'}</Descriptions.Item>
+        </Descriptions>
+      </Card>
+      <Card title="部门级任务">
+        <Table
+          rowKey="id"
+          dataSource={departmentTasks || []}
+          columns={columns}
+          expandable={{
+            expandedRowRender: (row) => (
+              <Table
+                rowKey="id"
+                size="small"
+                pagination={false}
+                dataSource={row.sub_tasks || []}
+                columns={[
+                  { title: '子任务编号', dataIndex: 'code', width: 150 },
+                  { title: '具体任务', dataIndex: 'title' },
+                  { title: '执行人', dataIndex: 'executor', width: 110 },
+                  { title: '风险', dataIndex: 'risk_level', width: 100, render: (value) => <StatusTag value={value} /> },
+                  { title: '截止日期', dataIndex: 'due_date', width: 120 }
+                ]}
+              />
+            ),
+            rowExpandable: (row) => Boolean((row.sub_tasks || []).length)
+          }}
+        />
+      </Card>
     </PageShell>
   );
 }
 
 function DepartmentTasks() {
   const [selectedDepartmentId, setSelectedDepartmentId] = useState<number | null>(null);
-  const [activeParentId, setActiveParentId] = useState<number | null>(null);
   const query = selectedDepartmentId ? `/department-tasks/overview?department_id=${selectedDepartmentId}` : '/department-tasks/overview';
   const { data } = useApi<AnyRecord>(query, [selectedDepartmentId]);
-  const parentTasks: AnyRecord[] = data?.parent_tasks || [];
-  const activeParent = parentTasks.find((item) => item.id === activeParentId) || parentTasks[0];
-  useEffect(() => {
-    if (!parentTasks.length) {
-      setActiveParentId(null);
-      return;
-    }
-    if (!parentTasks.some((item) => item.id === activeParentId)) {
-      setActiveParentId(parentTasks[0].id);
-    }
-  }, [data?.selected_department_id, parentTasks.length]);
+  const departmentTasks: AnyRecord[] = data?.department_tasks || [];
   const departmentTaskColumns: ColumnsType<AnyRecord> = [
     { title: '任务编号', dataIndex: 'code', width: 120 },
     { title: '部门任务', dataIndex: 'title' },
+    { title: '所属母任务', dataIndex: 'parent_task', width: 220 },
     { title: '负责部门', dataIndex: 'departments', render: (value) => <Space wrap>{(value || []).map((item: AnyRecord) => <Tag key={item.id}>{item.name}</Tag>)}</Space> },
     { title: '负责人', dataIndex: 'owner', width: 100 },
     { title: '状态', dataIndex: 'status', width: 110, render: (value) => <StatusTag value={value} /> },
-    { title: '进度', dataIndex: 'progress', width: 150, render: (value) => <Progress percent={value} size="small" /> },
     {
       title: '待拆解',
       dataIndex: 'pending_split_count',
@@ -347,7 +594,7 @@ function DepartmentTasks() {
     }
   ];
   return (
-    <PageShell title="部门任务总览" subtitle="按部门查看母任务、部门级任务与待拆解子任务">
+    <PageShell title="部门任务总览" subtitle="按部门直接查看部门级任务，展开后查看有效子任务">
       <div className={data?.can_switch_department ? 'department-task-layout' : 'department-task-layout no-sidebar'}>
         {data?.can_switch_department && (
           <aside className="department-directory">
@@ -364,37 +611,10 @@ function DepartmentTasks() {
           </aside>
         )}
         <Space direction="vertical" size={16} className="full-width">
-          <Row gutter={[12, 12]}>
-            {parentTasks.map((task) => (
-              <Col xs={24} md={12} xl={8} key={task.id}>
-                <Card
-                  hoverable
-                  className={`parent-task-card ${activeParent?.id === task.id ? 'selected' : ''}`}
-                  onClick={() => setActiveParentId(task.id)}
-                  extra={<StatusTag value={task.status} />}
-                >
-                  <Space direction="vertical" size={8} className="full-width">
-                    <Typography.Text type="secondary">{task.code}</Typography.Text>
-                    <Typography.Title level={5}>{task.title}</Typography.Title>
-                    <Space wrap>
-                      <Tag color="blue">{task.department_task_count} 个部门任务</Tag>
-                      <Tag color="green">{task.sub_task_count} 个子任务</Tag>
-                      {task.pending_split_count ? <Tag color="orange">{task.pending_split_count} 个待拆解</Tag> : null}
-                      {task.risk_count ? <Tag color="red">{task.risk_count} 个风险</Tag> : null}
-                    </Space>
-                    <Progress percent={task.progress || 0} size="small" />
-                  </Space>
-                </Card>
-              </Col>
-            ))}
-          </Row>
-          <Card
-            title={activeParent ? `${activeParent.code} ${activeParent.title}` : '部门任务'}
-            extra={activeParent ? <Tag>{activeParent.department_task_count || 0} 项</Tag> : null}
-          >
+          <Card title="部门级任务" extra={<Tag>{departmentTasks.length} 项</Tag>}>
             <Table
               rowKey="id"
-              dataSource={activeParent?.department_tasks || []}
+              dataSource={departmentTasks}
               columns={departmentTaskColumns}
               expandable={{
                 expandedRowRender: (row) => (
@@ -425,17 +645,22 @@ function DepartmentTasks() {
 function SubTasks() {
   const { data } = useApi<AnyRecord[]>('/sub-tasks', []);
   const columns: ColumnsType<AnyRecord> = [
-    { title: '编号', dataIndex: 'code' },
+    { title: '编号', dataIndex: 'code', width: 150 },
     { title: '子任务', dataIndex: 'title' },
     { title: '所属母任务', dataIndex: 'parent_task' },
-    { title: '执行人', dataIndex: 'executor' },
-    { title: '负责人', dataIndex: 'owner' },
-    { title: '状态', dataIndex: 'status', render: (value) => <StatusTag value={value} /> },
-    { title: '风险', dataIndex: 'risk_level', render: (value) => <StatusTag value={value} /> },
-    { title: '进度', dataIndex: 'progress', render: (value) => <Progress percent={value} size="small" /> }
+    { title: '执行人', dataIndex: 'executor', width: 110 },
+    { title: '负责人', dataIndex: 'owner', width: 110 },
+    { title: '状态', dataIndex: 'status', width: 120, render: (value) => <StatusTag value={value} /> },
+    { title: '风险', dataIndex: 'risk_level', width: 110, render: (value) => <StatusTag value={value} /> },
+    { title: '截止日期', dataIndex: 'due_date', width: 120 },
+    {
+      title: '操作',
+      width: 100,
+      render: (_, row) => <Link to={`/sub-tasks/${row.id}/update`}>更新</Link>
+    }
   ];
   return (
-    <PageShell title="子任务执行" subtitle="查看我负责、我执行和本周应更新的子任务">
+    <PageShell title="子任务执行" subtitle="查看子任务并填写本周更新">
       <Card>
         <Table rowKey="id" dataSource={data || []} columns={columns} />
       </Card>
@@ -443,82 +668,126 @@ function SubTasks() {
   );
 }
 
-function WeeklyUpdates() {
-  const { data: subTasks } = useApi<AnyRecord[]>('/sub-tasks', []);
-  const { data: updates, reload } = useApi<AnyRecord[]>('/weekly-updates', []);
+function SubTaskUpdate() {
+  const navigate = useNavigate();
+  const { subTaskId } = useParams();
   const [form] = Form.useForm();
   const weekKey = dayjs().format('YYYY-[W]WW');
-  const submit = async (submitUpdate: boolean) => {
-    const values = await form.validateFields();
-    await postJson('/weekly-updates', { ...values, week_key: weekKey, submit: submitUpdate });
-    message.success(submitUpdate ? '周更新已提交' : '草稿已保存');
-    form.resetFields();
+  const { data: subTasks } = useApi<AnyRecord[]>('/sub-tasks', []);
+  const { data: update, reload } = useApi<AnyRecord>(`/weekly-updates/current?sub_task_id=${subTaskId}&week_key=${weekKey}`, [subTaskId, weekKey]);
+  const subTask = (subTasks || []).find((item) => String(item.id) === String(subTaskId));
+  const [updateStatus, setUpdateStatus] = useState('empty');
+  const shouldWarn = updateStatus !== 'submitted';
+
+  useEffect(() => {
+    if (!update) return;
+    form.setFieldsValue({
+      this_week: update.this_week,
+      next_week: update.next_week,
+      risk: update.risk,
+      needs_coordination: update.needs_coordination || false
+    });
+    setUpdateStatus(update.status || 'empty');
+  }, [update?.id, update?.status, subTaskId]);
+
+  const saveUpdate = async (submitUpdate: boolean) => {
+    const values = form.getFieldsValue();
+    await postJson('/weekly-updates', {
+      sub_task_id: Number(subTaskId),
+      week_key: weekKey,
+      this_week: values.this_week || null,
+      next_week: values.next_week || null,
+      risk: values.risk || null,
+      needs_coordination: Boolean(values.needs_coordination),
+      submit: submitUpdate
+    });
+    setUpdateStatus(submitUpdate ? 'submitted' : 'draft');
+    if (submitUpdate) {
+      message.success('周更新已提交');
+    }
     reload();
   };
+  const autoSaveDraft = async () => {
+    if (updateStatus === 'submitted') return;
+    await saveUpdate(false);
+  };
+  const confirmLeave = (target?: string | number) => {
+    if (!shouldWarn) {
+      if (typeof target === 'number') navigate(target);
+      else if (target) navigate(target);
+      return;
+    }
+    Modal.confirm({
+      title: '周更新尚未提交',
+      content: '当前内容会先保存为草稿。你也可以直接提交本周更新。',
+      okText: '提交保存',
+      cancelText: '保存草稿暂不提交',
+      onOk: async () => {
+        await saveUpdate(true);
+        if (typeof target === 'number') navigate(target);
+        else if (target) navigate(target);
+      },
+      onCancel: async () => {
+        await saveUpdate(false);
+        if (typeof target === 'number') navigate(target);
+        else if (target) navigate(target);
+      }
+    });
+  };
+  useBeforeUnload((event) => {
+    if (!shouldWarn) return;
+    event.preventDefault();
+    event.returnValue = '';
+  });
+  useEffect(() => {
+    const handler = (event: MouseEvent) => {
+      if (!shouldWarn) return;
+      const anchor = (event.target as HTMLElement | null)?.closest('a[href]') as HTMLAnchorElement | null;
+      if (!anchor || anchor.target || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const url = new URL(anchor.href);
+      if (url.origin !== window.location.origin || url.pathname === window.location.pathname) return;
+      event.preventDefault();
+      confirmLeave(`${url.pathname}${url.search}${url.hash}`);
+    };
+    document.addEventListener('click', handler, true);
+    return () => document.removeEventListener('click', handler, true);
+  }, [shouldWarn, updateStatus, subTaskId]);
+
   return (
-    <PageShell title="每周更新填报" subtitle="结构化填报子任务周进展，每次提交形成独立历史记录">
-      <Alert
-        type="info"
-        showIcon
-        message="每周更新不是覆盖历史，而是形成一条新的历史记录。提交后再次修改会生成修订记录。"
-        className="mb16"
-      />
-      <Card title={`当前周期 ${weekKey}`} className="mb16">
-        <Form form={form} layout="vertical" initialValues={{ progress: 0, risk_level: 'none', needs_coordination: false }}>
-          <Row gutter={16}>
-            <Col xs={24} md={8}>
-              <Form.Item name="sub_task_id" label="子任务" rules={[{ required: true }]}>
-                <Select options={(subTasks || []).map((item) => ({ value: item.id, label: `${item.code} ${item.title}` }))} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={8}>
-              <Form.Item name="progress" label="当前进度百分比" rules={[{ required: true }]}>
-                <InputNumber min={0} max={100} className="full-width" />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={8}>
-              <Form.Item name="risk_level" label="风险等级">
-                <Select
-                  options={[
-                    { value: 'none', label: '无风险' },
-                    { value: 'low', label: '低风险' },
-                    { value: 'medium', label: '中风险' },
-                    { value: 'high', label: '高风险' }
-                  ]}
-                />
-              </Form.Item>
-            </Col>
-          </Row>
-          <Form.Item name="this_week" label="本周完成内容" rules={[{ required: true }]}>
-            <Input.TextArea rows={4} placeholder="请详细描述本周完成的具体工作内容" />
+    <PageShell
+      title={subTask ? `${subTask.code} ${subTask.title}` : '子任务周更新'}
+      subtitle={`当前周期 ${weekKey}，失焦后自动保存草稿`}
+      back={<Button size="small" icon={<ArrowLeftOutlined />} onClick={() => confirmLeave(-1)}>返回</Button>}
+    >
+      <Card className="mb16">
+        <Descriptions column={3}>
+          <Descriptions.Item label="所属母任务">{subTask?.parent_task || '-'}</Descriptions.Item>
+          <Descriptions.Item label="执行人">{subTask?.executor || '-'}</Descriptions.Item>
+          <Descriptions.Item label="负责人">{subTask?.owner || '-'}</Descriptions.Item>
+          <Descriptions.Item label="状态"><StatusTag value={subTask?.status} /></Descriptions.Item>
+          <Descriptions.Item label="风险"><StatusTag value={subTask?.risk_level} /></Descriptions.Item>
+          <Descriptions.Item label="草稿状态"><StatusTag value={updateStatus} /></Descriptions.Item>
+        </Descriptions>
+      </Card>
+      <Card title="本周更新">
+        <Form form={form} layout="vertical" initialValues={{ needs_coordination: false }}>
+          <Form.Item name="this_week" label="本周完成内容">
+            <Input.TextArea rows={5} onBlur={autoSaveDraft} placeholder="请填写本周完成内容" />
           </Form.Item>
           <Form.Item name="next_week" label="下周计划">
-            <Input.TextArea rows={3} placeholder="请描述下周工作计划" />
+            <Input.TextArea rows={4} onBlur={autoSaveDraft} placeholder="请填写下周计划" />
           </Form.Item>
-          <Form.Item name="risk" label="风险/卡点">
-            <Input.TextArea rows={2} placeholder="如存在风险，请描述影响和需要支持的事项" />
+          <Form.Item name="risk" label="遗留事项">
+            <Input.TextArea rows={4} onBlur={autoSaveDraft} placeholder="请填写遗留事项、卡点或需要后续处理的问题" />
           </Form.Item>
           <Form.Item name="needs_coordination" valuePropName="checked">
-            <Checkbox>需要协调，进入会议看板候选事项</Checkbox>
+            <Checkbox onBlur={autoSaveDraft}>需要协调，进入会议看板候选事项</Checkbox>
           </Form.Item>
           <Space>
-            <Button onClick={() => submit(false)}>保存草稿</Button>
-            <Button type="primary" onClick={() => submit(true)}>提交更新</Button>
+            <Button onClick={() => saveUpdate(false)}>保存草稿暂不提交</Button>
+            <Button type="primary" onClick={() => saveUpdate(true)}>提交保存</Button>
           </Space>
         </Form>
-      </Card>
-      <Card title="周更新记录">
-        <Table
-          rowKey="id"
-          dataSource={updates || []}
-          columns={[
-            { title: '周期', dataIndex: 'week_key' },
-            { title: '子任务', dataIndex: 'sub_task' },
-            { title: '状态', dataIndex: 'status', render: (value) => <StatusTag value={value} /> },
-            { title: '进度', dataIndex: 'progress', render: (value) => <Progress percent={value} size="small" /> },
-            { title: '提交人', dataIndex: 'submitter' }
-          ]}
-        />
       </Card>
     </PageShell>
   );
@@ -855,39 +1124,7 @@ function Permissions() {
 }
 
 function TaskDetail() {
-  const { data: parents } = useApi<AnyRecord[]>('/parent-tasks', []);
-  const { data: subs } = useApi<AnyRecord[]>('/sub-tasks', []);
-  const { data: timeline } = useApi<AnyRecord[]>('/timeline', []);
-  const task = parents?.[0];
-  return (
-    <PageShell title="任务详情" subtitle="任务信息、子任务、周更新、风险、附件和时间线集中查看">
-      <Card>
-        <Descriptions title={task?.title || '任务详情'} column={3}>
-          <Descriptions.Item label="编号">{task?.code}</Descriptions.Item>
-          <Descriptions.Item label="战略目标">{task?.goal}</Descriptions.Item>
-          <Descriptions.Item label="负责人">{task?.owner}</Descriptions.Item>
-          <Descriptions.Item label="部门">{task?.department}</Descriptions.Item>
-          <Descriptions.Item label="状态"><StatusTag value={task?.status} /></Descriptions.Item>
-          <Descriptions.Item label="进度"><Progress percent={task?.progress || 0} size="small" /></Descriptions.Item>
-        </Descriptions>
-      </Card>
-      <Tabs
-        className="section-row"
-        items={[
-          {
-            key: 'sub',
-            label: '子任务',
-            children: <Table rowKey="id" dataSource={subs || []} columns={[{ title: '编号', dataIndex: 'code' }, { title: '名称', dataIndex: 'title' }, { title: '执行人', dataIndex: 'executor' }, { title: '风险', dataIndex: 'risk_level', render: (value) => <StatusTag value={value} /> }]} />
-          },
-          {
-            key: 'timeline',
-            label: '时间线',
-            children: <Timeline items={(timeline || []).slice(0, 8).map((item) => ({ children: `${item.title} - ${item.content || ''}` }))} />
-          }
-        ]}
-      />
-    </PageShell>
-  );
+  return <Navigate to="/parent-tasks" replace />;
 }
 
 export default function App() {

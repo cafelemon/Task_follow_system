@@ -79,6 +79,8 @@ def serialize_goal(goal: StrategicGoal) -> dict:
 
 
 def serialize_parent_task(task: ParentTask) -> dict:
+    department_tasks = task.department_tasks or []
+    sub_tasks = [sub_task for department_task in department_tasks for sub_task in department_task.sub_tasks]
     return {
         "id": task.id,
         "code": task.code,
@@ -94,7 +96,9 @@ def serialize_parent_task(task: ParentTask) -> dict:
         "status": task.status,
         "progress": task.progress,
         "due_date": task.due_date.isoformat() if task.due_date else None,
-        "department_task_count": len(task.department_tasks),
+        "department_task_count": len(department_tasks),
+        "sub_task_count": len(sub_tasks),
+        "pending_split_count": sum(department_task.pending_split_count or 0 for department_task in department_tasks),
     }
 
 
@@ -140,6 +144,13 @@ def serialize_sub_task(task: SubTask) -> dict:
     }
 
 
+def serialize_department_task_tree(task: DepartmentTask) -> dict:
+    return {
+        **serialize_department_task(task),
+        "sub_tasks": [serialize_sub_task(sub_task) for sub_task in sorted(task.sub_tasks, key=lambda item: item.code)],
+    }
+
+
 def serialize_weekly_update(update: WeeklyUpdate) -> dict:
     return {
         "id": update.id,
@@ -164,11 +175,11 @@ def upsert_weekly_update(
     sub_task: SubTask,
     user: User,
     week_key: str,
-    progress: int,
+    progress: int | None,
     this_week: str | None,
     next_week: str | None,
     risk: str | None,
-    risk_level: str,
+    risk_level: str | None,
     needs_coordination: bool,
     submit: bool,
 ) -> WeeklyUpdate:
@@ -177,7 +188,7 @@ def upsert_weekly_update(
             WeeklyUpdate.sub_task_id == sub_task.id, WeeklyUpdate.week_key == week_key
         )
     )
-    if update and update.status == "submitted":
+    if update and update.status == "submitted" and submit:
         db.add(
             WeeklyUpdateRevision(
                 weekly_update_id=update.id,
@@ -188,7 +199,7 @@ def upsert_weekly_update(
     if not update:
         update = WeeklyUpdate(sub_task_id=sub_task.id, week_key=week_key, submitter_id=user.id)
         db.add(update)
-    update.progress = progress
+    update.progress = progress if progress is not None else (update.progress or sub_task.progress or 0)
     update.this_week = this_week
     update.next_week = next_week
     update.risk = risk
@@ -196,16 +207,18 @@ def upsert_weekly_update(
     update.status = "submitted" if submit else "draft"
     if submit:
         update.submitted_at = datetime.now(timezone.utc)
-    sub_task.progress = progress
-    sub_task.risk_level = risk_level
-    if progress >= 100:
-        sub_task.status = "completed"
-    elif risk_level in {"high", "medium", "low"}:
-        sub_task.status = "risk"
-    else:
-        sub_task.status = "in_progress"
+    if progress is not None:
+        sub_task.progress = progress
+        if progress >= 100:
+            sub_task.status = "completed"
+        elif sub_task.status == "pending_update":
+            sub_task.status = "in_progress"
+    if risk_level:
+        sub_task.risk_level = risk_level
+        if risk_level in {"high", "medium", "low"}:
+            sub_task.status = "risk"
     db.flush()
-    if risk and risk_level in {"high", "medium", "low"}:
+    if submit and risk and risk_level in {"high", "medium", "low"}:
         exists = db.scalar(
             select(RiskRecord).where(RiskRecord.sub_task_id == sub_task.id, RiskRecord.status == "open")
         )
@@ -219,7 +232,7 @@ def upsert_weekly_update(
                     created_by_id=user.id,
                 )
             )
-    if needs_coordination:
+    if submit and needs_coordination:
         exists = db.scalar(
             select(CoordinationItem).where(
                 CoordinationItem.sub_task_id == sub_task.id, CoordinationItem.status == "open"
@@ -234,15 +247,16 @@ def upsert_weekly_update(
                     owner_id=sub_task.owner_id,
                 )
             )
-    add_event(
-        db,
-        "sub_task",
-        sub_task.id,
-        "weekly_update_submitted" if submit else "weekly_update_draft",
-        "提交周更新" if submit else "保存周更新草稿",
-        user.id,
-        this_week,
-    )
+    if submit:
+        add_event(
+            db,
+            "sub_task",
+            sub_task.id,
+            "weekly_update_submitted",
+            "提交周更新",
+            user.id,
+            this_week,
+        )
     db.commit()
     db.refresh(update)
     return update

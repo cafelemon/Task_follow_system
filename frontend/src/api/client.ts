@@ -21,3 +21,8 @@ export async function putJson<T = any>(url: string, data: AnyRecord): Promise<T>
   const response = await api.put<T>(url, data);
   return response.data;
 }
+
+export async function deleteJson<T = any>(url: string): Promise<T> {
+  const response = await api.delete<T>(url);
+  return response.data;
+}

@@ -20,6 +20,16 @@ class ParentTaskCreate(BaseModel):
     due_date: date | None = None
 
 
+class ParentTaskUpdate(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    goal_id: int | None = None
+    department_id: int | None = None
+    owner_id: int | None = None
+    priority: str | None = None
+    due_date: date | None = None
+
+
 class DepartmentTaskCreate(BaseModel):
     title: str
     parent_task_id: int
@@ -39,11 +49,11 @@ class SubTaskCreate(BaseModel):
 class WeeklyUpdateUpsert(BaseModel):
     sub_task_id: int
     week_key: str
-    progress: int = Field(ge=0, le=100)
+    progress: int | None = Field(default=None, ge=0, le=100)
     this_week: str | None = None
     next_week: str | None = None
     risk: str | None = None
-    risk_level: str = "none"
+    risk_level: str | None = None
     needs_coordination: bool = False
     submit: bool = False
 

@@ -11,7 +11,7 @@ class Settings:
 
     def __init__(self) -> None:
         self.app_name = os.getenv("TASK_FOLLOW_APP_NAME", "公司任务跟踪系统")
-        self.app_version = os.getenv("TASK_FOLLOW_APP_VERSION", "1.0.0")
+        self.app_version = os.getenv("TASK_FOLLOW_APP_VERSION", "1.3.0")
         self.database_url = os.getenv(
             "TASK_FOLLOW_DATABASE_URL",
             "postgresql+psycopg://task_user:task_password@localhost:5432/task_follow",

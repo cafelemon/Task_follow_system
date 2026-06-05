@@ -28,6 +28,7 @@ from app.schemas.dto import (
     MockNotificationRequest,
     OpenIdLoginRequest,
     ParentTaskCreate,
+    ParentTaskUpdate,
     PersonCreate,
     PersonUpdate,
     RolePermissionUpdate,
@@ -40,6 +41,7 @@ from app.services.business import (
     current_week_key,
     generate_code,
     serialize_department_task,
+    serialize_department_task_tree,
     serialize_goal,
     serialize_parent_task,
     serialize_sub_task,
@@ -48,8 +50,12 @@ from app.services.business import (
     upsert_weekly_update,
 )
 from app.services.permissions import (
+    can_access_parent_task,
     can_access_department_task,
+    can_edit_parent_task,
     can_access_sub_task,
+    can_manage_parent_tasks,
+    can_view_parent_task_page,
     can_view_department_directory,
     get_current_user,
     refresh_role_permissions,
@@ -69,11 +75,19 @@ def health() -> dict:
 
 
 @router.get("/auth/me")
-def me(current_user: User = Depends(get_current_user)) -> dict:
+def me(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)) -> dict:
+    can_manage_parent = can_manage_parent_tasks(current_user)
     return {
         "user": serialize_user(current_user),
         "permission_codes": sorted(user_permission_codes(current_user)),
         "week_key": current_week_key(),
+        "features": {
+            "can_view_parent_tasks": can_view_parent_task_page(db, current_user),
+            "can_create_parent_tasks": can_manage_parent,
+            "can_delete_parent_tasks": can_manage_parent,
+            "can_manage_parent_tasks": can_manage_parent,
+            "can_switch_department": can_view_department_directory(current_user),
+        },
     }
 
 
@@ -97,6 +111,13 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(get_d
         "user": serialize_user(user),
         "permission_codes": sorted(user_permission_codes(user)),
         "week_key": current_week_key(),
+        "features": {
+            "can_view_parent_tasks": can_view_parent_task_page(db, user),
+            "can_create_parent_tasks": can_manage_parent_tasks(user),
+            "can_delete_parent_tasks": can_manage_parent_tasks(user),
+            "can_manage_parent_tasks": can_manage_parent_tasks(user),
+            "can_switch_department": can_view_department_directory(user),
+        },
     }
 
 
@@ -146,6 +167,13 @@ def openid_login(payload: OpenIdLoginRequest, response: Response, db: Session = 
         "user": serialize_user(user),
         "permission_codes": sorted(user_permission_codes(user)),
         "week_key": current_week_key(),
+        "features": {
+            "can_view_parent_tasks": can_view_parent_task_page(db, user),
+            "can_create_parent_tasks": can_manage_parent_tasks(user),
+            "can_delete_parent_tasks": can_manage_parent_tasks(user),
+            "can_manage_parent_tasks": can_manage_parent_tasks(user),
+            "can_switch_department": can_view_department_directory(user),
+        },
     }
 
 
@@ -167,6 +195,19 @@ def serialize_person(user: User) -> dict:
 @router.get("/users")
 def list_users(db: Session = Depends(get_db), _: User = Depends(require_admin)) -> list[dict]:
     return [serialize_user(user) for user in db.scalars(select(User).order_by(User.id)).all()]
+
+
+@router.get("/user-options")
+def list_user_options(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> list[dict]:
+    return [
+        {
+            "id": user.id,
+            "name": user.name,
+            "department": user.department.name if user.department else None,
+            "title": user.title,
+        }
+        for user in db.scalars(select(User).where(User.status != "disabled").order_by(User.name)).all()
+    ]
 
 
 @router.get("/people")
@@ -315,6 +356,27 @@ def list_goals(db: Session = Depends(get_db), _: User = Depends(get_current_user
     return [serialize_goal(goal) for goal in db.scalars(select(StrategicGoal).order_by(StrategicGoal.id))]
 
 
+@router.get("/goals/{goal_id}/parent-tasks")
+def list_goal_parent_tasks(
+    goal_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[dict]:
+    goal = db.get(StrategicGoal, goal_id)
+    if not goal:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Goal not found")
+    tasks = db.scalars(
+        select(ParentTask)
+        .where(ParentTask.goal_id == goal_id, ParentTask.status != "archived")
+        .order_by(ParentTask.code)
+    ).all()
+    return [
+        {**serialize_parent_task(task), "can_edit": can_edit_parent_task(current_user, task)}
+        for task in tasks
+        if can_access_parent_task(current_user, task)
+    ]
+
+
 @router.post("/goals", status_code=201)
 def create_goal(
     payload: GoalCreate,
@@ -346,19 +408,64 @@ def create_goal(
 
 
 @router.get("/parent-tasks")
-def list_parent_tasks(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> list[dict]:
+def list_parent_tasks(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)) -> list[dict]:
+    if not can_view_parent_task_page(db, current_user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to parent task management")
     return [
-        serialize_parent_task(task)
-        for task in db.scalars(select(ParentTask).order_by(ParentTask.id)).all()
+        {**serialize_parent_task(task), "can_edit": can_edit_parent_task(current_user, task)}
+        for task in db.scalars(
+            select(ParentTask).where(ParentTask.status != "archived").order_by(ParentTask.id)
+        ).all()
+        if can_access_parent_task(current_user, task)
     ]
+
+
+@router.get("/parent-tasks/{parent_task_id}/department-tasks")
+def list_parent_department_tasks(
+    parent_task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[dict]:
+    parent_task = db.get(ParentTask, parent_task_id)
+    if not parent_task or parent_task.status == "archived":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Parent task not found")
+    if not can_access_parent_task(current_user, parent_task):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to this parent task")
+    return [
+        serialize_department_task_tree(task)
+        for task in db.scalars(
+            select(DepartmentTask)
+            .join(ParentTask)
+            .where(DepartmentTask.parent_task_id == parent_task_id)
+            .where(ParentTask.status != "archived")
+            .order_by(DepartmentTask.code)
+        ).all()
+        if can_access_department_task(db, current_user, task)
+    ]
+
+
+@router.get("/parent-tasks/{parent_task_id}")
+def get_parent_task(
+    parent_task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    parent_task = db.get(ParentTask, parent_task_id)
+    if not parent_task or parent_task.status == "archived":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Parent task not found")
+    if not can_access_parent_task(current_user, parent_task):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to this parent task")
+    return {**serialize_parent_task(parent_task), "can_edit": can_edit_parent_task(current_user, parent_task)}
 
 
 @router.post("/parent-tasks", status_code=201)
 def create_parent_task(
     payload: ParentTaskCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("task.create_parent")),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
+    if not can_manage_parent_tasks(current_user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No create access to parent tasks")
     task = ParentTask(code=generate_code(db, ParentTask, "MT"), **payload.model_dump())
     db.add(task)
     db.flush()
@@ -374,7 +481,63 @@ def create_parent_task(
     )
     db.commit()
     db.refresh(task)
-    return serialize_parent_task(task)
+    return {**serialize_parent_task(task), "can_edit": can_edit_parent_task(current_user, task)}
+
+
+@router.put("/parent-tasks/{parent_task_id}")
+def update_parent_task(
+    parent_task_id: int,
+    payload: ParentTaskUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    task = db.get(ParentTask, parent_task_id)
+    if not task or task.status == "archived":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Parent task not found")
+    if not can_edit_parent_task(current_user, task):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No edit access to this parent task")
+    data = payload.model_dump(exclude_unset=True)
+    for key, value in data.items():
+        setattr(task, key, value)
+    db.add(
+        TaskEvent(
+            object_type="parent_task",
+            object_id=task.id,
+            event_type="updated",
+            title="编辑母任务",
+            content=task.title,
+            actor_id=current_user.id,
+        )
+    )
+    db.commit()
+    db.refresh(task)
+    return {**serialize_parent_task(task), "can_edit": can_edit_parent_task(current_user, task)}
+
+
+@router.delete("/parent-tasks/{parent_task_id}")
+def archive_parent_task(
+    parent_task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    task = db.get(ParentTask, parent_task_id)
+    if not task or task.status == "archived":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Parent task not found")
+    if not can_manage_parent_tasks(current_user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No delete access to parent tasks")
+    task.status = "archived"
+    db.add(
+        TaskEvent(
+            object_type="parent_task",
+            object_id=task.id,
+            event_type="archived",
+            title="归档母任务",
+            content=task.title,
+            actor_id=current_user.id,
+        )
+    )
+    db.commit()
+    return {"ok": True}
 
 
 @router.get("/department-tasks")
@@ -383,8 +546,10 @@ def list_department_tasks(
     current_user: User = Depends(get_current_user),
 ) -> list[dict]:
     return [
-        serialize_department_task(task)
-        for task in db.scalars(select(DepartmentTask).order_by(DepartmentTask.id)).all()
+        serialize_department_task_tree(task)
+        for task in db.scalars(
+            select(DepartmentTask).join(ParentTask).where(ParentTask.status != "archived").order_by(DepartmentTask.id)
+        ).all()
         if can_access_department_task(db, current_user, task)
     ]
 
@@ -398,7 +563,9 @@ def department_tasks_overview(
     can_switch = can_view_department_directory(current_user)
     all_tasks = [
         task
-        for task in db.scalars(select(DepartmentTask).order_by(DepartmentTask.code)).all()
+        for task in db.scalars(
+            select(DepartmentTask).join(ParentTask).where(ParentTask.status != "archived").order_by(DepartmentTask.code)
+        ).all()
         if can_access_department_task(db, current_user, task)
     ]
     visible_department_ids: set[int] = set()
@@ -423,7 +590,7 @@ def department_tasks_overview(
         if department.id in visible_department_ids
     ]
     parent_groups = []
-    for parent in db.scalars(select(ParentTask).order_by(ParentTask.code)).all():
+    for parent in db.scalars(select(ParentTask).where(ParentTask.status != "archived").order_by(ParentTask.code)).all():
         tasks = [task for task in all_tasks if task.parent_task_id == parent.id]
         if not tasks:
             continue
@@ -454,6 +621,7 @@ def department_tasks_overview(
         "can_switch_department": can_switch,
         "selected_department_id": selected_department_id,
         "departments": departments,
+        "department_tasks": [serialize_department_task_tree(task) for task in all_tasks],
         "parent_tasks": parent_groups,
     }
 
@@ -497,6 +665,9 @@ def list_sub_tasks(
         serialize_sub_task(task)
         for task in db.scalars(select(SubTask).order_by(SubTask.id)).all()
         if can_access_sub_task(db, current_user, task)
+        and task.department_task
+        and task.department_task.parent_task
+        and task.department_task.parent_task.status != "archived"
     ]
 
 
@@ -542,6 +713,44 @@ def list_weekly_updates(
         for update in updates
         if can_access_sub_task(db, current_user, update.sub_task)
     ]
+
+
+@router.get("/weekly-updates/current")
+def current_weekly_update(
+    sub_task_id: int,
+    week_key: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    sub_task = db.get(SubTask, sub_task_id)
+    if not sub_task:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Sub task not found")
+    if not can_access_sub_task(db, current_user, sub_task):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to this sub task")
+    target_week = week_key or current_week_key()
+    update = db.scalar(
+        select(WeeklyUpdate).where(
+            WeeklyUpdate.sub_task_id == sub_task_id,
+            WeeklyUpdate.week_key == target_week,
+        )
+    )
+    if update:
+        return serialize_weekly_update(update)
+    return {
+        "id": None,
+        "sub_task_id": sub_task.id,
+        "sub_task": sub_task.title,
+        "week_key": target_week,
+        "status": "empty",
+        "progress": sub_task.progress or 0,
+        "this_week": None,
+        "next_week": None,
+        "risk": None,
+        "needs_coordination": False,
+        "submitter_id": current_user.id,
+        "submitter": current_user.name,
+        "submitted_at": None,
+    }
 
 
 @router.post("/weekly-updates")
