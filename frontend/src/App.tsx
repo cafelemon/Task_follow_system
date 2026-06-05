@@ -61,6 +61,16 @@ import { StatusTag } from './components/StatusTag';
 
 const { Header, Sider, Content } = Layout;
 
+function currentIsoWeekKey() {
+  const today = new Date();
+  const target = new Date(Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()));
+  const day = target.getUTCDay() || 7;
+  target.setUTCDate(target.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(target.getUTCFullYear(), 0, 1));
+  const week = Math.ceil((((target.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+  return `${target.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
 function useApi<T = any>(url: string, deps: any[] = []) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<any>(null);
@@ -374,7 +384,6 @@ function ParentTasks() {
       goal_id: task.goal_id,
       department_id: task.department_id,
       owner_id: task.owner_id,
-      priority: task.priority,
       due_date: task.due_date ? dayjs(task.due_date) : null
     });
   };
@@ -468,7 +477,7 @@ function ParentTaskForm({ form, goalOptions, departmentOptions, peopleOptions }:
   peopleOptions: { value: number; label: string }[];
 }) {
   return (
-    <Form form={form} layout="vertical" initialValues={{ priority: 'normal' }}>
+    <Form form={form} layout="vertical">
       <Form.Item name="title" label="母任务名称" rules={[{ required: true, message: '请输入母任务名称' }]}>
         <Input />
       </Form.Item>
@@ -499,15 +508,79 @@ function ParentTaskForm({ form, goalOptions, departmentOptions, peopleOptions }:
           </Form.Item>
         </Col>
       </Row>
-      <Form.Item name="priority" label="优先级">
-        <Select
-          options={[
-            { value: 'low', label: '低' },
-            { value: 'normal', label: '普通' },
-            { value: 'high', label: '高' }
-          ]}
+    </Form>
+  );
+}
+
+function DepartmentTaskForm({ form, parentTask, departmentOptions, peopleOptions }: {
+  form: any;
+  parentTask?: AnyRecord | null;
+  departmentOptions: { value: number; label: string }[];
+  peopleOptions: { value: number; label: string }[];
+}) {
+  return (
+    <Form form={form} layout="vertical">
+      {parentTask && (
+        <Alert
+          type="info"
+          showIcon
+          className="mb16"
+          message={`上级母任务：${parentTask.code || ''} ${parentTask.title || ''}`}
         />
+      )}
+      <Form.Item name="title" label="部门任务内容" rules={[{ required: true, message: '请输入部门任务内容' }]}>
+        <Input.TextArea rows={4} />
       </Form.Item>
+      <Row gutter={16}>
+        <Col xs={24} md={12}>
+          <Form.Item name="department_ids" label="负责部门" rules={[{ required: true, message: '请选择负责部门' }]}>
+            <Select mode="multiple" options={departmentOptions} />
+          </Form.Item>
+        </Col>
+        <Col xs={24} md={12}>
+          <Form.Item name="owner_id" label="负责人" rules={[{ required: true, message: '请选择负责人' }]}>
+            <Select showSearch optionFilterProp="label" options={peopleOptions} />
+          </Form.Item>
+        </Col>
+      </Row>
+      <Form.Item name="due_date" label="截止日期">
+        <DatePicker className="full-width" />
+      </Form.Item>
+    </Form>
+  );
+}
+
+function SplitSubTaskForm({ form, task, peopleOptions }: {
+  form: any;
+  task?: AnyRecord | null;
+  peopleOptions: { value: number; label: string }[];
+}) {
+  return (
+    <Form form={form} layout="vertical">
+      {task && (
+        <Descriptions column={1} size="small" className="mb16" bordered>
+          <Descriptions.Item label="所属母任务">{task.parent_task || '-'}</Descriptions.Item>
+          <Descriptions.Item label="部门级任务">{task.code} {task.title}</Descriptions.Item>
+          <Descriptions.Item label="负责部门">
+            <Space wrap>{(task.departments || []).map((item: AnyRecord) => <Tag key={item.id}>{item.name}</Tag>)}</Space>
+          </Descriptions.Item>
+        </Descriptions>
+      )}
+      <Form.Item name="title" label="具体任务" rules={[{ required: true, message: '请输入具体任务' }]}>
+        <Input.TextArea rows={4} />
+      </Form.Item>
+      <Row gutter={16}>
+        <Col xs={24} md={12}>
+          <Form.Item name="executor_id" label="执行人" rules={[{ required: true, message: '请选择执行人' }]}>
+            <Select showSearch optionFilterProp="label" options={peopleOptions} />
+          </Form.Item>
+        </Col>
+        <Col xs={24} md={12}>
+          <Form.Item name="due_date" label="截止日期">
+            <DatePicker className="full-width" />
+          </Form.Item>
+        </Col>
+      </Row>
     </Form>
   );
 }
@@ -516,7 +589,63 @@ function ParentTaskDetail() {
   const navigate = useNavigate();
   const { parentTaskId } = useParams();
   const { data: task } = useApi<AnyRecord>(`/parent-tasks/${parentTaskId}`, [parentTaskId]);
-  const { data: departmentTasks } = useApi<AnyRecord[]>(`/parent-tasks/${parentTaskId}/department-tasks`, [parentTaskId]);
+  const { data: departmentTasks, reload } = useApi<AnyRecord[]>(`/parent-tasks/${parentTaskId}/department-tasks`, [parentTaskId]);
+  const { data: departments } = useApi<AnyRecord[]>('/departments', []);
+  const { data: people } = useApi<AnyRecord[]>('/user-options', []);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [editing, setEditing] = useState<AnyRecord | null>(null);
+  const [createForm] = Form.useForm();
+  const [editForm] = Form.useForm();
+  const [deleteForm] = Form.useForm();
+  const departmentOptions = (departments || []).map((item) => ({ value: item.id, label: item.name }));
+  const peopleOptions = (people || []).map((item) => ({ value: item.id, label: item.name }));
+  const canManageDepartmentTasks = Boolean(task?.can_edit);
+  const normalizeDepartmentTaskValues = (values: AnyRecord) => {
+    const departmentIds = values.department_ids || [];
+    return {
+      ...values,
+      department_id: departmentIds[0],
+      department_ids: departmentIds,
+      due_date: values.due_date ? values.due_date.format('YYYY-MM-DD') : null
+    };
+  };
+  const createDepartmentTask = async () => {
+    const values = await createForm.validateFields();
+    await postJson('/department-tasks', {
+      ...normalizeDepartmentTaskValues(values),
+      parent_task_id: Number(parentTaskId)
+    });
+    message.success('部门级任务已新增');
+    setCreateOpen(false);
+    createForm.resetFields();
+    reload();
+  };
+  const openDepartmentTaskEdit = (row: AnyRecord) => {
+    setEditing(row);
+    editForm.setFieldsValue({
+      title: row.title,
+      department_ids: row.department_ids?.length ? row.department_ids : (row.department_id ? [row.department_id] : []),
+      owner_id: row.owner_id,
+      due_date: row.due_date ? dayjs(row.due_date) : null
+    });
+  };
+  const saveDepartmentTaskEdit = async () => {
+    const values = await editForm.validateFields();
+    if (!editing) return;
+    await putJson(`/department-tasks/${editing.id}`, normalizeDepartmentTaskValues(values));
+    message.success('部门级任务已更新');
+    setEditing(null);
+    reload();
+  };
+  const archiveDepartmentTask = async () => {
+    const values = await deleteForm.validateFields();
+    await deleteJson(`/department-tasks/${values.department_task_id}`);
+    message.success('部门级任务已归档');
+    setDeleteOpen(false);
+    deleteForm.resetFields();
+    reload();
+  };
   const columns: ColumnsType<AnyRecord> = [
     { title: '任务编号', dataIndex: 'code', width: 130 },
     { title: '部门级任务', dataIndex: 'title' },
@@ -524,10 +653,13 @@ function ParentTaskDetail() {
     { title: '负责人', dataIndex: 'owner', width: 100 },
     { title: '状态', dataIndex: 'status', width: 110, render: (value) => <StatusTag value={value} /> },
     {
-      title: '待拆解',
-      dataIndex: 'pending_split_count',
+      title: '编辑',
       width: 120,
-      render: (value) => value ? <Tag color="orange">{value} 个</Tag> : <Tag>无</Tag>
+      render: (_, row) => (
+        <Button size="small" disabled={!row.can_edit} onClick={() => openDepartmentTaskEdit(row)}>
+          编辑
+        </Button>
+      )
     }
   ];
   return (
@@ -545,7 +677,15 @@ function ParentTaskDetail() {
           <Descriptions.Item label="截止日期">{task?.due_date || '-'}</Descriptions.Item>
         </Descriptions>
       </Card>
-      <Card title="部门级任务">
+      <Card
+        title="部门级任务"
+        extra={canManageDepartmentTasks ? (
+          <Space>
+            <Button type="primary" onClick={() => setCreateOpen(true)}>新增</Button>
+            <Button danger onClick={() => setDeleteOpen(true)}>删除</Button>
+          </Space>
+        ) : null}
+      >
         <Table
           rowKey="id"
           dataSource={departmentTasks || []}
@@ -570,6 +710,20 @@ function ParentTaskDetail() {
           }}
         />
       </Card>
+      <Modal title="新增部门级任务" open={createOpen} onOk={createDepartmentTask} onCancel={() => setCreateOpen(false)} destroyOnClose>
+        <DepartmentTaskForm form={createForm} parentTask={task} departmentOptions={departmentOptions} peopleOptions={peopleOptions} />
+      </Modal>
+      <Modal title="编辑部门级任务" open={Boolean(editing)} onOk={saveDepartmentTaskEdit} onCancel={() => setEditing(null)} destroyOnClose>
+        <DepartmentTaskForm form={editForm} parentTask={task} departmentOptions={departmentOptions} peopleOptions={peopleOptions} />
+      </Modal>
+      <Modal title="删除部门级任务" open={deleteOpen} onOk={archiveDepartmentTask} onCancel={() => setDeleteOpen(false)} okText="归档隐藏" okButtonProps={{ danger: true }} destroyOnClose>
+        <Alert type="warning" showIcon className="mb16" message="删除会按归档处理，隐藏该部门级任务默认入口，不会物理删除子任务和历史记录。" />
+        <Form form={deleteForm} layout="vertical">
+          <Form.Item name="department_task_id" label="选择部门级任务" rules={[{ required: true, message: '请选择要归档的部门级任务' }]}>
+            <Select options={(departmentTasks || []).filter((item) => item.can_delete).map((item) => ({ value: item.id, label: `${item.code} ${item.title}` }))} />
+          </Form.Item>
+        </Form>
+      </Modal>
     </PageShell>
   );
 }
@@ -577,8 +731,34 @@ function ParentTaskDetail() {
 function DepartmentTasks() {
   const [selectedDepartmentId, setSelectedDepartmentId] = useState<number | null>(null);
   const query = selectedDepartmentId ? `/department-tasks/overview?department_id=${selectedDepartmentId}` : '/department-tasks/overview';
-  const { data } = useApi<AnyRecord>(query, [selectedDepartmentId]);
+  const { data, reload } = useApi<AnyRecord>(query, [selectedDepartmentId]);
+  const { data: people } = useApi<AnyRecord[]>('/user-options', []);
+  const [splitting, setSplitting] = useState<AnyRecord | null>(null);
+  const [splitForm] = Form.useForm();
   const departmentTasks: AnyRecord[] = data?.department_tasks || [];
+  const peopleOptions = (people || []).map((item) => ({ value: item.id, label: item.name }));
+  const openSplit = (row: AnyRecord) => {
+    setSplitting(row);
+    splitForm.setFieldsValue({
+      title: undefined,
+      executor_id: undefined,
+      due_date: row.due_date ? dayjs(row.due_date) : null
+    });
+  };
+  const createSubTask = async () => {
+    const values = await splitForm.validateFields();
+    if (!splitting) return;
+    await postJson('/sub-tasks', {
+      department_task_id: splitting.id,
+      title: values.title,
+      executor_id: values.executor_id,
+      due_date: values.due_date ? values.due_date.format('YYYY-MM-DD') : null
+    });
+    message.success('子任务已拆解');
+    setSplitting(null);
+    splitForm.resetFields();
+    reload();
+  };
   const departmentTaskColumns: ColumnsType<AnyRecord> = [
     { title: '任务编号', dataIndex: 'code', width: 120 },
     { title: '部门任务', dataIndex: 'title' },
@@ -587,10 +767,14 @@ function DepartmentTasks() {
     { title: '负责人', dataIndex: 'owner', width: 100 },
     { title: '状态', dataIndex: 'status', width: 110, render: (value) => <StatusTag value={value} /> },
     {
-      title: '待拆解',
-      dataIndex: 'pending_split_count',
-      width: 120,
-      render: (value, row) => value ? <Tag color="orange">{value} 个：{(row.pending_split_codes || []).join('、')}</Tag> : <Tag>无</Tag>
+      title: '拆解',
+      width: 150,
+      render: (_, row) => (
+        <Space>
+          {row.pending_split_count ? <Tag color="orange">{row.pending_split_count} 个</Tag> : <Tag>无</Tag>}
+          <Button size="small" disabled={!row.can_split} onClick={() => openSplit(row)}>拆解</Button>
+        </Space>
+      )
     }
   ];
   return (
@@ -638,6 +822,9 @@ function DepartmentTasks() {
           </Card>
         </Space>
       </div>
+      <Modal title="拆解子任务" open={Boolean(splitting)} onOk={createSubTask} onCancel={() => setSplitting(null)} destroyOnClose>
+        <SplitSubTaskForm form={splitForm} task={splitting} peopleOptions={peopleOptions} />
+      </Modal>
     </PageShell>
   );
 }
@@ -647,10 +834,11 @@ function SubTasks() {
   const columns: ColumnsType<AnyRecord> = [
     { title: '编号', dataIndex: 'code', width: 150 },
     { title: '子任务', dataIndex: 'title' },
-    { title: '所属母任务', dataIndex: 'parent_task' },
+    { title: '部门级任务', dataIndex: 'department_task' },
     { title: '执行人', dataIndex: 'executor', width: 110 },
     { title: '负责人', dataIndex: 'owner', width: 110 },
     { title: '状态', dataIndex: 'status', width: 120, render: (value) => <StatusTag value={value} /> },
+    { title: '本周状态', dataIndex: 'weekly_status', width: 120, render: (value) => <StatusTag value={value} /> },
     { title: '风险', dataIndex: 'risk_level', width: 110, render: (value) => <StatusTag value={value} /> },
     { title: '截止日期', dataIndex: 'due_date', width: 120 },
     {
@@ -672,12 +860,16 @@ function SubTaskUpdate() {
   const navigate = useNavigate();
   const { subTaskId } = useParams();
   const [form] = Form.useForm();
-  const weekKey = dayjs().format('YYYY-[W]WW');
-  const { data: subTasks } = useApi<AnyRecord[]>('/sub-tasks', []);
-  const { data: update, reload } = useApi<AnyRecord>(`/weekly-updates/current?sub_task_id=${subTaskId}&week_key=${weekKey}`, [subTaskId, weekKey]);
-  const subTask = (subTasks || []).find((item) => String(item.id) === String(subTaskId));
+  const weekKey = currentIsoWeekKey();
+  const subTaskApi = useApi<AnyRecord>(`/sub-tasks/${subTaskId}`, [subTaskId]);
+  const updateApi = useApi<AnyRecord>(`/weekly-updates/current?sub_task_id=${subTaskId}&week_key=${weekKey}`, [subTaskId, weekKey]);
+  const subTask = subTaskApi.data;
+  const update = updateApi.data;
   const [updateStatus, setUpdateStatus] = useState('empty');
-  const shouldWarn = updateStatus !== 'submitted';
+  const isCompleted = subTask?.status === 'completed';
+  const isStarted = Boolean(subTask && subTask.status !== 'pending_update');
+  const canEditUpdate = isStarted && !isCompleted;
+  const shouldWarn = canEditUpdate && updateStatus !== 'submitted';
 
   useEffect(() => {
     if (!update) return;
@@ -691,6 +883,7 @@ function SubTaskUpdate() {
   }, [update?.id, update?.status, subTaskId]);
 
   const saveUpdate = async (submitUpdate: boolean) => {
+    if (!canEditUpdate) return;
     const values = form.getFieldsValue();
     await postJson('/weekly-updates', {
       sub_task_id: Number(subTaskId),
@@ -705,11 +898,22 @@ function SubTaskUpdate() {
     if (submitUpdate) {
       message.success('周更新已提交');
     }
-    reload();
+    updateApi.reload();
+    subTaskApi.reload();
   };
   const autoSaveDraft = async () => {
-    if (updateStatus === 'submitted') return;
+    if (updateStatus === 'submitted' || !canEditUpdate) return;
     await saveUpdate(false);
+  };
+  const startTask = async () => {
+    await postJson(`/sub-tasks/${subTaskId}/start`, {});
+    message.success('任务已开启');
+    subTaskApi.reload();
+  };
+  const completeTask = async () => {
+    await postJson(`/sub-tasks/${subTaskId}/complete`, {});
+    message.success('任务已完成');
+    subTaskApi.reload();
   };
   const confirmLeave = (target?: string | number) => {
     if (!shouldWarn) {
@@ -753,6 +957,32 @@ function SubTaskUpdate() {
     return () => document.removeEventListener('click', handler, true);
   }, [shouldWarn, updateStatus, subTaskId]);
 
+  if (subTaskApi.loading && !subTask) {
+    return (
+      <PageShell
+        title="子任务周更新"
+        subtitle="正在加载子任务"
+        back={<Button size="small" icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回</Button>}
+      >
+        <Card loading />
+      </PageShell>
+    );
+  }
+
+  if (subTaskApi.error || updateApi.error || !subTask) {
+    const statusCode = (subTaskApi.error as any)?.response?.status || (updateApi.error as any)?.response?.status;
+    const messageText = statusCode === 403 ? '你没有权限查看或更新该子任务。' : statusCode === 404 ? '没有找到这个子任务，可能已归档或链接已失效。' : '子任务更新页加载失败，请稍后重试。';
+    return (
+      <PageShell
+        title="子任务周更新"
+        subtitle="无法进入更新页"
+        back={<Button size="small" icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回</Button>}
+      >
+        <Alert type="warning" showIcon message={messageText} />
+      </PageShell>
+    );
+  }
+
   return (
     <PageShell
       title={subTask ? `${subTask.code} ${subTask.title}` : '子任务周更新'}
@@ -761,31 +991,38 @@ function SubTaskUpdate() {
     >
       <Card className="mb16">
         <Descriptions column={3}>
-          <Descriptions.Item label="所属母任务">{subTask?.parent_task || '-'}</Descriptions.Item>
+          <Descriptions.Item label="部门级任务">{subTask?.department_task || '-'}</Descriptions.Item>
           <Descriptions.Item label="执行人">{subTask?.executor || '-'}</Descriptions.Item>
           <Descriptions.Item label="负责人">{subTask?.owner || '-'}</Descriptions.Item>
           <Descriptions.Item label="状态"><StatusTag value={subTask?.status} /></Descriptions.Item>
           <Descriptions.Item label="风险"><StatusTag value={subTask?.risk_level} /></Descriptions.Item>
-          <Descriptions.Item label="草稿状态"><StatusTag value={updateStatus} /></Descriptions.Item>
+          <Descriptions.Item label="本周状态"><StatusTag value={subTask?.weekly_status} /></Descriptions.Item>
         </Descriptions>
+        <Space className="mt16">
+          {!isStarted && <Button type="primary" onClick={startTask}>开启任务</Button>}
+          {canEditUpdate && <Button danger onClick={completeTask}>标记已完成</Button>}
+          {isCompleted && <Tag color="green">该子任务已完成</Tag>}
+        </Space>
       </Card>
       <Card title="本周更新">
+        {!isStarted && <Alert type="info" showIcon className="mb16" message="该任务尚未开启。请先点击“开启任务”，再填写本周更新。" />}
+        {isCompleted && <Alert type="success" showIcon className="mb16" message="该任务已完成，周更新表单已锁定。" />}
         <Form form={form} layout="vertical" initialValues={{ needs_coordination: false }}>
           <Form.Item name="this_week" label="本周完成内容">
-            <Input.TextArea rows={5} onBlur={autoSaveDraft} placeholder="请填写本周完成内容" />
+            <Input.TextArea rows={5} disabled={!canEditUpdate} onBlur={autoSaveDraft} placeholder="请填写本周完成内容" />
           </Form.Item>
           <Form.Item name="next_week" label="下周计划">
-            <Input.TextArea rows={4} onBlur={autoSaveDraft} placeholder="请填写下周计划" />
+            <Input.TextArea rows={4} disabled={!canEditUpdate} onBlur={autoSaveDraft} placeholder="请填写下周计划" />
           </Form.Item>
           <Form.Item name="risk" label="遗留事项">
-            <Input.TextArea rows={4} onBlur={autoSaveDraft} placeholder="请填写遗留事项、卡点或需要后续处理的问题" />
+            <Input.TextArea rows={4} disabled={!canEditUpdate} onBlur={autoSaveDraft} placeholder="请填写遗留事项、卡点或需要后续处理的问题" />
           </Form.Item>
           <Form.Item name="needs_coordination" valuePropName="checked">
-            <Checkbox onBlur={autoSaveDraft}>需要协调，进入会议看板候选事项</Checkbox>
+            <Checkbox disabled={!canEditUpdate} onBlur={autoSaveDraft}>需要协调，进入会议看板候选事项</Checkbox>
           </Form.Item>
           <Space>
-            <Button onClick={() => saveUpdate(false)}>保存草稿暂不提交</Button>
-            <Button type="primary" onClick={() => saveUpdate(true)}>提交保存</Button>
+            <Button disabled={!canEditUpdate} onClick={() => saveUpdate(false)}>保存草稿暂不提交</Button>
+            <Button disabled={!canEditUpdate} type="primary" onClick={() => saveUpdate(true)}>提交保存</Button>
           </Space>
         </Form>
       </Card>
@@ -876,7 +1113,7 @@ function TimelinePage() {
 function Notifications() {
   const { data, reload } = useApi<AnyRecord[]>('/notifications', []);
   const createMock = async () => {
-    await postJson('/notifications/mock-reminders', { week_key: dayjs().format('YYYY-[W]WW') });
+    await postJson('/notifications/mock-reminders', { week_key: currentIsoWeekKey() });
     message.success('已生成模拟提醒记录');
     reload();
   };

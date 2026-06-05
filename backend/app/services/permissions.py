@@ -122,6 +122,27 @@ def can_edit_parent_task(user: User, task: ParentTask) -> bool:
     return task.owner_id == user.id
 
 
+def can_create_department_task(user: User, parent_task: ParentTask) -> bool:
+    if parent_task.status == "archived":
+        return False
+    return can_manage_parent_tasks(user) or parent_task.owner_id == user.id
+
+
+def can_edit_department_task(db: Session, user: User, task: DepartmentTask) -> bool:
+    if task.status == "archived":
+        return False
+    parent_task = db.get(ParentTask, task.parent_task_id)
+    if not parent_task or parent_task.status == "archived":
+        return False
+    return can_manage_parent_tasks(user) or parent_task.owner_id == user.id
+
+
+def can_split_sub_task(db: Session, user: User, task: DepartmentTask) -> bool:
+    if can_edit_department_task(db, user, task) or task.owner_id == user.id:
+        return True
+    return "task.edit_sub" in user_permission_codes(user) and can_access_department_task(db, user, task)
+
+
 def can_view_parent_task_page(db: Session, user: User) -> bool:
     if has_full_parent_task_access(user):
         return True
@@ -156,6 +177,8 @@ def can_access_sub_task(db: Session, user: User, sub_task: SubTask) -> bool:
     if sub_task.executor_id == user.id or sub_task.owner_id == user.id:
         return True
     department_task = db.get(DepartmentTask, sub_task.department_task_id)
+    if department_task and department_task.status == "archived":
+        return False
     if department_task and department_task.owner_id == user.id:
         return True
     if department_task:
@@ -170,6 +193,8 @@ def can_access_sub_task(db: Session, user: User, sub_task: SubTask) -> bool:
 
 
 def can_access_department_task(db: Session, user: User, task: DepartmentTask) -> bool:
+    if task.status == "archived":
+        return False
     codes = user_permission_codes(user)
     if "dashboard.view_all" in codes or "permission.manage" in codes:
         return True

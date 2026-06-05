@@ -34,14 +34,23 @@ class DepartmentTaskCreate(BaseModel):
     title: str
     parent_task_id: int
     department_id: int
+    department_ids: list[int] | None = None
     owner_id: int
+    due_date: date | None = None
+
+
+class DepartmentTaskUpdate(BaseModel):
+    title: str | None = None
+    department_id: int | None = None
+    department_ids: list[int] | None = None
+    owner_id: int | None = None
     due_date: date | None = None
 
 
 class SubTaskCreate(BaseModel):
     title: str
     department_task_id: int
-    owner_id: int
+    owner_id: int | None = None
     executor_id: int
     due_date: date | None = None
 

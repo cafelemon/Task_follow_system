@@ -254,6 +254,10 @@ body {
   margin-bottom: 16px;
 }
 
+.mt16 {
+  margin-top: 16px;
+}
+
 .danger-text {
   color: #dc2626;
 }

@@ -3,8 +3,11 @@ import { Tag } from 'antd';
 const map: Record<string, { color: string; text: string }> = {
   active: { color: 'blue', text: '启用' },
   in_progress: { color: 'blue', text: '进行中' },
-  pending_update: { color: 'orange', text: '待更新' },
+  pending_update: { color: 'orange', text: '待开启' },
   pending_split: { color: 'orange', text: '待拆解' },
+  missing_update: { color: 'orange', text: '待更新' },
+  not_started: { color: 'default', text: '待开启' },
+  updated: { color: 'green', text: '已更新' },
   draft: { color: 'orange', text: '草稿' },
   submitted: { color: 'green', text: '已提交' },
   completed: { color: 'green', text: '已完成' },

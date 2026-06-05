@@ -125,7 +125,17 @@ def serialize_department_task(task: DepartmentTask) -> dict:
     }
 
 
-def serialize_sub_task(task: SubTask) -> dict:
+def sub_task_weekly_status(task: SubTask, update: WeeklyUpdate | None) -> str:
+    if task.status == "completed":
+        return "completed"
+    if task.status == "pending_update":
+        return "not_started"
+    if update:
+        return "updated"
+    return "missing_update"
+
+
+def serialize_sub_task(task: SubTask, current_update: WeeklyUpdate | None = None) -> dict:
     return {
         "id": task.id,
         "code": task.code,
@@ -138,6 +148,8 @@ def serialize_sub_task(task: SubTask) -> dict:
         "owner_id": task.owner_id,
         "owner": task.owner.name if task.owner else None,
         "status": task.status,
+        "weekly_status": sub_task_weekly_status(task, current_update),
+        "weekly_update_status": current_update.status if current_update else None,
         "progress": task.progress,
         "risk_level": task.risk_level,
         "due_date": task.due_date.isoformat() if task.due_date else None,

@@ -23,6 +23,7 @@ from app.models.entities import (
 )
 from app.schemas.dto import (
     DepartmentTaskCreate,
+    DepartmentTaskUpdate,
     GoalCreate,
     LoginRequest,
     MockNotificationRequest,
@@ -53,6 +54,9 @@ from app.services.permissions import (
     can_access_parent_task,
     can_access_department_task,
     can_edit_parent_task,
+    can_create_department_task,
+    can_edit_department_task,
+    can_split_sub_task,
     can_access_sub_task,
     can_manage_parent_tasks,
     can_view_parent_task_page,
@@ -69,6 +73,73 @@ from app.services.lark_sync import import_base_2026, preview_base_2026
 router = APIRouter(prefix="/api")
 
 
+def feature_payload(db: Session, user: User) -> dict:
+    can_manage_parent = can_manage_parent_tasks(user)
+    return {
+        "can_view_parent_tasks": can_view_parent_task_page(db, user),
+        "can_create_parent_tasks": can_manage_parent,
+        "can_delete_parent_tasks": can_manage_parent,
+        "can_manage_parent_tasks": can_manage_parent,
+        "can_switch_department": can_view_department_directory(user),
+    }
+
+
+def generate_sub_task_code(db: Session, department_task: DepartmentTask) -> str:
+    prefix = f"{department_task.code}-"
+    existing = {
+        code
+        for code in db.scalars(select(SubTask.code).where(SubTask.code.like(f"{prefix}%"))).all()
+        if code
+    }
+    index = len(existing) + 1
+    while True:
+        code = f"{prefix}{index:02d}"
+        if code not in existing and not db.scalar(select(SubTask.id).where(SubTask.code == code)):
+            return code
+        index += 1
+
+
+def resolve_departments(db: Session, department_id: int | None, department_ids: list[int] | None) -> tuple[int, list[Department]]:
+    selected_ids = list(dict.fromkeys(department_ids or ([] if department_id is None else [department_id])))
+    if not selected_ids:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="负责部门不能为空")
+    departments = list(db.scalars(select(Department).where(Department.id.in_(selected_ids))).all())
+    found_ids = {department.id for department in departments}
+    if found_ids != set(selected_ids):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Department not found")
+    ordered_departments = sorted(departments, key=lambda item: selected_ids.index(item.id))
+    return selected_ids[0], ordered_departments
+
+
+def serialize_department_task_for_user(db: Session, user: User, task: DepartmentTask) -> dict:
+    return {
+        **serialize_department_task(task),
+        "can_edit": can_edit_department_task(db, user, task),
+        "can_delete": can_edit_department_task(db, user, task),
+        "can_split": can_split_sub_task(db, user, task),
+    }
+
+
+def serialize_department_task_tree_for_user(db: Session, user: User, task: DepartmentTask) -> dict:
+    current_week = current_week_key()
+    updates = {
+        update.sub_task_id: update
+        for update in db.scalars(
+            select(WeeklyUpdate).where(
+                WeeklyUpdate.week_key == current_week,
+                WeeklyUpdate.sub_task_id.in_([sub_task.id for sub_task in task.sub_tasks] or [0]),
+            )
+        ).all()
+    }
+    return {
+        **serialize_department_task_for_user(db, user, task),
+        "sub_tasks": [
+            serialize_sub_task(sub_task, updates.get(sub_task.id))
+            for sub_task in sorted(task.sub_tasks, key=lambda item: item.code)
+        ],
+    }
+
+
 @router.get("/health")
 def health() -> dict:
     return {"status": "ok", "version": __version__}
@@ -76,18 +147,11 @@ def health() -> dict:
 
 @router.get("/auth/me")
 def me(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)) -> dict:
-    can_manage_parent = can_manage_parent_tasks(current_user)
     return {
         "user": serialize_user(current_user),
         "permission_codes": sorted(user_permission_codes(current_user)),
         "week_key": current_week_key(),
-        "features": {
-            "can_view_parent_tasks": can_view_parent_task_page(db, current_user),
-            "can_create_parent_tasks": can_manage_parent,
-            "can_delete_parent_tasks": can_manage_parent,
-            "can_manage_parent_tasks": can_manage_parent,
-            "can_switch_department": can_view_department_directory(current_user),
-        },
+        "features": feature_payload(db, current_user),
     }
 
 
@@ -111,13 +175,7 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(get_d
         "user": serialize_user(user),
         "permission_codes": sorted(user_permission_codes(user)),
         "week_key": current_week_key(),
-        "features": {
-            "can_view_parent_tasks": can_view_parent_task_page(db, user),
-            "can_create_parent_tasks": can_manage_parent_tasks(user),
-            "can_delete_parent_tasks": can_manage_parent_tasks(user),
-            "can_manage_parent_tasks": can_manage_parent_tasks(user),
-            "can_switch_department": can_view_department_directory(user),
-        },
+        "features": feature_payload(db, user),
     }
 
 
@@ -167,13 +225,7 @@ def openid_login(payload: OpenIdLoginRequest, response: Response, db: Session = 
         "user": serialize_user(user),
         "permission_codes": sorted(user_permission_codes(user)),
         "week_key": current_week_key(),
-        "features": {
-            "can_view_parent_tasks": can_view_parent_task_page(db, user),
-            "can_create_parent_tasks": can_manage_parent_tasks(user),
-            "can_delete_parent_tasks": can_manage_parent_tasks(user),
-            "can_manage_parent_tasks": can_manage_parent_tasks(user),
-            "can_switch_department": can_view_department_directory(user),
-        },
+        "features": feature_payload(db, user),
     }
 
 
@@ -432,12 +484,13 @@ def list_parent_department_tasks(
     if not can_access_parent_task(current_user, parent_task):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to this parent task")
     return [
-        serialize_department_task_tree(task)
+        serialize_department_task_tree_for_user(db, current_user, task)
         for task in db.scalars(
             select(DepartmentTask)
             .join(ParentTask)
             .where(DepartmentTask.parent_task_id == parent_task_id)
             .where(ParentTask.status != "archived")
+            .where(DepartmentTask.status != "archived")
             .order_by(DepartmentTask.code)
         ).all()
         if can_access_department_task(db, current_user, task)
@@ -546,9 +599,12 @@ def list_department_tasks(
     current_user: User = Depends(get_current_user),
 ) -> list[dict]:
     return [
-        serialize_department_task_tree(task)
+        serialize_department_task_tree_for_user(db, current_user, task)
         for task in db.scalars(
-            select(DepartmentTask).join(ParentTask).where(ParentTask.status != "archived").order_by(DepartmentTask.id)
+            select(DepartmentTask)
+            .join(ParentTask)
+            .where(ParentTask.status != "archived", DepartmentTask.status != "archived")
+            .order_by(DepartmentTask.id)
         ).all()
         if can_access_department_task(db, current_user, task)
     ]
@@ -564,7 +620,10 @@ def department_tasks_overview(
     all_tasks = [
         task
         for task in db.scalars(
-            select(DepartmentTask).join(ParentTask).where(ParentTask.status != "archived").order_by(DepartmentTask.code)
+            select(DepartmentTask)
+            .join(ParentTask)
+            .where(ParentTask.status != "archived", DepartmentTask.status != "archived")
+            .order_by(DepartmentTask.code)
         ).all()
         if can_access_department_task(db, current_user, task)
     ]
@@ -610,7 +669,7 @@ def department_tasks_overview(
                 ),
                 "department_tasks": [
                     {
-                        **serialize_department_task(task),
+                        **serialize_department_task_for_user(db, current_user, task),
                         "sub_tasks": [serialize_sub_task(sub_task) for sub_task in task.sub_tasks],
                     }
                     for task in tasks
@@ -621,7 +680,7 @@ def department_tasks_overview(
         "can_switch_department": can_switch,
         "selected_department_id": selected_department_id,
         "departments": departments,
-        "department_tasks": [serialize_department_task_tree(task) for task in all_tasks],
+        "department_tasks": [serialize_department_task_tree_for_user(db, current_user, task) for task in all_tasks],
         "parent_tasks": parent_groups,
     }
 
@@ -630,15 +689,18 @@ def department_tasks_overview(
 def create_department_task(
     payload: DepartmentTaskCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("task.split_department")),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
     parent_task = db.get(ParentTask, payload.parent_task_id)
-    if not parent_task:
+    if not parent_task or parent_task.status == "archived":
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Parent task not found")
-    task = DepartmentTask(code=generate_code(db, DepartmentTask, "DT"), **payload.model_dump())
-    department = db.get(Department, payload.department_id)
-    if department:
-        task.departments = [department]
+    if not can_create_department_task(current_user, parent_task):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No create access to department tasks")
+    primary_department_id, departments = resolve_departments(db, payload.department_id, payload.department_ids)
+    data = payload.model_dump(exclude={"department_ids"})
+    data["department_id"] = primary_department_id
+    task = DepartmentTask(code=generate_code(db, DepartmentTask, "DT"), **data)
+    task.departments = departments
     db.add(task)
     db.flush()
     db.add(
@@ -653,7 +715,68 @@ def create_department_task(
     )
     db.commit()
     db.refresh(task)
-    return serialize_department_task(task)
+    return serialize_department_task_for_user(db, current_user, task)
+
+
+@router.put("/department-tasks/{department_task_id}")
+def update_department_task(
+    department_task_id: int,
+    payload: DepartmentTaskUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    task = db.get(DepartmentTask, department_task_id)
+    if not task or task.status == "archived":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Department task not found")
+    if not can_edit_department_task(db, current_user, task):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No edit access to this department task")
+    data = payload.model_dump(exclude_unset=True)
+    department_ids = data.pop("department_ids", None)
+    if department_ids is not None or "department_id" in data:
+        primary_department_id, departments = resolve_departments(db, data.get("department_id"), department_ids)
+        data["department_id"] = primary_department_id
+        task.departments = departments
+    for key, value in data.items():
+        setattr(task, key, value)
+    db.add(
+        TaskEvent(
+            object_type="department_task",
+            object_id=task.id,
+            event_type="updated",
+            title="编辑部门任务",
+            content=task.title,
+            actor_id=current_user.id,
+        )
+    )
+    db.commit()
+    db.refresh(task)
+    return serialize_department_task_for_user(db, current_user, task)
+
+
+@router.delete("/department-tasks/{department_task_id}")
+def archive_department_task(
+    department_task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    task = db.get(DepartmentTask, department_task_id)
+    if not task or task.status == "archived":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Department task not found")
+    if not can_edit_department_task(db, current_user, task):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No delete access to this department task")
+    task.status = "archived"
+    db.add(
+        TaskEvent(
+            object_type="department_task",
+            object_id=task.id,
+            event_type="archived",
+            title="归档部门任务",
+            content=task.title,
+            actor_id=current_user.id,
+        )
+    )
+    db.commit()
+    return {"ok": True}
 
 
 @router.get("/sub-tasks")
@@ -661,27 +784,61 @@ def list_sub_tasks(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[dict]:
+    week = current_week_key()
+    updates = {
+        update.sub_task_id: update
+        for update in db.scalars(select(WeeklyUpdate).where(WeeklyUpdate.week_key == week)).all()
+    }
     return [
-        serialize_sub_task(task)
+        serialize_sub_task(task, updates.get(task.id))
         for task in db.scalars(select(SubTask).order_by(SubTask.id)).all()
         if can_access_sub_task(db, current_user, task)
         and task.department_task
+        and task.department_task.status != "archived"
         and task.department_task.parent_task
         and task.department_task.parent_task.status != "archived"
     ]
+
+
+@router.get("/sub-tasks/{sub_task_id}")
+def get_sub_task(
+    sub_task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    task = db.get(SubTask, sub_task_id)
+    if not task or not task.department_task or task.department_task.status == "archived":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Sub task not found")
+    if not can_access_sub_task(db, current_user, task):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to this sub task")
+    update = db.scalar(
+        select(WeeklyUpdate).where(
+            WeeklyUpdate.sub_task_id == task.id,
+            WeeklyUpdate.week_key == current_week_key(),
+        )
+    )
+    return serialize_sub_task(task, update)
 
 
 @router.post("/sub-tasks", status_code=201)
 def create_sub_task(
     payload: SubTaskCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("task.edit_sub")),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
     department_task = db.get(DepartmentTask, payload.department_task_id)
-    if not department_task:
+    if not department_task or department_task.status == "archived":
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Department task not found")
-    task = SubTask(code=generate_code(db, SubTask, "ST"), **payload.model_dump())
+    if not can_split_sub_task(db, current_user, department_task):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No split access to this department task")
+    data = payload.model_dump()
+    data["owner_id"] = data["owner_id"] or department_task.owner_id
+    task = SubTask(code=generate_sub_task_code(db, department_task), **data)
     db.add(task)
+    if department_task.pending_split_count:
+        department_task.pending_split_count = max((department_task.pending_split_count or 0) - 1, 0)
+        codes = list(department_task.pending_split_codes or [])
+        department_task.pending_split_codes = codes[1:] if codes else []
     db.flush()
     db.add(
         TaskEvent(
@@ -689,6 +846,64 @@ def create_sub_task(
             object_id=task.id,
             event_type="created",
             title="创建子任务",
+            content=task.title,
+            actor_id=current_user.id,
+        )
+    )
+    db.commit()
+    db.refresh(task)
+    return serialize_sub_task(task)
+
+
+@router.post("/sub-tasks/{sub_task_id}/start")
+def start_sub_task(
+    sub_task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("weekly_update.submit")),
+) -> dict:
+    task = db.get(SubTask, sub_task_id)
+    if not task:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Sub task not found")
+    if not can_access_sub_task(db, current_user, task):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to this sub task")
+    if task.status == "completed":
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="Completed task cannot be restarted")
+    if task.status == "pending_update":
+        task.status = "in_progress"
+        db.add(
+            TaskEvent(
+                object_type="sub_task",
+                object_id=task.id,
+                event_type="started",
+                title="开启子任务",
+                content=task.title,
+                actor_id=current_user.id,
+            )
+        )
+        db.commit()
+        db.refresh(task)
+    return serialize_sub_task(task)
+
+
+@router.post("/sub-tasks/{sub_task_id}/complete")
+def complete_sub_task(
+    sub_task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("weekly_update.submit")),
+) -> dict:
+    task = db.get(SubTask, sub_task_id)
+    if not task:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Sub task not found")
+    if not can_access_sub_task(db, current_user, task):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to this sub task")
+    task.status = "completed"
+    task.progress = 100
+    db.add(
+        TaskEvent(
+            object_type="sub_task",
+            object_id=task.id,
+            event_type="completed",
+            title="完成子任务",
             content=task.title,
             actor_id=current_user.id,
         )
@@ -723,7 +938,7 @@ def current_weekly_update(
     current_user: User = Depends(get_current_user),
 ) -> dict:
     sub_task = db.get(SubTask, sub_task_id)
-    if not sub_task:
+    if not sub_task or not sub_task.department_task or sub_task.department_task.status == "archived":
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Sub task not found")
     if not can_access_sub_task(db, current_user, sub_task):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to this sub task")
@@ -760,10 +975,14 @@ def save_weekly_update(
     current_user: User = Depends(require_permission("weekly_update.submit")),
 ) -> dict:
     sub_task = db.get(SubTask, payload.sub_task_id)
-    if not sub_task:
+    if not sub_task or not sub_task.department_task or sub_task.department_task.status == "archived":
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Sub task not found")
     if not can_access_sub_task(db, current_user, sub_task):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to this sub task")
+    if sub_task.status == "pending_update":
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="Sub task must be started before weekly update")
+    if sub_task.status == "completed":
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="Completed task cannot be updated")
     update = upsert_weekly_update(
         db,
         sub_task=sub_task,
