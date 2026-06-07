@@ -266,6 +266,73 @@ body {
   color: #16a34a;
 }
 
+.timeline-matrix {
+  overflow-x: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.timeline-grid {
+  display: grid;
+  min-width: max-content;
+}
+
+.timeline-grid > * {
+  min-height: 38px;
+  padding: 8px 10px;
+  border-right: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+  overflow-wrap: anywhere;
+}
+
+.timeline-grid > *:last-child {
+  border-right: 0;
+}
+
+.timeline-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f8fafc;
+}
+
+.timeline-node {
+  min-width: max-content;
+}
+
+.timeline-node summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  font-weight: 700;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f8fafc;
+}
+
+.timeline-node.child summary {
+  padding-left: 28px;
+  font-weight: 600;
+  background: #ffffff;
+}
+
+.timeline-subtask {
+  min-width: max-content;
+}
+
+.timeline-subtask-title {
+  background: #fbfdff;
+}
+
+.timeline-metric-row > *:first-child {
+  padding-left: 34px;
+  color: #374151;
+  font-weight: 600;
+}
+
+.muted-cell {
+  color: #9ca3af;
+}
+
 .permission-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

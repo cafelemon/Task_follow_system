@@ -10,7 +10,6 @@ import {
   Form,
   Input,
   Layout,
-  List,
   Menu,
   Modal,
   Row,
@@ -19,18 +18,15 @@ import {
   Statistic,
   Table,
   Tag,
-  Timeline,
   Typography,
   message
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
-  AlertOutlined,
   ApartmentOutlined,
   ArrowLeftOutlined,
   BellOutlined,
   CheckCircleOutlined,
-  DashboardOutlined,
   DatabaseOutlined,
   FolderOutlined,
   HistoryOutlined,
@@ -41,7 +37,7 @@ import {
   TeamOutlined,
   UserOutlined
 } from '@ant-design/icons';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Link,
   Navigate,
@@ -53,6 +49,7 @@ import {
   useNavigate,
   useParams
 } from 'react-router-dom';
+import * as echarts from 'echarts';
 import dayjs from 'dayjs';
 import { deleteJson, getJson, postJson, putJson } from './api/client';
 import type { AnyRecord } from './api/client';
@@ -92,14 +89,32 @@ function useApi<T = any>(url: string, deps: any[] = []) {
   return { data, error, loading, reload };
 }
 
+function ChartCard({ title, option, height = 300 }: { title: string; option: any; height?: number }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!ref.current) return;
+    const chart = echarts.init(ref.current);
+    chart.setOption(option);
+    const resize = () => chart.resize();
+    window.addEventListener('resize', resize);
+    return () => {
+      window.removeEventListener('resize', resize);
+      chart.dispose();
+    };
+  }, [option]);
+  return (
+    <Card title={title}>
+      <div ref={ref} style={{ height }} />
+    </Card>
+  );
+}
+
 const baseMenuItems = [
-  { key: '/dashboard', icon: <DashboardOutlined />, label: <Link to="/dashboard">工作台</Link> },
+  { key: '/meeting-board', icon: <ScheduleOutlined />, label: <Link to="/meeting-board/overview">会议看板</Link> },
   { key: '/goals', icon: <NodeIndexOutlined />, label: <Link to="/goals">战略目标</Link> },
   { key: '/parent-tasks', icon: <FolderOutlined />, label: <Link to="/parent-tasks">母任务管理</Link> },
   { key: '/department-tasks', icon: <ApartmentOutlined />, label: <Link to="/department-tasks">部门任务</Link> },
   { key: '/sub-tasks', icon: <CheckCircleOutlined />, label: <Link to="/sub-tasks">子任务执行</Link> },
-  { key: '/meeting-board', icon: <ScheduleOutlined />, label: <Link to="/meeting-board">会议看板</Link> },
-  { key: '/risks', icon: <AlertOutlined />, label: <Link to="/risks">风险与逾期</Link> },
   { key: '/timeline', icon: <HistoryOutlined />, label: <Link to="/timeline">历史时间线</Link> },
   { key: '/notifications', icon: <BellOutlined />, label: <Link to="/notifications">通知记录</Link> }
 ];
@@ -118,7 +133,7 @@ function Login() {
     try {
       await postJson('/auth/login', values);
       message.success('登录成功');
-      navigate('/dashboard');
+      navigate('/meeting-board/overview');
     } catch {
       message.error('用户名或密码错误');
     } finally {
@@ -154,7 +169,7 @@ function AppLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const { data: auth, error, loading } = useApi<AnyRecord>('/auth/me', []);
-  const selectedKey = `/${location.pathname.split('/')[1] || 'dashboard'}`;
+  const selectedKey = `/${location.pathname.split('/')[1] || 'meeting-board'}`;
   const isAdmin = Boolean(auth?.user?.is_admin || (auth?.permission_codes || []).includes('permission.manage'));
   const canViewParentTasks = Boolean(auth?.features?.can_view_parent_tasks || isAdmin);
   const visibleBaseMenuItems = baseMenuItems.filter((item) => item.key !== '/parent-tasks' || canViewParentTasks);
@@ -201,8 +216,8 @@ function AppLayout() {
         </Header>
         <Content className="app-content">
           <Routes>
-            <Route path="/" element={<Navigate to="/dashboard" />} />
-            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/" element={<Navigate to="/meeting-board/overview" />} />
+            <Route path="/dashboard" element={<Navigate to="/meeting-board/overview" replace />} />
             <Route path="/goals" element={<Goals />} />
             <Route path="/goals/:goalId" element={<GoalDetail />} />
             <Route path="/parent-tasks" element={<ParentTasks />} />
@@ -211,8 +226,11 @@ function AppLayout() {
             <Route path="/sub-tasks" element={<SubTasks />} />
             <Route path="/sub-tasks/:subTaskId/update" element={<SubTaskUpdate />} />
             <Route path="/weekly-updates" element={<Navigate to="/sub-tasks" replace />} />
-            <Route path="/meeting-board" element={<MeetingBoard />} />
-            <Route path="/risks" element={<Risks />} />
+            <Route path="/meeting-board" element={<Navigate to="/meeting-board/overview" replace />} />
+            <Route path="/meeting-board/overview" element={<MeetingBoardOverview />} />
+            <Route path="/meeting-board/parent" element={<MeetingBoardParent />} />
+            <Route path="/meeting-board/department" element={<MeetingBoardDepartment />} />
+            <Route path="/risks" element={<Navigate to="/meeting-board/overview#risk-overdue" replace />} />
             <Route path="/timeline" element={<TimelinePage />} />
             <Route path="/notifications" element={<Notifications />} />
             <Route path="/permissions" element={<Permissions />} />
@@ -223,67 +241,6 @@ function AppLayout() {
         </Content>
       </Layout>
     </Layout>
-  );
-}
-
-function Dashboard() {
-  const { data, loading } = useApi<AnyRecord>('/dashboard', []);
-  const cards = data?.cards || {};
-  const weekly = data?.weekly_progress || {};
-  const risk = data?.risk_summary || {};
-
-  return (
-    <PageShell title="工作台" subtitle="按角色查看任务推进、周更新和风险概览">
-      <Row gutter={[16, 16]}>
-        {[
-          ['进行中母任务', cards.parent_in_progress, '#2563c9'],
-          ['本周待更新子任务', cards.weekly_due, '#d97706'],
-          ['存在风险任务', cards.risk_tasks, '#dc2626'],
-          ['已逾期任务', cards.overdue_tasks, '#b91c1c']
-        ].map(([label, value, color]) => (
-          <Col xs={24} md={12} xl={6} key={String(label)}>
-            <Card loading={loading} className="metric-card" style={{ borderTopColor: String(color) }}>
-              <Statistic title={label} value={Number(value || 0)} valueStyle={{ color: String(color) }} />
-            </Card>
-          </Col>
-        ))}
-      </Row>
-      <Row gutter={[16, 16]} className="section-row">
-        <Col xs={24} xl={15}>
-          <Card title="本周任务更新情况">
-            <Row gutter={16}>
-              {[
-                ['应更新', weekly.expected],
-                ['已提交', weekly.submitted],
-                ['未提交', weekly.missing]
-              ].map(([label, value]) => (
-                <Col xs={24} md={8} key={String(label)}>
-                  <Statistic title={label} value={Number(value || 0)} />
-                </Col>
-              ))}
-            </Row>
-          </Card>
-        </Col>
-        <Col xs={24} xl={9}>
-          <Card title="本周风险概览">
-            <Row gutter={12}>
-              {[
-                ['高风险', risk.high, 'red'],
-                ['中风险', risk.medium, 'orange'],
-                ['低风险', risk.low, 'green']
-              ].map(([label, value, color]) => (
-                <Col span={8} key={String(label)}>
-                  <div className={`risk-tile ${color}`}>
-                    <strong>{value || 0}</strong>
-                    <span>{label}</span>
-                  </div>
-                </Col>
-              ))}
-            </Row>
-          </Card>
-        </Col>
-      </Row>
-    </PageShell>
   );
 }
 
@@ -1030,56 +987,208 @@ function SubTaskUpdate() {
   );
 }
 
-function MeetingBoard() {
-  const { data } = useApi<AnyRecord>('/meeting-board', []);
-  const renderItems = (items: AnyRecord[] = []) => (
-    <List
-      dataSource={items}
-      locale={{ emptyText: '暂无事项' }}
-      renderItem={(item) => (
-        <List.Item>
-          <List.Item.Meta
-            title={item.title}
-            description={
-              <Space direction="vertical">
-                <span>负责人：{item.owner || '-'}</span>
-                <span className="danger-text">问题：{item.problem || item.status || '-'}</span>
-                <span className="success-text">建议：{item.suggestion || '-'}</span>
-              </Space>
-            }
-          />
-        </List.Item>
-      )}
-    />
-  );
+function MeetingBoardTabs() {
   return (
-    <PageShell title="会议看板" subtitle="自动汇总高风险、未更新、协调事项和本周完成事项" extra={<Button href="/api/meeting-board/export">导出会议材料</Button>}>
+    <Space className="mb16" wrap>
+      <Button><Link to="/meeting-board/overview">总览</Link></Button>
+      <Button><Link to="/meeting-board/parent">母任务看板</Link></Button>
+      <Button><Link to="/meeting-board/department">部门看板</Link></Button>
+    </Space>
+  );
+}
+
+function MeetingBoardOverview() {
+  const { data, loading } = useApi<AnyRecord>('/meeting-board/overview', []);
+  const cards = data?.cards || {};
+  const weeklyBar = data?.weekly_bar || [];
+  const riskPie = data?.risk_pie || [];
+  const trend = data?.trend || [];
+  const gantt = data?.gantt || [];
+  const ganttBase = Math.min(...gantt.map((item: AnyRecord) => new Date(item.start_date).getTime()), Date.now());
+  const ganttCategories = gantt.map((item: AnyRecord) => item.code);
+  const ganttOffset = gantt.map((item: AnyRecord) => Math.max(0, Math.round((new Date(item.start_date).getTime() - ganttBase) / 86400000)));
+  const ganttDuration = gantt.map((item: AnyRecord) => {
+    const start = new Date(item.start_date).getTime();
+    const end = new Date(item.due_date).getTime();
+    return Math.max(1, Math.round((end - start) / 86400000));
+  });
+  return (
+    <PageShell title="会议看板" subtitle={`当前周期 ${data?.week_key || '-'}，汇总周更新、风险、逾期和任务节奏`}>
+      <MeetingBoardTabs />
       <Row gutter={[16, 16]}>
-        <Col xs={24} xl={12}><Card title="本周必须决策事项">{renderItems(data?.decision_items)}</Card></Col>
-        <Col xs={24} xl={12}><Card title="本周未更新任务">{renderItems(data?.missing_updates)}</Card></Col>
-        <Col xs={24} xl={12}><Card title="高风险任务">{renderItems(data?.high_risks)}</Card></Col>
-        <Col xs={24} xl={12}><Card title="下周重点关注">{renderItems(data?.next_focus)}</Card></Col>
+        {[
+          ['进行中子任务', cards.active_sub_tasks, '#2563c9'],
+          ['本周已更新', cards.updated_this_week, '#16a34a'],
+          ['本周待更新', cards.missing_updates, '#d97706'],
+          ['风险任务', cards.risk_tasks, '#dc2626'],
+          ['逾期任务', cards.overdue_tasks, '#b91c1c'],
+          ['已完成任务', cards.completed_tasks, '#0f766e']
+        ].map(([label, value, color]) => (
+          <Col xs={24} sm={12} xl={4} key={String(label)}>
+            <Card loading={loading} className="metric-card" style={{ borderTopColor: String(color) }}>
+              <Statistic title={label} value={Number(value || 0)} valueStyle={{ color: String(color) }} />
+            </Card>
+          </Col>
+        ))}
       </Row>
+      <Row gutter={[16, 16]} className="section-row">
+        <Col xs={24} xl={12}>
+          <ChartCard
+            title="本周更新状态"
+            option={{
+              tooltip: {},
+              grid: { left: 40, right: 16, top: 32, bottom: 32 },
+              xAxis: { type: 'category', data: weeklyBar.map((item: AnyRecord) => item.name) },
+              yAxis: { type: 'value' },
+              series: [{ type: 'bar', data: weeklyBar.map((item: AnyRecord) => item.value), itemStyle: { color: '#2563c9' } }]
+            }}
+          />
+        </Col>
+        <Col xs={24} xl={12}>
+          <ChartCard
+            title="风险占比"
+            option={{
+              tooltip: { trigger: 'item' },
+              legend: { bottom: 0 },
+              series: [{ type: 'pie', radius: ['45%', '68%'], data: riskPie }]
+            }}
+          />
+        </Col>
+        <Col xs={24} xl={12}>
+          <ChartCard
+            title="近周提交趋势"
+            option={{
+              tooltip: { trigger: 'axis' },
+              legend: { top: 0 },
+              grid: { left: 40, right: 16, top: 42, bottom: 32 },
+              xAxis: { type: 'category', data: trend.map((item: AnyRecord) => item.week_key) },
+              yAxis: { type: 'value' },
+              series: [
+                { name: '已提交', type: 'line', smooth: true, data: trend.map((item: AnyRecord) => item.submitted) },
+                { name: '草稿', type: 'line', smooth: true, data: trend.map((item: AnyRecord) => item.draft) }
+              ]
+            }}
+          />
+        </Col>
+        <Col xs={24} xl={12}>
+          <ChartCard
+            title="近期任务甘特"
+            height={340}
+            option={{
+              tooltip: { trigger: 'axis' },
+              grid: { left: 80, right: 20, top: 24, bottom: 30 },
+              xAxis: { type: 'value', name: '天' },
+              yAxis: { type: 'category', data: ganttCategories, inverse: true },
+              series: [
+                { type: 'bar', stack: 'total', data: ganttOffset, itemStyle: { color: 'transparent' }, emphasis: { disabled: true } },
+                { type: 'bar', stack: 'total', data: ganttDuration, itemStyle: { color: '#16a34a' } }
+              ]
+            }}
+          />
+        </Col>
+      </Row>
+      <Card id="risk-overdue" title="风险与逾期汇总" className="section-row">
+        <Table
+          rowKey="id"
+          dataSource={data?.risk_overdue || []}
+          columns={[
+            { title: '类型', dataIndex: 'issue_type', width: 90, render: (value) => <Tag color={value === '逾期' ? 'red' : 'orange'}>{value}</Tag> },
+            { title: '编号', dataIndex: 'code', width: 150 },
+            { title: '子任务', dataIndex: 'title' },
+            { title: '部门级任务', dataIndex: 'department_task', width: 220 },
+            { title: '执行人', dataIndex: 'executor', width: 110 },
+            { title: '负责人', dataIndex: 'owner', width: 110 },
+            { title: '风险', dataIndex: 'risk_level', width: 100, render: (value) => <StatusTag value={value} /> },
+            { title: '截止日期', dataIndex: 'due_date', width: 120 }
+          ]}
+        />
+      </Card>
     </PageShell>
   );
 }
 
-function Risks() {
-  const { data } = useApi<AnyRecord[]>('/risks', []);
+function MeetingBoardParent() {
+  const { data } = useApi<AnyRecord>('/meeting-board/parent', []);
+  const rows = data?.rows || [];
   return (
-    <PageShell title="风险与逾期" subtitle="集中处理风险任务、逾期任务和协调动作">
-      <Card>
+    <PageShell title="母任务看板" subtitle={`当前周期 ${data?.week_key || '-'}，按母任务汇总任务推进风险`}>
+      <MeetingBoardTabs />
+      <ChartCard
+        title="母任务待更新排行"
+        option={{
+          tooltip: { trigger: 'axis' },
+          grid: { left: 80, right: 20, top: 24, bottom: 80 },
+          xAxis: { type: 'category', data: rows.map((item: AnyRecord) => item.code), axisLabel: { rotate: 35 } },
+          yAxis: { type: 'value' },
+          series: [{ type: 'bar', data: rows.map((item: AnyRecord) => item.missing_updates), itemStyle: { color: '#d97706' } }]
+        }}
+      />
+      <Card title="母任务汇总" className="section-row">
         <Table
           rowKey="id"
-          dataSource={data || []}
+          dataSource={rows}
           columns={[
-            { title: '风险编号', dataIndex: 'code' },
-            { title: '任务名称', dataIndex: 'sub_task' },
-            { title: '等级', dataIndex: 'level', render: (value) => <StatusTag value={value} /> },
-            { title: '执行人', dataIndex: 'executor' },
-            { title: '截止日期', dataIndex: 'due_date' },
-            { title: '风险描述', dataIndex: 'description' },
-            { title: '操作', render: () => <Space><Button>催办</Button><Button>升级协调</Button><Button>调整计划</Button></Space> }
+            { title: '编号', dataIndex: 'code', width: 120 },
+            { title: '母任务', dataIndex: 'title' },
+            { title: '牵头部门', dataIndex: 'department', width: 140 },
+            { title: '负责人', dataIndex: 'owner', width: 120 },
+            { title: '部门任务', dataIndex: 'department_task_count', width: 100 },
+            { title: '子任务', dataIndex: 'sub_task_count', width: 90 },
+            { title: '待更新', dataIndex: 'missing_updates', width: 90 },
+            { title: '风险', dataIndex: 'risk_count', width: 80 },
+            { title: '逾期', dataIndex: 'overdue_count', width: 80 },
+            { title: '完成', dataIndex: 'completed_count', width: 80 }
+          ]}
+        />
+      </Card>
+    </PageShell>
+  );
+}
+
+function MeetingBoardDepartment() {
+  const { data } = useApi<AnyRecord>('/meeting-board/department', []);
+  const rows = data?.rows || [];
+  return (
+    <PageShell title="部门看板" subtitle={`当前周期 ${data?.week_key || '-'}，按负责部门汇总任务状态`}>
+      <MeetingBoardTabs />
+      <Row gutter={[16, 16]}>
+        <Col xs={24} xl={12}>
+          <ChartCard
+            title="部门任务量"
+            option={{
+              tooltip: { trigger: 'axis' },
+              grid: { left: 80, right: 16, top: 24, bottom: 80 },
+              xAxis: { type: 'category', data: rows.map((item: AnyRecord) => item.name), axisLabel: { rotate: 35 } },
+              yAxis: { type: 'value' },
+              series: [{ type: 'bar', data: rows.map((item: AnyRecord) => item.sub_task_count), itemStyle: { color: '#2563c9' } }]
+            }}
+          />
+        </Col>
+        <Col xs={24} xl={12}>
+          <ChartCard
+            title="部门待更新"
+            option={{
+              tooltip: { trigger: 'axis' },
+              grid: { left: 80, right: 16, top: 24, bottom: 80 },
+              xAxis: { type: 'category', data: rows.map((item: AnyRecord) => item.name), axisLabel: { rotate: 35 } },
+              yAxis: { type: 'value' },
+              series: [{ type: 'bar', data: rows.map((item: AnyRecord) => item.missing_updates), itemStyle: { color: '#d97706' } }]
+            }}
+          />
+        </Col>
+      </Row>
+      <Card title="部门汇总" className="section-row">
+        <Table
+          rowKey="id"
+          dataSource={rows}
+          columns={[
+            { title: '部门', dataIndex: 'name' },
+            { title: '部门任务', dataIndex: 'department_task_count', width: 110 },
+            { title: '子任务', dataIndex: 'sub_task_count', width: 90 },
+            { title: '待更新', dataIndex: 'missing_updates', width: 90 },
+            { title: '风险', dataIndex: 'risk_count', width: 80 },
+            { title: '逾期', dataIndex: 'overdue_count', width: 80 },
+            { title: '完成', dataIndex: 'completed_count', width: 80 }
           ]}
         />
       </Card>
@@ -1088,23 +1197,56 @@ function Risks() {
 }
 
 function TimelinePage() {
-  const { data } = useApi<AnyRecord[]>('/timeline', []);
+  const { data, loading } = useApi<AnyRecord>('/timeline/matrix', []);
+  const weeks: string[] = data?.weeks || [];
+  const renderCell = (value?: string | null) => value ? <span>{value}</span> : <span className="muted-cell">-</span>;
   return (
-    <PageShell title="历史时间线" subtitle="展示任务创建、拆分、更新、风险和协调的全生命周期记录">
-      <Card>
-        <Timeline
-          items={(data || []).map((item) => ({
-            color: item.event_type.includes('risk') ? 'red' : item.event_type.includes('weekly') ? 'green' : 'blue',
-            children: (
-              <Space direction="vertical">
-                <span>{dayjs(item.created_at).format('YYYY-MM-DD HH:mm')} <Tag>{item.event_type}</Tag></span>
-                <strong>{item.title}</strong>
-                <span>{item.content}</span>
-                <Typography.Text type="secondary">操作人：{item.actor || '-'}</Typography.Text>
-              </Space>
-            )
-          }))}
-        />
+    <PageShell title="历史时间线" subtitle="按任务层级展开，以周为主轴查看完成内容、遗留事项和附件">
+      <Card loading={loading}>
+        <div className="timeline-matrix">
+          <div className="timeline-grid timeline-header" style={{ gridTemplateColumns: `220px 140px repeat(${weeks.length}, 160px)` }}>
+            <strong>任务</strong>
+            <strong>任务开始时间</strong>
+            {weeks.map((week) => <strong key={week}>{week.replace('2026-', '')}</strong>)}
+          </div>
+          {(data?.parents || []).map((parent: AnyRecord) => (
+            <details key={parent.id} open className="timeline-node">
+              <summary>{parent.code} {parent.title}</summary>
+              {(parent.department_tasks || []).map((departmentTask: AnyRecord) => (
+                <details key={departmentTask.id} open className="timeline-node child">
+                  <summary>{departmentTask.code} {departmentTask.title}</summary>
+                  {(departmentTask.sub_tasks || []).map((subTask: AnyRecord) => (
+                    <div key={subTask.id} className="timeline-subtask">
+                      <div className="timeline-grid timeline-subtask-title" style={{ gridTemplateColumns: `220px 140px repeat(${weeks.length}, 160px)` }}>
+                        <strong>{subTask.code}<br />{subTask.title}</strong>
+                        <span>{subTask.started_at || '-'}</span>
+                        {weeks.map((week) => <span key={week}><StatusTag value={subTask.status} /></span>)}
+                      </div>
+                      {[
+                        ['完成内容', 'this_week'],
+                        ['遗留事项', 'risk']
+                      ].map(([label, field]) => (
+                        <div key={field} className="timeline-grid timeline-metric-row" style={{ gridTemplateColumns: `220px 140px repeat(${weeks.length}, 160px)` }}>
+                          <span>{label}</span>
+                          <span />
+                          {weeks.map((week) => <span key={week}>{renderCell(subTask.cells?.[week]?.[field])}</span>)}
+                        </div>
+                      ))}
+                      <div className="timeline-grid timeline-metric-row" style={{ gridTemplateColumns: `220px 140px repeat(${weeks.length}, 160px)` }}>
+                        <span>附件</span>
+                        <span />
+                        {weeks.map((week) => {
+                          const attachments = subTask.cells?.[week]?.attachments || [];
+                          return <span key={week}>{attachments.length ? attachments.map((item: AnyRecord) => item.filename).join('、') : <span className="muted-cell">暂无附件</span>}</span>;
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </details>
+              ))}
+            </details>
+          ))}
+        </div>
       </Card>
     </PageShell>
   );

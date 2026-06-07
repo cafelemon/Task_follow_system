@@ -166,6 +166,7 @@ class SubTask(Base):
     progress: Mapped[int] = mapped_column(Integer, default=0)
     risk_level: Mapped[str] = mapped_column(String(32), default="none")
     due_date: Mapped[date | None] = mapped_column(Date)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     department_task: Mapped[DepartmentTask] = relationship(back_populates="sub_tasks")
     executor: Mapped[User] = relationship(foreign_keys=[executor_id])

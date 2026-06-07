@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+from collections import defaultdict
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
 from sqlalchemy import select
@@ -7,6 +8,7 @@ from sqlalchemy.orm import Session
 from app import __version__
 from app.db.session import get_db
 from app.models.entities import (
+    Attachment,
     CoordinationItem,
     Department,
     DepartmentTask,
@@ -138,6 +140,314 @@ def serialize_department_task_tree_for_user(db: Session, user: User, task: Depar
             for sub_task in sorted(task.sub_tasks, key=lambda item: item.code)
         ],
     }
+
+
+def week_key_from_date(value: date) -> str:
+    year, week, _ = value.isocalendar()
+    return f"{year}-W{week:02d}"
+
+
+def monday_from_week_key(week_key: str) -> date:
+    year_text, week_text = week_key.split("-W", 1)
+    return date.fromisocalendar(int(year_text), int(week_text), 1)
+
+
+def week_keys_between(start: date, end: date) -> list[str]:
+    current = start - timedelta(days=start.weekday())
+    final = end - timedelta(days=end.weekday())
+    keys: list[str] = []
+    while current <= final:
+        keys.append(week_key_from_date(current))
+        current += timedelta(days=7)
+    return keys
+
+
+def visible_sub_tasks(db: Session, user: User) -> list[SubTask]:
+    return [
+        task
+        for task in db.scalars(select(SubTask).order_by(SubTask.code)).all()
+        if task.department_task
+        and task.department_task.status != "archived"
+        and task.department_task.parent_task
+        and task.department_task.parent_task.status != "archived"
+        and can_access_sub_task(db, user, task)
+    ]
+
+
+def visible_department_tasks(db: Session, user: User) -> list[DepartmentTask]:
+    return [
+        task
+        for task in db.scalars(
+            select(DepartmentTask)
+            .join(ParentTask)
+            .where(DepartmentTask.status != "archived", ParentTask.status != "archived")
+            .order_by(DepartmentTask.code)
+        ).all()
+        if can_access_department_task(db, user, task)
+    ]
+
+
+def update_by_sub_task(db: Session, sub_tasks: list[SubTask], week_key: str) -> dict[int, WeeklyUpdate]:
+    ids = [task.id for task in sub_tasks]
+    if not ids:
+        return {}
+    return {
+        update.sub_task_id: update
+        for update in db.scalars(
+            select(WeeklyUpdate).where(WeeklyUpdate.week_key == week_key, WeeklyUpdate.sub_task_id.in_(ids))
+        ).all()
+    }
+
+
+def earliest_update_week_map(db: Session, sub_tasks: list[SubTask]) -> dict[int, str]:
+    ids = [task.id for task in sub_tasks]
+    if not ids:
+        return {}
+    result: dict[int, str] = {}
+    for update in db.scalars(
+        select(WeeklyUpdate).where(WeeklyUpdate.sub_task_id.in_(ids)).order_by(WeeklyUpdate.week_key)
+    ).all():
+        result.setdefault(update.sub_task_id, update.week_key)
+    return result
+
+
+def task_start_date(task: SubTask, earliest_weeks: dict[int, str]) -> date:
+    if task.started_at:
+        return task.started_at.date()
+    if task.id in earliest_weeks:
+        return monday_from_week_key(earliest_weeks[task.id])
+    return monday_from_week_key(current_week_key())
+
+
+def sub_task_summary(task: SubTask, current_update: WeeklyUpdate | None = None) -> dict:
+    return {
+        **serialize_sub_task(task, current_update),
+        "parent_task_id": task.department_task.parent_task_id if task.department_task else None,
+        "parent_task_code": task.department_task.parent_task.code if task.department_task and task.department_task.parent_task else None,
+        "parent_task": task.department_task.parent_task.title if task.department_task and task.department_task.parent_task else None,
+        "department_task_code": task.department_task.code if task.department_task else None,
+        "department_task": task.department_task.title if task.department_task else None,
+        "started_at": task.started_at.isoformat() if task.started_at else None,
+    }
+
+
+def build_meeting_overview_payload(db: Session, user: User, week_key: str) -> dict:
+    sub_tasks = visible_sub_tasks(db, user)
+    current_updates = update_by_sub_task(db, sub_tasks, week_key)
+    today = date.today()
+    active_tasks = [task for task in sub_tasks if task.status != "completed"]
+    updated_tasks = [task for task in active_tasks if task.id in current_updates]
+    missing_tasks = [task for task in active_tasks if task.id not in current_updates]
+    risk_tasks = [task for task in sub_tasks if task.risk_level in {"high", "medium", "low"}]
+    overdue_tasks = [task for task in active_tasks if task.due_date and task.due_date < today]
+    completed_tasks = [task for task in sub_tasks if task.status == "completed"]
+    weeks = week_keys_between(monday_from_week_key(week_key) - timedelta(days=35), monday_from_week_key(week_key))
+    trend_updates = list(
+        db.scalars(select(WeeklyUpdate).where(WeeklyUpdate.week_key.in_(weeks))).all()
+    )
+    visible_ids = {task.id for task in sub_tasks}
+    trend = [
+        {
+            "week_key": key,
+            "submitted": len([item for item in trend_updates if item.week_key == key and item.status == "submitted" and item.sub_task_id in visible_ids]),
+            "draft": len([item for item in trend_updates if item.week_key == key and item.status == "draft" and item.sub_task_id in visible_ids]),
+        }
+        for key in weeks
+    ]
+    gantt_source = sorted(active_tasks, key=lambda item: item.due_date or date.max)[:14]
+    earliest_weeks = earliest_update_week_map(db, gantt_source)
+    return {
+        "week_key": week_key,
+        "cards": {
+            "active_sub_tasks": len(active_tasks),
+            "updated_this_week": len(updated_tasks),
+            "missing_updates": len(missing_tasks),
+            "risk_tasks": len(risk_tasks),
+            "overdue_tasks": len(overdue_tasks),
+            "completed_tasks": len(completed_tasks),
+        },
+        "weekly_bar": [
+            {"name": "已更新", "value": len(updated_tasks)},
+            {"name": "待更新", "value": len(missing_tasks)},
+            {"name": "已完成", "value": len(completed_tasks)},
+        ],
+        "risk_pie": [
+            {"name": "高风险", "value": len([task for task in risk_tasks if task.risk_level == "high"])},
+            {"name": "中风险", "value": len([task for task in risk_tasks if task.risk_level == "medium"])},
+            {"name": "低风险", "value": len([task for task in risk_tasks if task.risk_level == "low"])},
+            {"name": "无风险", "value": len([task for task in sub_tasks if task.risk_level not in {"high", "medium", "low"}])},
+        ],
+        "trend": trend,
+        "gantt": [
+            {
+                "id": task.id,
+                "code": task.code,
+                "title": task.title,
+                "owner": task.owner.name if task.owner else None,
+                "executor": task.executor.name if task.executor else None,
+                "status": task.status,
+                "start_date": task_start_date(task, earliest_weeks).isoformat(),
+                "due_date": task.due_date.isoformat() if task.due_date else today.isoformat(),
+            }
+            for task in gantt_source
+        ],
+        "risk_overdue": [
+            {
+                **sub_task_summary(task, current_updates.get(task.id)),
+                "issue_type": "逾期" if task in overdue_tasks else "风险",
+            }
+            for task in sorted(
+                {task.id: task for task in risk_tasks + overdue_tasks}.values(),
+                key=lambda item: item.due_date or date.max,
+            )
+        ],
+    }
+
+
+def build_parent_board_payload(db: Session, user: User, week_key: str) -> dict:
+    sub_tasks = visible_sub_tasks(db, user)
+    current_updates = update_by_sub_task(db, sub_tasks, week_key)
+    today = date.today()
+    rows = []
+    by_parent: dict[int, list[SubTask]] = defaultdict(list)
+    for task in sub_tasks:
+        if task.department_task and task.department_task.parent_task:
+            by_parent[task.department_task.parent_task.id].append(task)
+    for parent_id, tasks in by_parent.items():
+        parent = tasks[0].department_task.parent_task
+        department_task_ids = {task.department_task_id for task in tasks}
+        active = [task for task in tasks if task.status != "completed"]
+        rows.append(
+            {
+                "id": parent_id,
+                "code": parent.code,
+                "title": parent.title,
+                "owner": parent.owner.name if parent.owner else None,
+                "department": parent.department.name if parent.department else None,
+                "department_task_count": len(department_task_ids),
+                "sub_task_count": len(tasks),
+                "missing_updates": len([task for task in active if task.id not in current_updates]),
+                "risk_count": len([task for task in tasks if task.risk_level in {"high", "medium", "low"}]),
+                "overdue_count": len([task for task in active if task.due_date and task.due_date < today]),
+                "completed_count": len([task for task in tasks if task.status == "completed"]),
+            }
+        )
+    return {"week_key": week_key, "rows": sorted(rows, key=lambda item: item["code"])}
+
+
+def build_department_board_payload(db: Session, user: User, week_key: str) -> dict:
+    sub_tasks = visible_sub_tasks(db, user)
+    current_updates = update_by_sub_task(db, sub_tasks, week_key)
+    today = date.today()
+    rows_by_department: dict[int, dict] = {}
+    for task in sub_tasks:
+        department_task = task.department_task
+        departments = department_task.departments or ([department_task.department] if department_task.department else [])
+        for department in departments:
+            row = rows_by_department.setdefault(
+                department.id,
+                {
+                    "id": department.id,
+                    "name": department.name,
+                    "department_task_ids": set(),
+                    "sub_task_ids": set(),
+                    "missing_updates": 0,
+                    "risk_count": 0,
+                    "overdue_count": 0,
+                    "completed_count": 0,
+                },
+            )
+            row["department_task_ids"].add(department_task.id)
+            row["sub_task_ids"].add(task.id)
+            if task.status != "completed" and task.id not in current_updates:
+                row["missing_updates"] += 1
+            if task.risk_level in {"high", "medium", "low"}:
+                row["risk_count"] += 1
+            if task.status != "completed" and task.due_date and task.due_date < today:
+                row["overdue_count"] += 1
+            if task.status == "completed":
+                row["completed_count"] += 1
+    rows = []
+    for row in rows_by_department.values():
+        rows.append(
+            {
+                **{key: value for key, value in row.items() if key not in {"department_task_ids", "sub_task_ids"}},
+                "department_task_count": len(row["department_task_ids"]),
+                "sub_task_count": len(row["sub_task_ids"]),
+            }
+        )
+    return {"week_key": week_key, "rows": sorted(rows, key=lambda item: item["name"])}
+
+
+def build_timeline_matrix_payload(db: Session, user: User) -> dict:
+    sub_tasks = visible_sub_tasks(db, user)
+    current_monday = monday_from_week_key(current_week_key())
+    earliest_weeks = earliest_update_week_map(db, sub_tasks)
+    start_dates = [task_start_date(task, earliest_weeks) for task in sub_tasks] or [current_monday]
+    first_monday = min(start_dates) - timedelta(days=min(start_dates).weekday())
+    if (current_monday - first_monday).days > 49:
+        first_monday = current_monday - timedelta(days=49)
+    weeks = week_keys_between(first_monday, current_monday)
+    updates = {
+        (update.sub_task_id, update.week_key): update
+        for update in db.scalars(
+            select(WeeklyUpdate).where(
+                WeeklyUpdate.sub_task_id.in_([task.id for task in sub_tasks] or [0]),
+                WeeklyUpdate.week_key.in_(weeks),
+            )
+        ).all()
+    }
+    attachments_by_update: dict[int, list[dict]] = defaultdict(list)
+    update_ids = [update.id for update in updates.values()]
+    if update_ids:
+        for attachment in db.scalars(
+            select(Attachment).where(
+                Attachment.related_type == "weekly_update",
+                Attachment.related_id.in_(update_ids),
+            )
+        ).all():
+            attachments_by_update[attachment.related_id].append(
+                {"id": attachment.id, "filename": attachment.filename}
+            )
+    tree: dict[int, dict] = {}
+    for task in sub_tasks:
+        department_task = task.department_task
+        parent_task = department_task.parent_task
+        parent_node = tree.setdefault(
+            parent_task.id,
+            {"id": parent_task.id, "code": parent_task.code, "title": parent_task.title, "department_tasks": {}},
+        )
+        department_node = parent_node["department_tasks"].setdefault(
+            department_task.id,
+            {"id": department_task.id, "code": department_task.code, "title": department_task.title, "sub_tasks": []},
+        )
+        cells = {}
+        for week in weeks:
+            update = updates.get((task.id, week))
+            cells[week] = {
+                "this_week": update.this_week if update else None,
+                "risk": update.risk if update else None,
+                "attachments": attachments_by_update.get(update.id, []) if update else [],
+            }
+        department_node["sub_tasks"].append(
+            {
+                "id": task.id,
+                "code": task.code,
+                "title": task.title,
+                "executor": task.executor.name if task.executor else None,
+                "owner": task.owner.name if task.owner else None,
+                "status": task.status,
+                "started_at": task_start_date(task, earliest_weeks).isoformat(),
+                "cells": cells,
+            }
+        )
+    parents = []
+    for parent in sorted(tree.values(), key=lambda item: item["code"]):
+        parent["department_tasks"] = sorted(parent["department_tasks"].values(), key=lambda item: item["code"])
+        for department_task in parent["department_tasks"]:
+            department_task["sub_tasks"] = sorted(department_task["sub_tasks"], key=lambda item: item["code"])
+        parents.append(parent)
+    return {"week_key": current_week_key(), "weeks": weeks, "parents": parents}
 
 
 @router.get("/health")
@@ -870,6 +1180,7 @@ def start_sub_task(
         raise HTTPException(status.HTTP_409_CONFLICT, detail="Completed task cannot be restarted")
     if task.status == "pending_update":
         task.status = "in_progress"
+        task.started_at = datetime.now(timezone.utc)
         db.add(
             TaskEvent(
                 object_type="sub_task",
@@ -1026,6 +1337,14 @@ def timeline(
     ]
 
 
+@router.get("/timeline/matrix")
+def timeline_matrix(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    return build_timeline_matrix_payload(db, current_user)
+
+
 @router.get("/risks")
 def list_risks(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> list[dict]:
     risks = db.scalars(select(RiskRecord).order_by(RiskRecord.id.desc())).all()
@@ -1055,6 +1374,33 @@ def meeting_board(
     _: User = Depends(get_current_user),
 ) -> dict:
     return build_meeting_board(db, week_key or current_week_key())
+
+
+@router.get("/meeting-board/overview")
+def meeting_board_overview(
+    week_key: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    return build_meeting_overview_payload(db, current_user, week_key or current_week_key())
+
+
+@router.get("/meeting-board/parent")
+def meeting_board_parent(
+    week_key: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    return build_parent_board_payload(db, current_user, week_key or current_week_key())
+
+
+@router.get("/meeting-board/department")
+def meeting_board_department(
+    week_key: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    return build_department_board_payload(db, current_user, week_key or current_week_key())
 
 
 @router.get("/meeting-board/export")

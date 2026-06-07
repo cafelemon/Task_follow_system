@@ -37,6 +37,7 @@ def ensure_runtime_schema() -> None:
         """,
         "ALTER TABLE department_tasks ADD COLUMN IF NOT EXISTS pending_split_count INTEGER DEFAULT 0",
         "ALTER TABLE department_tasks ADD COLUMN IF NOT EXISTS pending_split_codes JSONB",
+        "ALTER TABLE sub_tasks ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ",
         """
         CREATE TABLE IF NOT EXISTS department_task_departments (
             department_task_id INTEGER NOT NULL REFERENCES department_tasks(id) ON DELETE CASCADE,
