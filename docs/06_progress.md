@@ -6,9 +6,9 @@
 
 ## 2. 当前状态
 
-当前状态：1.5.0 会议看板与历史时间线修订已完成并通过本地验证，聚焦会议看板作为第一入口、图表汇总和只读周矩阵。
+当前状态：2.0.2 飞书多人测试版已进入实施，聚焦手动 open_id 绑定、飞书卡片签名免密码入口、多人测试卡片和周更新提醒真实触达。
 
-记录日期：2026-06-05。
+记录日期：2026-06-08。
 
 项目已从 V0 文档和原型阶段进入 V1 MVP 初版实施。1.0.0 目标是基于样板和 overview 建立独立 Web 系统，完成任务层级、周更新历史、自动会议看板、风险逾期、通知记录、权限矩阵和本地 Docker 部署。
 
@@ -49,26 +49,30 @@
 - 已完成 1.3.0 页面修订：母任务支持新增、编辑和归档隐藏；每周更新合并进子任务执行；全站不再展示进度条。
 - 已完成 1.4.0 页面修订：部门级任务支持新增、编辑和归档隐藏；部门任务总览支持拆解子任务；子任务更新页增加开启和完成状态流。
 - 已完成 1.5.0 页面修订：取消工作台和风险与逾期独立入口；会议看板拆分为总览、母任务看板和部门看板；历史时间线改为树状周矩阵。
+- 已完成 2.0.0 飞书出站消息第一版：新增企业应用配置、tenant_access_token 获取、飞书诊断接口、周更新提醒卡片发送入口和通知记录真实状态。
+- 已完成 2.0.1 飞书局域网实测改造：支持手动 open_id 录入、指定人员测试卡片、本地 `.env` 保存 App ID/Secret 和局域网 Web 地址透传。
+- 已完成 2.0.2 飞书多人测试改造：卡片按钮通过服务端签名链接自动创建 session，避免测试人员输入系统账号密码。
 
 ## 4. 待确认问题
 
 - 服务器位置：部署在 GPU 服务器还是其他长期稳定服务器。
 - NAS 附件路径、挂载方式、权限和备份策略。
 - 反向代理域名、证书、访问控制方式。
-- 飞书企业自建应用权限、回调地址和机器人能力边界。
+- 飞书企业自建应用机器人发消息权限是否已审核通过。
+- 测试人员 open_id，2.0.2 已加入刘星科，后续可继续扩展少量人员。
+- 生产 Web 访问地址。
+- 飞书免登、卡片回调、事件长连接和按身份卡片的后续 2.x 边界。
 - 现有 Base 数据字段、自动化和历史快照的迁移范围。
 - lark-cli 宿主机命令卡住、backend 容器内未安装 lark-cli，需先修复后才能真实导入 2026任务跟踪表。
 - 组织与人才发展中心观察角色的最终查看边界。
 - 会议材料导出的正式格式。
-- 1.5.0 完成后需继续确认会议看板指标口径、甘特图维度和历史矩阵附件接入方式。
+- 会议看板指标口径、甘特图维度和历史矩阵附件接入方式。
 
 ## 5. 下一步
 
-- 修复 lark-cli 运行环境：宿主机 `lark-cli --version` 需可返回，或将 lark-cli 安装进 backend 容器并配置可用认证。
-- 在 Base CLI 可用后执行 `POST /api/sync/base-2026/preview`，确认表、字段和记录数量。
-- 确认字段映射后执行一次性导入，让任务列表和会议看板使用真实数据。
-- 继续补登录、人员、角色权限、Base 同步的后端自动化测试和前端交互测试。
-- 完成 1.5.0 后做一次桌面宽屏和窄屏页面检查，重点看会议看板三个路由和历史时间线横向滚动。
+- 继续推进更多测试人员手动绑定，2.0.3 飞书免登绑定。
+- 再执行多人“发送飞书提醒”，持续观察未绑定人员 blocked、已绑定人员进入签名入口和真实发送链路。
+- 修复 lark-cli 运行环境后再恢复 Base 预览和一次性导入。
 
 ## 6. 最近验证
 
@@ -146,3 +150,40 @@
 - 容器内管理员登录成功，`GET /api/meeting-board/overview`、`GET /api/meeting-board/parent`、`GET /api/meeting-board/department` 和 `GET /api/timeline/matrix` 均返回真实聚合数据。
 - 数据库运行时检查确认 `sub_tasks.started_at` 字段存在。
 - 浏览器烟测通过：会议看板总览、母任务看板、部门看板和历史时间线均正常显示；左侧菜单不再显示工作台、风险与逾期；旧 `/dashboard`、`/risks` 路由可兼容跳转；控制台无错误。
+
+2.0.0 飞书真实接入第一版验证结果：
+
+- `python3 -m compileall backend/app` 通过。
+- `npm run build` 通过；仍存在 Vite 大 chunk 提示，不影响构建结果。
+- `docker compose -f deploy/docker-compose.yml config` 通过，backend 已透传飞书企业应用环境变量。
+- 本地调用 `lark_client.health_check()` 在未启用飞书配置时返回 `ok=false` 和“飞书真实发送未启用”，符合默认阻塞预期。
+- `python3 -m ruff check backend/app` 未执行成功：本机 Python 环境未安装 `ruff`。
+- `docker compose -f deploy/docker-compose.yml up --build -d` 未完成：Docker 构建下载 Python/Node 依赖和镜像 metadata 时遇到 PyPI/Docker Hub SSL/EOF 网络错误；现有本地服务仍为旧 1.5.0 容器，未被失败构建替换。
+- 本轮未完成浏览器烟测：当前可用工具未暴露 in-app browser 控制能力，且 2.0.0 Docker 服务未成功重建。
+
+2.0.1 飞书局域网实测版验证结果：
+
+- `python3 -m compileall backend/app` 通过。
+- `npm run build` 通过；仍存在 Vite 大 chunk 提示，不影响构建结果。
+- `docker compose -f deploy/docker-compose.yml config --quiet` 通过。
+- 本地 `.env` 已写入飞书企业应用配置和 `TASK_FOLLOW_WEB_BASE_URL=http://10.10.11.229:8080`，`.env` 已被 `.gitignore` 忽略。
+- 本地和容器内 `lark_client.health_check()` 均返回 `ok=true`，确认可获取飞书 tenant_access_token。
+- `docker compose -f deploy/docker-compose.yml up --build -d` 已成功重建并启动 2.0.1 backend/frontend/nginx。
+- `GET http://127.0.0.1:8080/api/health` 返回 `{"status":"ok","version":"2.0.1"}`。
+- `curl --noproxy '*' http://127.0.0.1:8080/` 和 `curl --noproxy '*' http://10.10.11.229:8080/` 均返回 200。
+- 容器内 nginx 可访问 backend health 和 frontend HTML。
+- 已将本人 open_id 绑定到管理员用户 `贾飞`，并发送 2.0.1 飞书测试卡片成功；通知记录 `record_id=1`，状态为 `sent`。
+
+2.0.2 飞书多人测试版验证结果：
+
+- `python3 -m compileall backend/app` 通过。
+- `npm run build` 通过；仍存在 Vite 大 chunk 提示，不影响构建结果。
+- `docker compose -f deploy/docker-compose.yml config --quiet` 通过。
+- `.env` 已补充独立 `TASK_FOLLOW_LINK_SECRET` 和 7 天签名链接有效期配置，仍不进入 Git 跟踪。
+- `docker compose -f deploy/docker-compose.yml up --build -d` 已成功重建并启动 2.0.2 backend/frontend/nginx。
+- `GET http://127.0.0.1:8080/api/health` 返回 `{"status":"ok","version":"2.0.2"}`。
+- `curl --noproxy '*' http://10.10.11.229:8080/` 返回 200。
+- 容器内 `lark_client.health_check()` 返回 `ok=true`，确认可获取飞书 tenant_access_token。
+- 已将刘星科 open_id 绑定到人员 `刘星科`，并发送 2.0.2 飞书测试卡片成功；通知记录 `record_id=2`，状态为 `sent`。
+- 通知记录 `record_id=2` 的 `web_url` 已确认为 `10.10.11.229` 局域网 `/api/auth/lark-link` 签名入口；容器内请求该完整入口返回 302，写入 session cookie，并跳转 `/meeting-board/overview`。
+- 已完成 2.0.2 子任务执行入口权限补丁：`子任务执行` 改为个人更新入口，按“我执行 / 我负责 / 管理查看”分组；执行人和管理员可进入更新链路，负责人和总经理/观察者的管理查看项只读；部门级任务、会议看板和其他管理视角继续沿用原可见性。

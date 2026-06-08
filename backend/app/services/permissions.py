@@ -192,6 +192,33 @@ def can_access_sub_task(db: Session, user: User, sub_task: SubTask) -> bool:
     return False
 
 
+def can_manage_sub_task_updates(user: User) -> bool:
+    return user.is_admin or "permission.manage" in user_permission_codes(user)
+
+
+def sub_task_execution_relation(user: User, sub_task: SubTask) -> str | None:
+    is_executor = sub_task.executor_id == user.id
+    is_owner = sub_task.owner_id == user.id
+    if is_executor and is_owner:
+        return "both"
+    if is_executor:
+        return "executor"
+    if is_owner:
+        return "owner"
+    codes = user_permission_codes(user)
+    if user.is_admin or "dashboard.view_all" in codes or "permission.manage" in codes:
+        return "management"
+    return None
+
+
+def can_view_sub_task_execution_entry(user: User, sub_task: SubTask) -> bool:
+    return sub_task_execution_relation(user, sub_task) is not None
+
+
+def can_update_sub_task_weekly(user: User, sub_task: SubTask) -> bool:
+    return sub_task.executor_id == user.id or can_manage_sub_task_updates(user)
+
+
 def can_access_department_task(db: Session, user: User, task: DepartmentTask) -> bool:
     if task.status == "archived":
         return False

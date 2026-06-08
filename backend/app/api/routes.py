@@ -2,6 +2,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -27,6 +28,7 @@ from app.schemas.dto import (
     DepartmentTaskCreate,
     DepartmentTaskUpdate,
     GoalCreate,
+    LarkTestMessageRequest,
     LoginRequest,
     MockNotificationRequest,
     OpenIdLoginRequest,
@@ -43,6 +45,8 @@ from app.services.business import (
     create_mock_notifications,
     current_week_key,
     generate_code,
+    send_lark_test_message,
+    send_weekly_update_reminders,
     serialize_department_task,
     serialize_department_task_tree,
     serialize_goal,
@@ -60,6 +64,8 @@ from app.services.permissions import (
     can_edit_department_task,
     can_split_sub_task,
     can_access_sub_task,
+    can_update_sub_task_weekly,
+    can_view_sub_task_execution_entry,
     can_manage_parent_tasks,
     can_view_parent_task_page,
     can_view_department_directory,
@@ -67,9 +73,18 @@ from app.services.permissions import (
     refresh_role_permissions,
     require_admin,
     require_permission,
+    sub_task_execution_relation,
     user_permission_codes,
 )
-from app.services.auth import SESSION_COOKIE, SESSION_DAYS, create_session, delete_session, verify_password
+from app.services.auth import (
+    SESSION_COOKIE,
+    SESSION_DAYS,
+    create_session,
+    delete_session,
+    verify_lark_login_token,
+    verify_password,
+)
+from app.services.lark_client import lark_client
 from app.services.lark_sync import import_base_2026, preview_base_2026
 
 router = APIRouter(prefix="/api")
@@ -84,6 +99,24 @@ def feature_payload(db: Session, user: User) -> dict:
         "can_manage_parent_tasks": can_manage_parent,
         "can_switch_department": can_view_department_directory(user),
     }
+
+
+def normalize_open_id(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def apply_open_id_binding(db: Session, user: User, open_id: str | None) -> None:
+    normalized = normalize_open_id(open_id)
+    if normalized:
+        exists = db.scalar(select(User).where(User.open_id == normalized, User.id != user.id))
+        if exists:
+            raise HTTPException(status.HTTP_409_CONFLICT, detail="open_id 已绑定到其他人员")
+    if normalized != user.open_id:
+        user.open_id = normalized
+        user.open_id_bound_at = datetime.now(timezone.utc) if normalized else None
 
 
 def generate_sub_task_code(db: Session, department_task: DepartmentTask) -> str:
@@ -172,6 +205,15 @@ def visible_sub_tasks(db: Session, user: User) -> list[SubTask]:
         and task.department_task.parent_task.status != "archived"
         and can_access_sub_task(db, user, task)
     ]
+
+
+def serialize_sub_task_for_execution(task: SubTask, user: User, current_update: WeeklyUpdate | None = None) -> dict:
+    relation = sub_task_execution_relation(user, task)
+    return {
+        **serialize_sub_task(task, current_update),
+        "viewer_relation": relation,
+        "can_update_weekly": can_update_sub_task_weekly(user, task),
+    }
 
 
 def visible_department_tasks(db: Session, user: User) -> list[DepartmentTask]:
@@ -539,6 +581,21 @@ def openid_login(payload: OpenIdLoginRequest, response: Response, db: Session = 
     }
 
 
+@router.get("/auth/lark-link")
+def lark_link_login(token: str, db: Session = Depends(get_db)) -> RedirectResponse:
+    user, next_path = verify_lark_login_token(db, token)
+    session_token = create_session(db, user)
+    redirect = RedirectResponse(url=next_path, status_code=status.HTTP_302_FOUND)
+    redirect.set_cookie(
+        SESSION_COOKIE,
+        session_token,
+        max_age=SESSION_DAYS * 24 * 60 * 60,
+        httponly=True,
+        samesite="lax",
+    )
+    return redirect
+
+
 def serialize_person(user: User) -> dict:
     item = serialize_user(user) or {}
     item.update(
@@ -587,6 +644,9 @@ def create_person(
     db: Session = Depends(get_db),
     _: User = Depends(require_admin),
 ) -> dict:
+    open_id = normalize_open_id(payload.open_id)
+    if open_id and db.scalar(select(User).where(User.open_id == open_id)):
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="open_id 已绑定到其他人员")
     if db.scalar(select(User).where(User.name == payload.name, User.open_id.is_(None))):
         raise HTTPException(status.HTTP_409_CONFLICT, detail="已存在同名未绑定人员")
     user = User(
@@ -595,6 +655,8 @@ def create_person(
         title=payload.title,
         status=payload.status,
         source="manual",
+        open_id=open_id,
+        open_id_bound_at=datetime.now(timezone.utc) if open_id else None,
     )
     roles = db.scalars(select(Role).where(Role.id.in_(payload.role_ids))).all() if payload.role_ids else []
     user.roles = list(roles)
@@ -616,8 +678,11 @@ def update_person(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="User not found")
     data = payload.model_dump(exclude_unset=True)
     role_ids = data.pop("role_ids", None)
+    open_id = data.pop("open_id", None)
     for key, value in data.items():
         setattr(user, key, value)
+    if "open_id" in payload.model_fields_set:
+        apply_open_id_binding(db, user, open_id)
     if role_ids is not None:
         user.roles = list(db.scalars(select(Role).where(Role.id.in_(role_ids))).all()) if role_ids else []
     db.add(user)
@@ -1100,9 +1165,9 @@ def list_sub_tasks(
         for update in db.scalars(select(WeeklyUpdate).where(WeeklyUpdate.week_key == week)).all()
     }
     return [
-        serialize_sub_task(task, updates.get(task.id))
+        serialize_sub_task_for_execution(task, current_user, updates.get(task.id))
         for task in db.scalars(select(SubTask).order_by(SubTask.id)).all()
-        if can_access_sub_task(db, current_user, task)
+        if can_view_sub_task_execution_entry(current_user, task)
         and task.department_task
         and task.department_task.status != "archived"
         and task.department_task.parent_task
@@ -1127,7 +1192,7 @@ def get_sub_task(
             WeeklyUpdate.week_key == current_week_key(),
         )
     )
-    return serialize_sub_task(task, update)
+    return serialize_sub_task_for_execution(task, current_user, update)
 
 
 @router.post("/sub-tasks", status_code=201)
@@ -1174,8 +1239,8 @@ def start_sub_task(
     task = db.get(SubTask, sub_task_id)
     if not task:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Sub task not found")
-    if not can_access_sub_task(db, current_user, task):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to this sub task")
+    if not can_update_sub_task_weekly(current_user, task):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No update access to this sub task")
     if task.status == "completed":
         raise HTTPException(status.HTTP_409_CONFLICT, detail="Completed task cannot be restarted")
     if task.status == "pending_update":
@@ -1205,8 +1270,8 @@ def complete_sub_task(
     task = db.get(SubTask, sub_task_id)
     if not task:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Sub task not found")
-    if not can_access_sub_task(db, current_user, task):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to this sub task")
+    if not can_update_sub_task_weekly(current_user, task):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No update access to this sub task")
     task.status = "completed"
     task.progress = 100
     db.add(
@@ -1251,8 +1316,8 @@ def current_weekly_update(
     sub_task = db.get(SubTask, sub_task_id)
     if not sub_task or not sub_task.department_task or sub_task.department_task.status == "archived":
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Sub task not found")
-    if not can_access_sub_task(db, current_user, sub_task):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to this sub task")
+    if not can_update_sub_task_weekly(current_user, sub_task):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No update access to this sub task")
     target_week = week_key or current_week_key()
     update = db.scalar(
         select(WeeklyUpdate).where(
@@ -1288,8 +1353,8 @@ def save_weekly_update(
     sub_task = db.get(SubTask, payload.sub_task_id)
     if not sub_task or not sub_task.department_task or sub_task.department_task.status == "archived":
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Sub task not found")
-    if not can_access_sub_task(db, current_user, sub_task):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to this sub task")
+    if not can_update_sub_task_weekly(current_user, sub_task):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No update access to this sub task")
     if sub_task.status == "pending_update":
         raise HTTPException(status.HTTP_409_CONFLICT, detail="Sub task must be started before weekly update")
     if sub_task.status == "completed":
@@ -1452,6 +1517,29 @@ def mock_reminders(
     _: User = Depends(require_permission("notification.nudge")),
 ) -> dict:
     return {"created": create_mock_notifications(db, payload.week_key)}
+
+
+@router.get("/lark/diagnostics")
+async def lark_diagnostics(_: User = Depends(require_permission("notification.nudge"))) -> dict:
+    return await lark_client.health_check()
+
+
+@router.post("/notifications/lark-weekly-reminders")
+async def lark_weekly_reminders(
+    payload: MockNotificationRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("notification.nudge")),
+) -> dict:
+    return await send_weekly_update_reminders(db, payload.week_key)
+
+
+@router.post("/notifications/lark-test-message")
+async def lark_test_message(
+    payload: LarkTestMessageRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("notification.nudge")),
+) -> dict:
+    return await send_lark_test_message(db, payload.target_user_id)
 
 
 @router.get("/attachments")

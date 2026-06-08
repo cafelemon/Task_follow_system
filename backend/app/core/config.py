@@ -23,6 +23,16 @@ class Settings:
         self.admin_name = os.getenv("TASK_FOLLOW_ADMIN_NAME", "贾飞")
         self.admin_password = os.getenv("TASK_FOLLOW_ADMIN_PASSWORD")
         self.admin_password_hash = os.getenv("TASK_FOLLOW_ADMIN_PASSWORD_HASH")
+        self.lark_enabled = os.getenv("TASK_FOLLOW_LARK_ENABLED", "false").lower() == "true"
+        self.lark_app_id = os.getenv("TASK_FOLLOW_LARK_APP_ID")
+        self.lark_app_secret = os.getenv("TASK_FOLLOW_LARK_APP_SECRET")
+        self.lark_api_base_url = os.getenv("TASK_FOLLOW_LARK_API_BASE_URL", "https://open.feishu.cn")
+        self.lark_message_receive_id_type = os.getenv("TASK_FOLLOW_LARK_MESSAGE_RECEIVE_ID_TYPE", "open_id")
+        self.lark_token_refresh_margin_seconds = int(os.getenv("TASK_FOLLOW_LARK_TOKEN_REFRESH_MARGIN_SECONDS", "300"))
+        self.lark_request_timeout_seconds = float(os.getenv("TASK_FOLLOW_LARK_REQUEST_TIMEOUT_SECONDS", "12"))
+        self.lark_message_max_chars = int(os.getenv("TASK_FOLLOW_LARK_MESSAGE_MAX_CHARS", "1800"))
+        self.lark_link_secret = os.getenv("TASK_FOLLOW_LINK_SECRET")
+        self.lark_link_ttl_seconds = int(os.getenv("TASK_FOLLOW_LARK_LINK_TTL_SECONDS", str(7 * 24 * 60 * 60)))
 
 
 settings = Settings()

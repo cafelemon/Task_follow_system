@@ -788,12 +788,31 @@ function DepartmentTasks() {
 
 function SubTasks() {
   const { data } = useApi<AnyRecord[]>('/sub-tasks', []);
+  const tasks = data || [];
+  const executionTasks = tasks.filter((task) => task.viewer_relation === 'executor' || task.viewer_relation === 'both');
+  const ownerTasks = tasks.filter((task) => task.viewer_relation === 'owner');
+  const managementTasks = tasks.filter((task) => task.viewer_relation === 'management');
+  const relationLabels: Record<string, { label: string; color: string }> = {
+    executor: { label: '我执行', color: 'blue' },
+    owner: { label: '我负责', color: 'gold' },
+    both: { label: '负责+执行', color: 'purple' },
+    management: { label: '管理查看', color: 'default' }
+  };
   const columns: ColumnsType<AnyRecord> = [
     { title: '编号', dataIndex: 'code', width: 150 },
     { title: '子任务', dataIndex: 'title' },
     { title: '部门级任务', dataIndex: 'department_task' },
     { title: '执行人', dataIndex: 'executor', width: 110 },
     { title: '负责人', dataIndex: 'owner', width: 110 },
+    {
+      title: '我的身份',
+      dataIndex: 'viewer_relation',
+      width: 120,
+      render: (value) => {
+        const meta = relationLabels[String(value)] || { label: '-', color: 'default' };
+        return <Tag color={meta.color}>{meta.label}</Tag>;
+      }
+    },
     { title: '状态', dataIndex: 'status', width: 120, render: (value) => <StatusTag value={value} /> },
     { title: '本周状态', dataIndex: 'weekly_status', width: 120, render: (value) => <StatusTag value={value} /> },
     { title: '风险', dataIndex: 'risk_level', width: 110, render: (value) => <StatusTag value={value} /> },
@@ -801,14 +820,38 @@ function SubTasks() {
     {
       title: '操作',
       width: 100,
-      render: (_, row) => <Link to={`/sub-tasks/${row.id}/update`}>更新</Link>
+      render: (_, row) => (
+        row.can_update_weekly
+          ? <Link to={`/sub-tasks/${row.id}/update`}>更新</Link>
+          : <Typography.Text type="secondary">只读</Typography.Text>
+      )
     }
   ];
+  const renderGroup = (title: string, items: AnyRecord[], description: string) => (
+    items.length ? (
+      <Table
+        key={title}
+        rowKey="id"
+        dataSource={items}
+        columns={columns}
+        title={() => (
+          <Space>
+            <Typography.Text strong>{title}</Typography.Text>
+            <Tag>{items.length}</Tag>
+            <Typography.Text type="secondary">{description}</Typography.Text>
+          </Space>
+        )}
+      />
+    ) : null
+  );
   return (
-    <PageShell title="子任务执行" subtitle="查看子任务并填写本周更新">
-      <Card>
-        <Table rowKey="id" dataSource={data || []} columns={columns} />
-      </Card>
+    <PageShell title="子任务执行" subtitle="个人更新入口：执行人填写周更新，负责人查看跟进，管理查看只读区分">
+      <Space direction="vertical" size={16} style={{ width: '100%' }}>
+        {renderGroup('我执行', executionTasks, '可开启、完成并填写周更新')}
+        {renderGroup('我负责', ownerTasks, '仅查看负责的子任务，不代执行人填写')}
+        {renderGroup('管理查看', managementTasks, '全局查看人员的只读入口；管理员可兜底更新')}
+        {!tasks.length && <Alert type="info" showIcon message="当前没有与你相关的子任务。" />}
+      </Space>
     </PageShell>
   );
 }
@@ -825,7 +868,8 @@ function SubTaskUpdate() {
   const [updateStatus, setUpdateStatus] = useState('empty');
   const isCompleted = subTask?.status === 'completed';
   const isStarted = Boolean(subTask && subTask.status !== 'pending_update');
-  const canEditUpdate = isStarted && !isCompleted;
+  const canUpdateWeekly = Boolean(subTask?.can_update_weekly);
+  const canEditUpdate = canUpdateWeekly && isStarted && !isCompleted;
   const shouldWarn = canEditUpdate && updateStatus !== 'submitted';
 
   useEffect(() => {
@@ -956,8 +1000,9 @@ function SubTaskUpdate() {
           <Descriptions.Item label="本周状态"><StatusTag value={subTask?.weekly_status} /></Descriptions.Item>
         </Descriptions>
         <Space className="mt16">
-          {!isStarted && <Button type="primary" onClick={startTask}>开启任务</Button>}
+          {canUpdateWeekly && !isStarted && <Button type="primary" onClick={startTask}>开启任务</Button>}
           {canEditUpdate && <Button danger onClick={completeTask}>标记已完成</Button>}
+          {!canUpdateWeekly && <Tag>只读查看</Tag>}
           {isCompleted && <Tag color="green">该子任务已完成</Tag>}
         </Space>
       </Card>
@@ -1254,23 +1299,113 @@ function TimelinePage() {
 
 function Notifications() {
   const { data, reload } = useApi<AnyRecord[]>('/notifications', []);
+  const { data: users } = useApi<AnyRecord[]>('/user-options', []);
+  const [loading, setLoading] = useState(false);
+  const [testTargetUserId, setTestTargetUserId] = useState<number | null>(null);
+  const userOptions = (users || []).map((item) => ({
+    value: item.id,
+    label: `${item.name}${item.department ? ` / ${item.department}` : ''}`
+  }));
   const createMock = async () => {
-    await postJson('/notifications/mock-reminders', { week_key: currentIsoWeekKey() });
-    message.success('已生成模拟提醒记录');
-    reload();
+    setLoading(true);
+    try {
+      await postJson('/notifications/mock-reminders', { week_key: currentIsoWeekKey() });
+      message.success('已生成模拟提醒记录');
+      reload();
+    } finally {
+      setLoading(false);
+    }
+  };
+  const sendLark = async () => {
+    setLoading(true);
+    try {
+      const result = await postJson('/notifications/lark-weekly-reminders', { week_key: currentIsoWeekKey() });
+      message.success(`已生成 ${result.created || 0} 条飞书提醒，成功 ${result.sent || 0} 条`);
+      reload();
+    } finally {
+      setLoading(false);
+    }
+  };
+  const checkLark = async () => {
+    setLoading(true);
+    try {
+      const result = await getJson('/lark/diagnostics');
+      if (result.ok) {
+        message.success(result.message || '飞书配置可用');
+      } else {
+        message.warning(result.message || '飞书配置不可用');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+  const sendTest = async () => {
+    if (!testTargetUserId) {
+      message.warning('请选择测试接收人');
+      return;
+    }
+    setLoading(true);
+    try {
+      const result = await postJson('/notifications/lark-test-message', {
+        target_user_id: testTargetUserId
+      });
+      if (result.ok) {
+        message.success('飞书测试卡片已发送');
+      } else {
+        message.warning(result.message || '飞书测试卡片未发送成功');
+      }
+      reload();
+    } finally {
+      setLoading(false);
+    }
+  };
+  const statusColor = (value: string) => {
+    if (value === 'sent' || value === 'mock_sent') return 'green';
+    if (value === 'pending') return 'blue';
+    if (value === 'blocked') return 'orange';
+    return 'red';
   };
   return (
-    <PageShell title="通知记录" subtitle="追踪飞书机器人触达效果与用户响应情况" extra={<Button onClick={createMock}>生成模拟提醒</Button>}>
+    <PageShell
+      title="通知记录"
+      subtitle="追踪飞书机器人触达效果与用户响应情况"
+      extra={
+        <Space wrap>
+          <Button onClick={checkLark} loading={loading}>飞书诊断</Button>
+          <Select
+            allowClear
+            showSearch
+            placeholder="测试接收人"
+            optionFilterProp="label"
+            options={userOptions}
+            value={testTargetUserId}
+            onChange={(value) => setTestTargetUserId(value || null)}
+            style={{ width: 220 }}
+          />
+          <Button onClick={sendTest} loading={loading}>发送测试卡片</Button>
+          <Button onClick={createMock} loading={loading}>生成模拟提醒</Button>
+          <Button type="primary" onClick={sendLark} loading={loading}>发送飞书提醒</Button>
+        </Space>
+      }
+    >
       <Card>
         <Table
           rowKey="id"
           dataSource={data || []}
           columns={[
-            { title: '通知时间', dataIndex: 'created_at', render: (value) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-' },
+            {
+              title: '通知时间',
+              dataIndex: 'created_at',
+              render: (value) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-'
+            },
             { title: '通知对象', dataIndex: 'target_user' },
             { title: '通知类型', dataIndex: 'notification_type' },
             { title: '关联对象', render: (_, row) => `${row.related_type || '-'} ${row.related_id || ''}` },
-            { title: '发送状态', dataIndex: 'send_status', render: (value) => <Tag color={value === 'mock_sent' ? 'green' : 'red'}>{value}</Tag> },
+            {
+              title: '发送状态',
+              dataIndex: 'send_status',
+              render: (value) => <Tag color={statusColor(value)}>{value}</Tag>
+            },
             { title: '是否点击', dataIndex: 'clicked', render: (value) => value ? '已点击' : '未点击' },
             { title: '处理结果', dataIndex: 'result' }
           ]}
@@ -1302,6 +1437,7 @@ function People() {
       department_id: person.department_id,
       title: person.title,
       status: person.status,
+      open_id: person.open_id,
       role_ids: (person.roles || []).map((role: AnyRecord) => role.id)
     });
   };
@@ -1345,6 +1481,9 @@ function People() {
               </Form.Item>
             </Col>
           </Row>
+          <Form.Item name="open_id" label="飞书 open_id">
+            <Input placeholder="手动录入飞书 open_id，用于 2.0.1/2.0.2 测试提醒" />
+          </Form.Item>
           <Form.Item name="role_ids" label="角色">
             <Select mode="multiple" allowClear options={roleOptions} />
           </Form.Item>
@@ -1391,6 +1530,9 @@ function People() {
           </Form.Item>
           <Form.Item name="title" label="岗位">
             <Input />
+          </Form.Item>
+          <Form.Item name="open_id" label="飞书 open_id">
+            <Input placeholder="清空后保存即可解绑 open_id" />
           </Form.Item>
           <Form.Item name="role_ids" label="角色">
             <Select mode="multiple" allowClear options={roleOptions} />

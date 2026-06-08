@@ -76,6 +76,10 @@ class MockNotificationRequest(BaseModel):
     week_key: str
 
 
+class LarkTestMessageRequest(BaseModel):
+    target_user_id: int
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -92,6 +96,7 @@ class PersonCreate(BaseModel):
     role_ids: list[int] = []
     title: str | None = None
     status: str = "active"
+    open_id: str | None = None
 
 
 class PersonUpdate(BaseModel):
@@ -100,3 +105,4 @@ class PersonUpdate(BaseModel):
     role_ids: list[int] | None = None
     title: str | None = None
     status: str | None = None
+    open_id: str | None = None

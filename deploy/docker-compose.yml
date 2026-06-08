@@ -18,10 +18,11 @@ services:
   backend:
     build:
       context: ../backend
+    env_file:
+      - ../.env
     environment:
       TASK_FOLLOW_DATABASE_URL: postgresql+psycopg://task_user:task_password@postgres:5432/task_follow
       TASK_FOLLOW_ATTACHMENT_ROOT: /data/attachments
-      TASK_FOLLOW_WEB_BASE_URL: http://localhost:8080
       TASK_FOLLOW_SEED_DEMO_DATA: "true"
       TASK_FOLLOW_ADMIN_USERNAME: ${TASK_FOLLOW_ADMIN_USERNAME:-jiafei0108}
       TASK_FOLLOW_ADMIN_NAME: ${TASK_FOLLOW_ADMIN_NAME:-贾飞}

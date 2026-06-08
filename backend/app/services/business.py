@@ -17,6 +17,8 @@ from app.models.entities import (
     WeeklyUpdate,
     WeeklyUpdateRevision,
 )
+from app.services.auth import create_lark_login_url
+from app.services.lark_client import lark_client
 
 
 def current_week_key(today: date | None = None) -> str:
@@ -274,7 +276,7 @@ def upsert_weekly_update(
     return update
 
 
-def build_meeting_board(db: Session, week_key: str) -> dict:
+def missing_update_sub_tasks(db: Session, week_key: str) -> list[SubTask]:
     submitted_ids = {
         row[0]
         for row in db.execute(
@@ -284,12 +286,17 @@ def build_meeting_board(db: Session, week_key: str) -> dict:
         ).all()
     }
     sub_tasks = list(db.scalars(select(SubTask)).all())
+    return [task for task in sub_tasks if task.id not in submitted_ids and task.status != "completed"]
+
+
+def build_meeting_board(db: Session, week_key: str) -> dict:
+    sub_tasks = list(db.scalars(select(SubTask)).all())
     risks = list(db.scalars(select(RiskRecord).where(RiskRecord.status == "open")).all())
     coordination = list(
         db.scalars(select(CoordinationItem).where(CoordinationItem.status == "open")).all()
     )
     completed = [task for task in sub_tasks if task.status == "completed"]
-    missing = [task for task in sub_tasks if task.id not in submitted_ids and task.status != "completed"]
+    missing = missing_update_sub_tasks(db, week_key)
 
     return {
         "week_key": week_key,
@@ -331,12 +338,8 @@ def build_meeting_board(db: Session, week_key: str) -> dict:
 
 
 def create_mock_notifications(db: Session, week_key: str) -> int:
-    board = build_meeting_board(db, week_key)
     created = 0
-    for item in board["missing_updates"]:
-        task = db.scalar(select(SubTask).where(SubTask.title == item["title"]))
-        if not task:
-            continue
+    for task in missing_update_sub_tasks(db, week_key):
         db.add(
             NotificationRecord(
                 target_user_id=task.executor_id,
@@ -351,3 +354,188 @@ def create_mock_notifications(db: Session, week_key: str) -> int:
         created += 1
     db.commit()
     return created
+
+
+def build_weekly_update_lark_card(task: SubTask, week_key: str, web_url: str) -> dict:
+    department_task = task.department_task
+    parent_task = department_task.parent_task if department_task else None
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "orange",
+            "title": {"tag": "plain_text", "content": f"{week_key} 周更新提醒"},
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": f"你有一个子任务尚未提交本周更新：\n**{task.title}**",
+                },
+            },
+            {
+                "tag": "div",
+                "fields": [
+                    {
+                        "is_short": True,
+                        "text": {
+                            "tag": "lark_md",
+                            "content": f"**母任务：**\n{parent_task.title if parent_task else '-'}",
+                        },
+                    },
+                    {
+                        "is_short": True,
+                        "text": {
+                            "tag": "lark_md",
+                            "content": f"**部门任务：**\n{department_task.title if department_task else '-'}",
+                        },
+                    },
+                ],
+            },
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "填写周更新"},
+                        "url": web_url,
+                        "type": "primary",
+                    }
+                ],
+            },
+        ],
+    }
+
+
+def build_lark_test_card(web_url: str) -> dict:
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "blue",
+            "title": {"tag": "plain_text", "content": "2.0.2 飞书测试卡片"},
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": "这是一条公司任务跟踪系统的本地联调消息。",
+                },
+            },
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "打开任务系统"},
+                        "url": web_url,
+                        "type": "primary",
+                    }
+                ],
+            },
+        ],
+    }
+
+
+def lark_entry_url(user: User, next_path: str) -> str:
+    fallback = f"{settings.web_base_url}{next_path}"
+    if not user.open_id:
+        return fallback
+    try:
+        return create_lark_login_url(user, next_path)
+    except RuntimeError:
+        return fallback
+
+
+async def send_lark_test_message(db: Session, target_user_id: int) -> dict:
+    target = db.get(User, target_user_id)
+    if not target:
+        return {"ok": False, "send_status": "blocked", "message": "目标用户不存在"}
+
+    web_url = lark_entry_url(target, "/meeting-board/overview")
+    record = NotificationRecord(
+        target_user_id=target.id,
+        notification_type="lark_test_message",
+        related_type="user",
+        related_id=target.id,
+        title="2.0.2 飞书测试卡片",
+        web_url=web_url,
+        send_status="pending",
+    )
+    db.add(record)
+    db.flush()
+
+    if not target.open_id:
+        record.send_status = "blocked"
+        record.result = "目标用户未绑定飞书 open_id"
+    else:
+        result = await lark_client.send_interactive_card(
+            target.open_id,
+            build_lark_test_card(web_url),
+        )
+        record.send_status = result.status
+        record.result = result.message[:200]
+
+    db.commit()
+    db.refresh(record)
+    return {
+        "ok": record.send_status == "sent",
+        "record_id": record.id,
+        "target_user": target.name,
+        "send_status": record.send_status,
+        "message": record.result,
+    }
+
+
+async def send_weekly_update_reminders(db: Session, week_key: str) -> dict:
+    created = 0
+    sent = 0
+    failed = 0
+    blocked = 0
+    results = []
+    for task in missing_update_sub_tasks(db, week_key):
+        next_path = f"/weekly-updates?subTaskId={task.id}"
+        target = task.executor
+        web_url = lark_entry_url(target, next_path) if target else f"{settings.web_base_url}{next_path}"
+        record = NotificationRecord(
+            target_user_id=task.executor_id,
+            notification_type="weekly_update_reminder",
+            related_type="sub_task",
+            related_id=task.id,
+            title=f"{week_key} 周更新提醒",
+            web_url=web_url,
+            send_status="pending",
+        )
+        db.add(record)
+        db.flush()
+        created += 1
+
+        if not target or not target.open_id:
+            record.send_status = "blocked"
+            record.result = "目标用户未绑定飞书 open_id"
+            blocked += 1
+        else:
+            card = build_weekly_update_lark_card(task, week_key, web_url)
+            result = await lark_client.send_interactive_card(target.open_id, card)
+            record.send_status = result.status
+            record.result = result.message[:200]
+            sent += 1 if result.ok else 0
+            failed += 1 if result.status == "failed" else 0
+            blocked += 1 if result.status == "blocked" else 0
+        results.append(
+            {
+                "record_id": record.id,
+                "target_user": target.name if target else None,
+                "sub_task_id": task.id,
+                "send_status": record.send_status,
+                "result": record.result,
+            }
+        )
+    db.commit()
+    return {
+        "created": created,
+        "sent": sent,
+        "failed": failed,
+        "blocked": blocked,
+        "results": results,
+    }
