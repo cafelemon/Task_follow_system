@@ -15,7 +15,8 @@ class ParentTaskCreate(BaseModel):
     description: str | None = None
     goal_id: int
     department_id: int
-    owner_id: int
+    owner_id: int | None = None
+    owner_ids: list[int] | None = None
     priority: str = "normal"
     due_date: date | None = None
 
@@ -26,6 +27,7 @@ class ParentTaskUpdate(BaseModel):
     goal_id: int | None = None
     department_id: int | None = None
     owner_id: int | None = None
+    owner_ids: list[int] | None = None
     priority: str | None = None
     due_date: date | None = None
 
@@ -35,7 +37,8 @@ class DepartmentTaskCreate(BaseModel):
     parent_task_id: int
     department_id: int
     department_ids: list[int] | None = None
-    owner_id: int
+    owner_id: int | None = None
+    owner_ids: list[int] | None = None
     due_date: date | None = None
 
 
@@ -44,6 +47,7 @@ class DepartmentTaskUpdate(BaseModel):
     department_id: int | None = None
     department_ids: list[int] | None = None
     owner_id: int | None = None
+    owner_ids: list[int] | None = None
     due_date: date | None = None
 
 
@@ -51,12 +55,15 @@ class SubTaskCreate(BaseModel):
     title: str
     department_task_id: int
     owner_id: int | None = None
-    executor_id: int
+    owner_ids: list[int] | None = None
+    executor_id: int | None = None
+    executor_ids: list[int] | None = None
     due_date: date | None = None
 
 
 class WeeklyUpdateUpsert(BaseModel):
     sub_task_id: int
+    assignee_id: int | None = None
     week_key: str
     progress: int | None = Field(default=None, ge=0, le=100)
     this_week: str | None = None
@@ -97,6 +104,7 @@ class PersonCreate(BaseModel):
     title: str | None = None
     status: str = "active"
     open_id: str | None = None
+    email: str | None = None
 
 
 class PersonUpdate(BaseModel):
@@ -106,3 +114,4 @@ class PersonUpdate(BaseModel):
     title: str | None = None
     status: str | None = None
     open_id: str | None = None
+    email: str | None = None

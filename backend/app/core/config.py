@@ -33,6 +33,12 @@ class Settings:
         self.lark_message_max_chars = int(os.getenv("TASK_FOLLOW_LARK_MESSAGE_MAX_CHARS", "1800"))
         self.lark_link_secret = os.getenv("TASK_FOLLOW_LINK_SECRET")
         self.lark_link_ttl_seconds = int(os.getenv("TASK_FOLLOW_LARK_LINK_TTL_SECONDS", str(7 * 24 * 60 * 60)))
+        self.lark_oauth_redirect_uri = os.getenv(
+            "TASK_FOLLOW_LARK_OAUTH_REDIRECT_URI",
+            f"{self.web_base_url.rstrip('/')}/api/auth/lark-oauth/callback",
+        )
+        self.lark_oauth_state_secret = os.getenv("TASK_FOLLOW_LARK_OAUTH_STATE_SECRET")
+        self.lark_oauth_state_ttl_seconds = int(os.getenv("TASK_FOLLOW_LARK_OAUTH_STATE_TTL_SECONDS", "600"))
 
 
 settings = Settings()

@@ -5,7 +5,7 @@ import hmac
 import json
 import secrets
 import time
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from fastapi import Cookie, Depends, HTTPException, status
 from sqlalchemy import select
@@ -65,6 +65,13 @@ def _lark_link_secret() -> bytes:
     return secret.encode("utf-8")
 
 
+def _lark_oauth_state_secret() -> bytes:
+    secret = settings.lark_oauth_state_secret or settings.lark_link_secret or settings.lark_app_secret
+    if not secret:
+        raise RuntimeError("Missing TASK_FOLLOW_LARK_OAUTH_STATE_SECRET")
+    return secret.encode("utf-8")
+
+
 def normalize_next_path(next_path: str | None) -> str:
     if not next_path or not next_path.startswith("/") or next_path.startswith("//"):
         return "/meeting-board/overview"
@@ -92,6 +99,47 @@ def create_lark_login_token(user: User, next_path: str | None) -> str:
 def create_lark_login_url(user: User, next_path: str | None) -> str:
     token = create_lark_login_token(user, next_path)
     return f"{settings.web_base_url.rstrip('/')}/api/auth/lark-link?token={quote(token)}"
+
+
+def create_lark_oauth_state(next_path: str | None) -> str:
+    payload = {
+        "next_path": normalize_next_path(next_path),
+        "exp": int(time.time()) + settings.lark_oauth_state_ttl_seconds,
+        "nonce": secrets.token_urlsafe(12),
+    }
+    payload_text = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    payload_part = _b64url_encode(payload_text)
+    signature = hmac.new(_lark_oauth_state_secret(), payload_part.encode("ascii"), hashlib.sha256).digest()
+    return f"{payload_part}.{_b64url_encode(signature)}"
+
+
+def verify_lark_oauth_state(state: str) -> str:
+    try:
+        payload_part, signature_part = state.split(".", 1)
+        expected = hmac.new(_lark_oauth_state_secret(), payload_part.encode("ascii"), hashlib.sha256).digest()
+        actual = _b64url_decode(signature_part)
+        if not hmac.compare_digest(actual, expected):
+            raise ValueError("bad signature")
+        payload = json.loads(_b64url_decode(payload_part).decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="飞书免登 state 无效") from exc
+
+    if int(payload.get("exp") or 0) < int(time.time()):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="飞书免登 state 已过期")
+    return normalize_next_path(payload.get("next_path"))
+
+
+def create_lark_oauth_authorize_url(next_path: str | None) -> str:
+    if not settings.lark_app_id:
+        raise RuntimeError("Missing TASK_FOLLOW_LARK_APP_ID")
+    query = urlencode(
+        {
+            "app_id": settings.lark_app_id,
+            "redirect_uri": settings.lark_oauth_redirect_uri,
+            "state": create_lark_oauth_state(next_path),
+        }
+    )
+    return f"{settings.lark_api_base_url}/open-apis/authen/v1/authorize?{query}"
 
 
 def verify_lark_login_token(db: Session, token: str) -> tuple[User, str]:

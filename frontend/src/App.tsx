@@ -19,6 +19,7 @@ import {
   Table,
   Tag,
   Typography,
+  Upload,
   message
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
@@ -35,6 +36,7 @@ import {
   SafetyOutlined,
   ScheduleOutlined,
   TeamOutlined,
+  UploadOutlined,
   UserOutlined
 } from '@ant-design/icons';
 import { useEffect, useRef, useState } from 'react';
@@ -109,6 +111,37 @@ function ChartCard({ title, option, height = 300 }: { title: string; option: any
   );
 }
 
+function personOptions(people?: AnyRecord[] | null) {
+  return (people || []).map((item) => ({
+    value: item.id,
+    label: item.department ? `${item.name}（${item.department}）` : item.name
+  }));
+}
+
+function PeopleSelect({ options }: { options: { value: number; label: string }[] }) {
+  return (
+    <Select
+      mode="multiple"
+      allowClear
+      showSearch
+      optionFilterProp="label"
+      filterOption={(input, option) => String(option?.label || '').toLowerCase().includes(input.toLowerCase())}
+      options={options}
+    />
+  );
+}
+
+function renderPeople(value?: AnyRecord[] | string | null) {
+  if (Array.isArray(value)) {
+    return (
+      <Space wrap>
+        {value.length ? value.map((item) => <Tag key={item.id}>{item.name}</Tag>) : <Typography.Text type="secondary">-</Typography.Text>}
+      </Space>
+    );
+  }
+  return value || '-';
+}
+
 const baseMenuItems = [
   { key: '/meeting-board', icon: <ScheduleOutlined />, label: <Link to="/meeting-board/overview">会议看板</Link> },
   { key: '/goals', icon: <NodeIndexOutlined />, label: <Link to="/goals">战略目标</Link> },
@@ -127,7 +160,9 @@ const adminMenuItems = [
 
 function Login() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [loading, setLoading] = useState(false);
+  const larkError = new URLSearchParams(location.search).get('lark_error');
   const submit = async (values: AnyRecord) => {
     setLoading(true);
     try {
@@ -140,14 +175,18 @@ function Login() {
       setLoading(false);
     }
   };
+  const larkLogin = () => {
+    window.location.href = `/api/auth/lark-oauth/start?next_path=${encodeURIComponent('/meeting-board/overview')}`;
+  };
   return (
     <div className="login-page">
       <Card className="login-panel">
         <Space direction="vertical" size={18} className="full-width">
           <div>
             <Typography.Title level={3}>任务跟踪系统</Typography.Title>
-            <Typography.Text type="secondary">系统管理员登录</Typography.Text>
+            <Typography.Text type="secondary">系统管理员登录或飞书免登</Typography.Text>
           </div>
+          {larkError && <Alert type="warning" showIcon message={larkError} />}
           <Form layout="vertical" onFinish={submit} autoComplete="off">
             <Form.Item name="username" label="账号" rules={[{ required: true, message: '请输入账号' }]}>
               <Input prefix={<UserOutlined />} autoFocus />
@@ -159,6 +198,7 @@ function Login() {
               登录
             </Button>
           </Form>
+          <Button block onClick={larkLogin}>飞书免登</Button>
         </Space>
       </Card>
     </div>
@@ -319,7 +359,7 @@ function ParentTasks() {
   const canManageParentTasks = Boolean(auth?.features?.can_manage_parent_tasks);
   const goalOptions = (goals || []).map((item) => ({ value: item.id, label: `${item.code} ${item.name}` }));
   const departmentOptions = (departments || []).map((item) => ({ value: item.id, label: item.name }));
-  const peopleOptions = (people || []).map((item) => ({ value: item.id, label: item.name }));
+  const peopleOptions = personOptions(people);
 
   const normalizeParentTaskValues = (values: AnyRecord) => ({
     ...values,
@@ -340,7 +380,7 @@ function ParentTasks() {
       description: task.description,
       goal_id: task.goal_id,
       department_id: task.department_id,
-      owner_id: task.owner_id,
+      owner_ids: task.owner_ids?.length ? task.owner_ids : (task.owner_id ? [task.owner_id] : []),
       due_date: task.due_date ? dayjs(task.due_date) : null
     });
   };
@@ -455,8 +495,8 @@ function ParentTaskForm({ form, goalOptions, departmentOptions, peopleOptions }:
       </Row>
       <Row gutter={16}>
         <Col xs={24} md={12}>
-          <Form.Item name="owner_id" label="母任务负责人" rules={[{ required: true, message: '请选择负责人' }]}>
-            <Select showSearch optionFilterProp="label" options={peopleOptions} />
+          <Form.Item name="owner_ids" label="母任务负责人" rules={[{ required: true, message: '请选择负责人' }]}>
+            <PeopleSelect options={peopleOptions} />
           </Form.Item>
         </Col>
         <Col xs={24} md={12}>
@@ -495,8 +535,8 @@ function DepartmentTaskForm({ form, parentTask, departmentOptions, peopleOptions
           </Form.Item>
         </Col>
         <Col xs={24} md={12}>
-          <Form.Item name="owner_id" label="负责人" rules={[{ required: true, message: '请选择负责人' }]}>
-            <Select showSearch optionFilterProp="label" options={peopleOptions} />
+          <Form.Item name="owner_ids" label="负责人" rules={[{ required: true, message: '请选择负责人' }]}>
+            <PeopleSelect options={peopleOptions} />
           </Form.Item>
         </Col>
       </Row>
@@ -528,10 +568,17 @@ function SplitSubTaskForm({ form, task, peopleOptions }: {
       </Form.Item>
       <Row gutter={16}>
         <Col xs={24} md={12}>
-          <Form.Item name="executor_id" label="执行人" rules={[{ required: true, message: '请选择执行人' }]}>
-            <Select showSearch optionFilterProp="label" options={peopleOptions} />
+          <Form.Item name="owner_ids" label="负责人" rules={[{ required: true, message: '请选择负责人' }]}>
+            <PeopleSelect options={peopleOptions} />
           </Form.Item>
         </Col>
+        <Col xs={24} md={12}>
+          <Form.Item name="executor_ids" label="执行人" rules={[{ required: true, message: '请选择执行人' }]}>
+            <PeopleSelect options={peopleOptions} />
+          </Form.Item>
+        </Col>
+      </Row>
+      <Row gutter={16}>
         <Col xs={24} md={12}>
           <Form.Item name="due_date" label="截止日期">
             <DatePicker className="full-width" />
@@ -556,7 +603,7 @@ function ParentTaskDetail() {
   const [editForm] = Form.useForm();
   const [deleteForm] = Form.useForm();
   const departmentOptions = (departments || []).map((item) => ({ value: item.id, label: item.name }));
-  const peopleOptions = (people || []).map((item) => ({ value: item.id, label: item.name }));
+  const peopleOptions = personOptions(people);
   const canManageDepartmentTasks = Boolean(task?.can_edit);
   const normalizeDepartmentTaskValues = (values: AnyRecord) => {
     const departmentIds = values.department_ids || [];
@@ -583,7 +630,7 @@ function ParentTaskDetail() {
     editForm.setFieldsValue({
       title: row.title,
       department_ids: row.department_ids?.length ? row.department_ids : (row.department_id ? [row.department_id] : []),
-      owner_id: row.owner_id,
+      owner_ids: row.owner_ids?.length ? row.owner_ids : (row.owner_id ? [row.owner_id] : []),
       due_date: row.due_date ? dayjs(row.due_date) : null
     });
   };
@@ -607,7 +654,7 @@ function ParentTaskDetail() {
     { title: '任务编号', dataIndex: 'code', width: 130 },
     { title: '部门级任务', dataIndex: 'title' },
     { title: '负责部门', dataIndex: 'departments', render: (value) => <Space wrap>{(value || []).map((item: AnyRecord) => <Tag key={item.id}>{item.name}</Tag>)}</Space> },
-    { title: '负责人', dataIndex: 'owner', width: 100 },
+    { title: '负责人', dataIndex: 'owners', width: 180, render: renderPeople },
     { title: '状态', dataIndex: 'status', width: 110, render: (value) => <StatusTag value={value} /> },
     {
       title: '编辑',
@@ -657,7 +704,7 @@ function ParentTaskDetail() {
                 columns={[
                   { title: '子任务编号', dataIndex: 'code', width: 150 },
                   { title: '具体任务', dataIndex: 'title' },
-                  { title: '执行人', dataIndex: 'executor', width: 110 },
+                  { title: '执行人', dataIndex: 'executors', width: 180, render: renderPeople },
                   { title: '风险', dataIndex: 'risk_level', width: 100, render: (value) => <StatusTag value={value} /> },
                   { title: '截止日期', dataIndex: 'due_date', width: 120 }
                 ]}
@@ -693,12 +740,13 @@ function DepartmentTasks() {
   const [splitting, setSplitting] = useState<AnyRecord | null>(null);
   const [splitForm] = Form.useForm();
   const departmentTasks: AnyRecord[] = data?.department_tasks || [];
-  const peopleOptions = (people || []).map((item) => ({ value: item.id, label: item.name }));
+  const peopleOptions = personOptions(people);
   const openSplit = (row: AnyRecord) => {
     setSplitting(row);
     splitForm.setFieldsValue({
       title: undefined,
-      executor_id: undefined,
+      owner_ids: row.owner_ids?.length ? row.owner_ids : (row.owner_id ? [row.owner_id] : []),
+      executor_ids: undefined,
       due_date: row.due_date ? dayjs(row.due_date) : null
     });
   };
@@ -708,7 +756,8 @@ function DepartmentTasks() {
     await postJson('/sub-tasks', {
       department_task_id: splitting.id,
       title: values.title,
-      executor_id: values.executor_id,
+      owner_ids: values.owner_ids,
+      executor_ids: values.executor_ids,
       due_date: values.due_date ? values.due_date.format('YYYY-MM-DD') : null
     });
     message.success('子任务已拆解');
@@ -721,7 +770,7 @@ function DepartmentTasks() {
     { title: '部门任务', dataIndex: 'title' },
     { title: '所属母任务', dataIndex: 'parent_task', width: 220 },
     { title: '负责部门', dataIndex: 'departments', render: (value) => <Space wrap>{(value || []).map((item: AnyRecord) => <Tag key={item.id}>{item.name}</Tag>)}</Space> },
-    { title: '负责人', dataIndex: 'owner', width: 100 },
+    { title: '负责人', dataIndex: 'owners', width: 180, render: renderPeople },
     { title: '状态', dataIndex: 'status', width: 110, render: (value) => <StatusTag value={value} /> },
     {
       title: '拆解',
@@ -767,7 +816,7 @@ function DepartmentTasks() {
                     columns={[
                       { title: '子任务编号', dataIndex: 'code', width: 140 },
                       { title: '具体任务', dataIndex: 'title' },
-                      { title: '执行人', dataIndex: 'executor', width: 100 },
+                      { title: '执行人', dataIndex: 'executors', width: 180, render: renderPeople },
                       { title: '风险', dataIndex: 'risk_level', width: 100, render: (value) => <StatusTag value={value} /> },
                       { title: '截止日期', dataIndex: 'due_date', width: 120 }
                     ]}
@@ -802,8 +851,8 @@ function SubTasks() {
     { title: '编号', dataIndex: 'code', width: 150 },
     { title: '子任务', dataIndex: 'title' },
     { title: '部门级任务', dataIndex: 'department_task' },
-    { title: '执行人', dataIndex: 'executor', width: 110 },
-    { title: '负责人', dataIndex: 'owner', width: 110 },
+    { title: '执行人', dataIndex: 'executors', width: 180, render: renderPeople },
+    { title: '负责人', dataIndex: 'owners', width: 180, render: renderPeople },
     {
       title: '我的身份',
       dataIndex: 'viewer_relation',
@@ -822,7 +871,7 @@ function SubTasks() {
       width: 100,
       render: (_, row) => (
         row.can_update_weekly
-          ? <Link to={`/sub-tasks/${row.id}/update`}>更新</Link>
+          ? <Link to={`/sub-tasks/${row.id}/update${row.current_assignee_id ? `?assigneeId=${row.current_assignee_id}` : ''}`}>更新</Link>
           : <Typography.Text type="secondary">只读</Typography.Text>
       )
     }
@@ -858,11 +907,14 @@ function SubTasks() {
 
 function SubTaskUpdate() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { subTaskId } = useParams();
   const [form] = Form.useForm();
   const weekKey = currentIsoWeekKey();
+  const assigneeId = new URLSearchParams(location.search).get('assigneeId');
+  const assigneeQuery = assigneeId ? `&assignee_id=${assigneeId}` : '';
   const subTaskApi = useApi<AnyRecord>(`/sub-tasks/${subTaskId}`, [subTaskId]);
-  const updateApi = useApi<AnyRecord>(`/weekly-updates/current?sub_task_id=${subTaskId}&week_key=${weekKey}`, [subTaskId, weekKey]);
+  const updateApi = useApi<AnyRecord>(`/weekly-updates/current?sub_task_id=${subTaskId}&week_key=${weekKey}${assigneeQuery}`, [subTaskId, weekKey, assigneeId]);
   const subTask = subTaskApi.data;
   const update = updateApi.data;
   const [updateStatus, setUpdateStatus] = useState('empty');
@@ -888,6 +940,7 @@ function SubTaskUpdate() {
     const values = form.getFieldsValue();
     await postJson('/weekly-updates', {
       sub_task_id: Number(subTaskId),
+      assignee_id: update?.assignee_id || (assigneeId ? Number(assigneeId) : undefined),
       week_key: weekKey,
       this_week: values.this_week || null,
       next_week: values.next_week || null,
@@ -995,6 +1048,7 @@ function SubTaskUpdate() {
           <Descriptions.Item label="部门级任务">{subTask?.department_task || '-'}</Descriptions.Item>
           <Descriptions.Item label="执行人">{subTask?.executor || '-'}</Descriptions.Item>
           <Descriptions.Item label="负责人">{subTask?.owner || '-'}</Descriptions.Item>
+          <Descriptions.Item label="当前填报人">{update?.assignee || '-'}</Descriptions.Item>
           <Descriptions.Item label="状态"><StatusTag value={subTask?.status} /></Descriptions.Item>
           <Descriptions.Item label="风险"><StatusTag value={subTask?.risk_level} /></Descriptions.Item>
           <Descriptions.Item label="本周状态"><StatusTag value={subTask?.weekly_status} /></Descriptions.Item>
@@ -1141,8 +1195,8 @@ function MeetingBoardOverview() {
             { title: '编号', dataIndex: 'code', width: 150 },
             { title: '子任务', dataIndex: 'title' },
             { title: '部门级任务', dataIndex: 'department_task', width: 220 },
-            { title: '执行人', dataIndex: 'executor', width: 110 },
-            { title: '负责人', dataIndex: 'owner', width: 110 },
+            { title: '执行人', dataIndex: 'executors', width: 180, render: renderPeople },
+            { title: '负责人', dataIndex: 'owners', width: 180, render: renderPeople },
             { title: '风险', dataIndex: 'risk_level', width: 100, render: (value) => <StatusTag value={value} /> },
             { title: '截止日期', dataIndex: 'due_date', width: 120 }
           ]}
@@ -1339,6 +1393,39 @@ function Notifications() {
       setLoading(false);
     }
   };
+  const resolveOpenIds = async () => {
+    setLoading(true);
+    try {
+      const result = await postJson('/lark/resolve-open-ids', {});
+      message.success(`已解析 ${result.resolved || 0} 人，阻塞 ${result.blocked || 0} 人，失败 ${result.failed || 0} 人`);
+      reload();
+    } finally {
+      setLoading(false);
+    }
+  };
+  const importEmails = async (file: File) => {
+    setLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const response = await fetch('/api/lark/import-user-emails', {
+        method: 'POST',
+        body: formData,
+        credentials: 'include'
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const result = await response.json();
+      message.success(`已导入 ${result.imported || 0} 人邮箱，阻塞 ${result.blocked || 0} 人`);
+      reload();
+    } catch (error) {
+      message.error(`邮箱导入失败：${error instanceof Error ? error.message : '未知错误'}`);
+    } finally {
+      setLoading(false);
+    }
+    return false;
+  };
   const sendTest = async () => {
     if (!testTargetUserId) {
       message.warning('请选择测试接收人');
@@ -1372,6 +1459,10 @@ function Notifications() {
       extra={
         <Space wrap>
           <Button onClick={checkLark} loading={loading}>飞书诊断</Button>
+          <Upload beforeUpload={importEmails} showUploadList={false} accept=".csv,.xlsx">
+            <Button icon={<UploadOutlined />} loading={loading}>导入邮箱表</Button>
+          </Upload>
+          <Button onClick={resolveOpenIds} loading={loading}>邮箱解析 open_id</Button>
           <Select
             allowClear
             showSearch
@@ -1438,6 +1529,7 @@ function People() {
       title: person.title,
       status: person.status,
       open_id: person.open_id,
+      email: person.email,
       role_ids: (person.roles || []).map((role: AnyRecord) => role.id)
     });
   };
@@ -1482,7 +1574,10 @@ function People() {
             </Col>
           </Row>
           <Form.Item name="open_id" label="飞书 open_id">
-            <Input placeholder="手动录入飞书 open_id，用于 2.0.1/2.0.2 测试提醒" />
+            <Input placeholder="手动录入飞书 open_id，或通过邮箱解析自动绑定" />
+          </Form.Item>
+          <Form.Item name="email" label="邮箱">
+            <Input placeholder="用于 2.0.4 批量解析飞书 open_id" />
           </Form.Item>
           <Form.Item name="role_ids" label="角色">
             <Select mode="multiple" allowClear options={roleOptions} />
@@ -1512,6 +1607,11 @@ function People() {
               render: (value) => value ? <Tag color="green">已绑定</Tag> : <Tag>未绑定</Tag>
             },
             {
+              title: '邮箱',
+              dataIndex: 'email',
+              render: (value) => value ? <Tag color="blue">{value}</Tag> : <Tag>未录入</Tag>
+            },
+            {
               title: '来源',
               dataIndex: 'source',
               render: (value) => <Tag>{value || '-'}</Tag>
@@ -1533,6 +1633,9 @@ function People() {
           </Form.Item>
           <Form.Item name="open_id" label="飞书 open_id">
             <Input placeholder="清空后保存即可解绑 open_id" />
+          </Form.Item>
+          <Form.Item name="email" label="邮箱">
+            <Input placeholder="清空后保存即可移除邮箱" />
           </Form.Item>
           <Form.Item name="role_ids" label="角色">
             <Select mode="multiple" allowClear options={roleOptions} />

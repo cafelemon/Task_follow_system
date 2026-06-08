@@ -1,10 +1,14 @@
-from collections import defaultdict
+import csv
+from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
+from io import BytesIO, StringIO
+from urllib.parse import quote
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Cookie, Depends, File, HTTPException, Response, UploadFile, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from openpyxl import load_workbook
 
 from app import __version__
 from app.db.session import get_db
@@ -44,7 +48,10 @@ from app.services.business import (
     build_meeting_board,
     create_mock_notifications,
     current_week_key,
+    executor_people,
     generate_code,
+    owner_people,
+    people_payload,
     send_lark_test_message,
     send_weekly_update_reminders,
     serialize_department_task,
@@ -73,14 +80,18 @@ from app.services.permissions import (
     refresh_role_permissions,
     require_admin,
     require_permission,
+    sub_task_executor_ids,
     sub_task_execution_relation,
+    task_owner_ids,
     user_permission_codes,
 )
 from app.services.auth import (
     SESSION_COOKIE,
     SESSION_DAYS,
+    create_lark_oauth_authorize_url,
     create_session,
     delete_session,
+    verify_lark_oauth_state,
     verify_lark_login_token,
     verify_password,
 )
@@ -108,6 +119,13 @@ def normalize_open_id(value: str | None) -> str | None:
     return normalized or None
 
 
+def normalize_email(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    return normalized or None
+
+
 def apply_open_id_binding(db: Session, user: User, open_id: str | None) -> None:
     normalized = normalize_open_id(open_id)
     if normalized:
@@ -117,6 +135,59 @@ def apply_open_id_binding(db: Session, user: User, open_id: str | None) -> None:
     if normalized != user.open_id:
         user.open_id = normalized
         user.open_id_bound_at = datetime.now(timezone.utc) if normalized else None
+
+
+def apply_email_binding(db: Session, user: User, email: str | None) -> None:
+    normalized = normalize_email(email)
+    if normalized:
+        exists = db.scalar(select(User).where(User.email == normalized, User.id != user.id))
+        if exists:
+            raise HTTPException(status.HTTP_409_CONFLICT, detail="邮箱已绑定到其他人员")
+    user.email = normalized
+
+
+def resolve_users(db: Session, user_ids: list[int] | None, fallback_id: int | None, field_name: str) -> list[User]:
+    selected_ids = list(dict.fromkeys(user_ids or ([] if fallback_id is None else [fallback_id])))
+    if not selected_ids:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"{field_name}不能为空")
+    users = list(db.scalars(select(User).where(User.id.in_(selected_ids), User.status != "disabled")).all())
+    found_ids = {user.id for user in users}
+    if found_ids != set(selected_ids):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="User not found")
+    return sorted(users, key=lambda item: selected_ids.index(item.id))
+
+
+def sync_task_owners(task: ParentTask | DepartmentTask | SubTask, users: list[User]) -> None:
+    task.owners = users
+    task.owner_id = users[0].id
+
+
+def sync_sub_task_executors(task: SubTask, users: list[User]) -> None:
+    task.executors = users
+    task.executor_id = users[0].id
+
+
+def default_update_assignee(current_user: User, sub_task: SubTask, assignee_id: int | None) -> User:
+    executors = executor_people(sub_task)
+    executor_ids = {user.id for user in executors}
+    if assignee_id is None:
+        if current_user.id in executor_ids:
+            assignee_id = current_user.id
+        elif executors:
+            assignee_id = executors[0].id
+        else:
+            assignee_id = sub_task.executor_id
+    assignee = next((user for user in executors if user.id == assignee_id), None)
+    if not assignee:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Assignee not found")
+    return assignee
+
+
+def lark_login_error_redirect(message: str) -> RedirectResponse:
+    return RedirectResponse(
+        url=f"/login?lark_error={quote(message)}",
+        status_code=status.HTTP_302_FOUND,
+    )
 
 
 def generate_sub_task_code(db: Session, department_task: DepartmentTask) -> str:
@@ -209,10 +280,13 @@ def visible_sub_tasks(db: Session, user: User) -> list[SubTask]:
 
 def serialize_sub_task_for_execution(task: SubTask, user: User, current_update: WeeklyUpdate | None = None) -> dict:
     relation = sub_task_execution_relation(user, task)
+    executor_ids = sub_task_executor_ids(task)
+    assignee_id = user.id if user.id in executor_ids else (task.executor_id if task.executor_id in executor_ids else None)
     return {
         **serialize_sub_task(task, current_update),
         "viewer_relation": relation,
-        "can_update_weekly": can_update_sub_task_weekly(user, task),
+        "can_update_weekly": can_update_sub_task_weekly(user, task, assignee_id),
+        "current_assignee_id": assignee_id,
     }
 
 
@@ -325,8 +399,8 @@ def build_meeting_overview_payload(db: Session, user: User, week_key: str) -> di
                 "id": task.id,
                 "code": task.code,
                 "title": task.title,
-                "owner": task.owner.name if task.owner else None,
-                "executor": task.executor.name if task.executor else None,
+                "owner": people_payload(owner_people(task))[2],
+                "executor": people_payload(executor_people(task))[2],
                 "status": task.status,
                 "start_date": task_start_date(task, earliest_weeks).isoformat(),
                 "due_date": task.due_date.isoformat() if task.due_date else today.isoformat(),
@@ -364,7 +438,7 @@ def build_parent_board_payload(db: Session, user: User, week_key: str) -> dict:
                 "id": parent_id,
                 "code": parent.code,
                 "title": parent.title,
-                "owner": parent.owner.name if parent.owner else None,
+                "owner": people_payload(owner_people(parent))[2],
                 "department": parent.department.name if parent.department else None,
                 "department_task_count": len(department_task_ids),
                 "sub_task_count": len(tasks),
@@ -476,8 +550,8 @@ def build_timeline_matrix_payload(db: Session, user: User) -> dict:
                 "id": task.id,
                 "code": task.code,
                 "title": task.title,
-                "executor": task.executor.name if task.executor else None,
-                "owner": task.owner.name if task.owner else None,
+                "executor": people_payload(executor_people(task))[2],
+                "owner": people_payload(owner_people(task))[2],
                 "status": task.status,
                 "started_at": task_start_date(task, earliest_weeks).isoformat(),
                 "cells": cells,
@@ -596,6 +670,69 @@ def lark_link_login(token: str, db: Session = Depends(get_db)) -> RedirectRespon
     return redirect
 
 
+@router.get("/auth/lark-oauth/start")
+def lark_oauth_start(next_path: str | None = None) -> RedirectResponse:
+    try:
+        url = create_lark_oauth_authorize_url(next_path)
+    except RuntimeError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    return RedirectResponse(url=url, status_code=status.HTTP_302_FOUND)
+
+
+@router.get("/auth/lark-oauth/callback")
+async def lark_oauth_callback(
+    code: str | None = None,
+    state: str | None = None,
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    if not code or not state:
+        return lark_login_error_redirect("飞书免登参数缺失，请联系管理员")
+    try:
+        next_path = verify_lark_oauth_state(state)
+        token_payload = await lark_client.get_user_access_token(code)
+        user_access_token = token_payload.get("access_token") or token_payload.get("user_access_token")
+        user_info = await lark_client.get_user_info(user_access_token) if user_access_token else {}
+        open_id = normalize_open_id(user_info.get("open_id") or token_payload.get("open_id"))
+        email = normalize_email(user_info.get("email") or token_payload.get("email"))
+        if not open_id:
+            return lark_login_error_redirect("飞书免登未返回 open_id，请联系管理员检查权限")
+
+        user = db.scalar(select(User).where(User.open_id == open_id))
+        if not user and email:
+            matches = list(db.scalars(select(User).where(User.email == email)).all())
+            if len(matches) == 1:
+                user = matches[0]
+                conflict = db.scalar(select(User).where(User.open_id == open_id, User.id != user.id))
+                if conflict:
+                    return lark_login_error_redirect("飞书身份已绑定到其他人员，请联系管理员")
+                user.open_id = open_id
+                user.open_id_bound_at = datetime.now(timezone.utc)
+                db.add(user)
+                db.commit()
+                db.refresh(user)
+            elif len(matches) > 1:
+                return lark_login_error_redirect("邮箱匹配到多个人员，请联系管理员处理")
+        if not user:
+            return lark_login_error_redirect("未找到对应人员档案，请联系管理员绑定")
+        if user.status == "disabled":
+            return lark_login_error_redirect("账号已停用，请联系管理员")
+        session_token = create_session(db, user)
+    except HTTPException as exc:
+        return lark_login_error_redirect(str(exc.detail))
+    except Exception as exc:
+        return lark_login_error_redirect(f"飞书免登失败：{exc}")
+
+    redirect = RedirectResponse(url=next_path, status_code=status.HTTP_302_FOUND)
+    redirect.set_cookie(
+        SESSION_COOKIE,
+        session_token,
+        max_age=SESSION_DAYS * 24 * 60 * 60,
+        httponly=True,
+        samesite="lax",
+    )
+    return redirect
+
+
 def serialize_person(user: User) -> dict:
     item = serialize_user(user) or {}
     item.update(
@@ -604,6 +741,7 @@ def serialize_person(user: User) -> dict:
             "status": user.status,
             "source": user.source,
             "is_admin": user.is_admin,
+            "email": user.email,
             "open_id_bound_at": user.open_id_bound_at.isoformat() if user.open_id_bound_at else None,
             "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
         }
@@ -645,8 +783,11 @@ def create_person(
     _: User = Depends(require_admin),
 ) -> dict:
     open_id = normalize_open_id(payload.open_id)
+    email = normalize_email(payload.email)
     if open_id and db.scalar(select(User).where(User.open_id == open_id)):
         raise HTTPException(status.HTTP_409_CONFLICT, detail="open_id 已绑定到其他人员")
+    if email and db.scalar(select(User).where(User.email == email)):
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="邮箱已绑定到其他人员")
     if db.scalar(select(User).where(User.name == payload.name, User.open_id.is_(None))):
         raise HTTPException(status.HTTP_409_CONFLICT, detail="已存在同名未绑定人员")
     user = User(
@@ -656,6 +797,7 @@ def create_person(
         status=payload.status,
         source="manual",
         open_id=open_id,
+        email=email,
         open_id_bound_at=datetime.now(timezone.utc) if open_id else None,
     )
     roles = db.scalars(select(Role).where(Role.id.in_(payload.role_ids))).all() if payload.role_ids else []
@@ -679,16 +821,96 @@ def update_person(
     data = payload.model_dump(exclude_unset=True)
     role_ids = data.pop("role_ids", None)
     open_id = data.pop("open_id", None)
+    email = data.pop("email", None)
     for key, value in data.items():
         setattr(user, key, value)
     if "open_id" in payload.model_fields_set:
         apply_open_id_binding(db, user, open_id)
+    if "email" in payload.model_fields_set:
+        apply_email_binding(db, user, email)
     if role_ids is not None:
         user.roles = list(db.scalars(select(Role).where(Role.id.in_(role_ids))).all()) if role_ids else []
     db.add(user)
     db.commit()
     db.refresh(user)
     return serialize_person(user)
+
+
+def parse_email_import(content: bytes, filename: str) -> list[dict[str, str]]:
+    lower_name = filename.lower()
+    rows: list[dict[str, str]] = []
+    if lower_name.endswith(".csv"):
+        text = content.decode("utf-8-sig")
+        reader = csv.DictReader(StringIO(text))
+        for row in reader:
+            rows.append({str(key or "").strip(): str(value or "").strip() for key, value in row.items()})
+        return rows
+    if lower_name.endswith(".xlsx"):
+        workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
+        worksheet = workbook.active
+        header = [str(value or "").strip() for value in next(worksheet.iter_rows(min_row=1, max_row=1, values_only=True))]
+        for values in worksheet.iter_rows(min_row=2, values_only=True):
+            rows.append(
+                {
+                    header[index]: str(value or "").strip()
+                    for index, value in enumerate(values)
+                    if index < len(header)
+                }
+            )
+        return rows
+    raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="仅支持 CSV 或 XLSX 邮箱导入文件")
+
+
+def pick_import_value(row: dict[str, str], names: tuple[str, ...]) -> str:
+    for name in names:
+        if row.get(name):
+            return row[name].strip()
+    return ""
+
+
+@router.post("/lark/import-user-emails")
+async def import_user_emails(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+) -> dict:
+    content = await file.read()
+    rows = parse_email_import(content, file.filename or "")
+    names = [pick_import_value(row, ("姓名", "name", "Name")) for row in rows]
+    duplicate_names = {name for name, count in Counter(name for name in names if name).items() if count > 1}
+    results = []
+    imported = 0
+    blocked = 0
+    for index, row in enumerate(rows, start=2):
+        name = pick_import_value(row, ("姓名", "name", "Name"))
+        email = normalize_email(pick_import_value(row, ("邮箱", "email", "Email", "工作邮箱")))
+        base = {"row": index, "name": name, "email": email}
+        if not name or not email:
+            blocked += 1
+            results.append({**base, "status": "blocked", "message": "姓名或邮箱为空"})
+            continue
+        if name in duplicate_names:
+            blocked += 1
+            results.append({**base, "status": "conflict", "message": "导入文件内姓名重复"})
+            continue
+        matches = list(db.scalars(select(User).where(User.name == name)).all())
+        if len(matches) != 1:
+            blocked += 1
+            message = "系统内未找到人员" if not matches else "系统内姓名重复"
+            results.append({**base, "status": "blocked" if not matches else "conflict", "message": message})
+            continue
+        user = matches[0]
+        conflict = db.scalar(select(User).where(User.email == email, User.id != user.id))
+        if conflict:
+            blocked += 1
+            results.append({**base, "status": "conflict", "message": f"邮箱已绑定到 {conflict.name}"})
+            continue
+        user.email = email
+        db.add(user)
+        imported += 1
+        results.append({**base, "user_id": user.id, "status": "imported", "message": "已写入邮箱"})
+    db.commit()
+    return {"ok": blocked == 0, "scanned": len(rows), "imported": imported, "blocked": blocked, "results": results}
 
 
 @router.get("/departments")
@@ -894,7 +1116,11 @@ def create_parent_task(
 ) -> dict:
     if not can_manage_parent_tasks(current_user):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No create access to parent tasks")
-    task = ParentTask(code=generate_code(db, ParentTask, "MT"), **payload.model_dump())
+    owners = resolve_users(db, payload.owner_ids, payload.owner_id, "母任务负责人")
+    data = payload.model_dump(exclude={"owner_ids"})
+    data["owner_id"] = owners[0].id
+    task = ParentTask(code=generate_code(db, ParentTask, "MT"), **data)
+    task.owners = owners
     db.add(task)
     db.flush()
     db.add(
@@ -925,6 +1151,10 @@ def update_parent_task(
     if not can_edit_parent_task(current_user, task):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No edit access to this parent task")
     data = payload.model_dump(exclude_unset=True)
+    owner_ids = data.pop("owner_ids", None)
+    owner_id = data.pop("owner_id", None)
+    if owner_ids is not None or owner_id is not None:
+        sync_task_owners(task, resolve_users(db, owner_ids, owner_id, "母任务负责人"))
     for key, value in data.items():
         setattr(task, key, value)
     db.add(
@@ -1072,10 +1302,13 @@ def create_department_task(
     if not can_create_department_task(current_user, parent_task):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No create access to department tasks")
     primary_department_id, departments = resolve_departments(db, payload.department_id, payload.department_ids)
-    data = payload.model_dump(exclude={"department_ids"})
+    owners = resolve_users(db, payload.owner_ids, payload.owner_id, "负责人")
+    data = payload.model_dump(exclude={"department_ids", "owner_ids"})
     data["department_id"] = primary_department_id
+    data["owner_id"] = owners[0].id
     task = DepartmentTask(code=generate_code(db, DepartmentTask, "DT"), **data)
     task.departments = departments
+    task.owners = owners
     db.add(task)
     db.flush()
     db.add(
@@ -1107,10 +1340,14 @@ def update_department_task(
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No edit access to this department task")
     data = payload.model_dump(exclude_unset=True)
     department_ids = data.pop("department_ids", None)
+    owner_ids = data.pop("owner_ids", None)
+    owner_id = data.pop("owner_id", None)
     if department_ids is not None or "department_id" in data:
         primary_department_id, departments = resolve_departments(db, data.get("department_id"), department_ids)
         data["department_id"] = primary_department_id
         task.departments = departments
+    if owner_ids is not None or owner_id is not None:
+        sync_task_owners(task, resolve_users(db, owner_ids, owner_id, "负责人"))
     for key, value in data.items():
         setattr(task, key, value)
     db.add(
@@ -1161,18 +1398,21 @@ def list_sub_tasks(
 ) -> list[dict]:
     week = current_week_key()
     updates = {
-        update.sub_task_id: update
+        (update.sub_task_id, update.assignee_id): update
         for update in db.scalars(select(WeeklyUpdate).where(WeeklyUpdate.week_key == week)).all()
     }
-    return [
-        serialize_sub_task_for_execution(task, current_user, updates.get(task.id))
-        for task in db.scalars(select(SubTask).order_by(SubTask.id)).all()
-        if can_view_sub_task_execution_entry(current_user, task)
-        and task.department_task
-        and task.department_task.status != "archived"
-        and task.department_task.parent_task
-        and task.department_task.parent_task.status != "archived"
-    ]
+    rows = []
+    for task in db.scalars(select(SubTask).order_by(SubTask.id)).all():
+        if (
+            can_view_sub_task_execution_entry(current_user, task)
+            and task.department_task
+            and task.department_task.status != "archived"
+            and task.department_task.parent_task
+            and task.department_task.parent_task.status != "archived"
+        ):
+            assignee_id = current_user.id if current_user.id in sub_task_executor_ids(task) else task.executor_id
+            rows.append(serialize_sub_task_for_execution(task, current_user, updates.get((task.id, assignee_id))))
+    return rows
 
 
 @router.get("/sub-tasks/{sub_task_id}")
@@ -1186,10 +1426,12 @@ def get_sub_task(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Sub task not found")
     if not can_access_sub_task(db, current_user, task):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to this sub task")
+    assignee_id = current_user.id if current_user.id in sub_task_executor_ids(task) else task.executor_id
     update = db.scalar(
         select(WeeklyUpdate).where(
             WeeklyUpdate.sub_task_id == task.id,
             WeeklyUpdate.week_key == current_week_key(),
+            WeeklyUpdate.assignee_id == assignee_id,
         )
     )
     return serialize_sub_task_for_execution(task, current_user, update)
@@ -1206,9 +1448,19 @@ def create_sub_task(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Department task not found")
     if not can_split_sub_task(db, current_user, department_task):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No split access to this department task")
-    data = payload.model_dump()
-    data["owner_id"] = data["owner_id"] or department_task.owner_id
+    owners = resolve_users(
+        db,
+        payload.owner_ids,
+        payload.owner_id or (owner_people(department_task)[0].id if owner_people(department_task) else department_task.owner_id),
+        "子任务负责人",
+    )
+    executors = resolve_users(db, payload.executor_ids, payload.executor_id, "执行人")
+    data = payload.model_dump(exclude={"owner_ids", "executor_ids"})
+    data["owner_id"] = owners[0].id
+    data["executor_id"] = executors[0].id
     task = SubTask(code=generate_sub_task_code(db, department_task), **data)
+    task.owners = owners
+    task.executors = executors
     db.add(task)
     if department_task.pending_split_count:
         department_task.pending_split_count = max((department_task.pending_split_count or 0) - 1, 0)
@@ -1309,6 +1561,7 @@ def list_weekly_updates(
 @router.get("/weekly-updates/current")
 def current_weekly_update(
     sub_task_id: int,
+    assignee_id: int | None = None,
     week_key: str | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -1316,13 +1569,15 @@ def current_weekly_update(
     sub_task = db.get(SubTask, sub_task_id)
     if not sub_task or not sub_task.department_task or sub_task.department_task.status == "archived":
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Sub task not found")
-    if not can_update_sub_task_weekly(current_user, sub_task):
+    assignee = default_update_assignee(current_user, sub_task, assignee_id)
+    if not can_update_sub_task_weekly(current_user, sub_task, assignee.id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No update access to this sub task")
     target_week = week_key or current_week_key()
     update = db.scalar(
         select(WeeklyUpdate).where(
             WeeklyUpdate.sub_task_id == sub_task_id,
             WeeklyUpdate.week_key == target_week,
+            WeeklyUpdate.assignee_id == assignee.id,
         )
     )
     if update:
@@ -1331,6 +1586,8 @@ def current_weekly_update(
         "id": None,
         "sub_task_id": sub_task.id,
         "sub_task": sub_task.title,
+        "assignee_id": assignee.id,
+        "assignee": assignee.name,
         "week_key": target_week,
         "status": "empty",
         "progress": sub_task.progress or 0,
@@ -1353,7 +1610,8 @@ def save_weekly_update(
     sub_task = db.get(SubTask, payload.sub_task_id)
     if not sub_task or not sub_task.department_task or sub_task.department_task.status == "archived":
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Sub task not found")
-    if not can_update_sub_task_weekly(current_user, sub_task):
+    assignee = default_update_assignee(current_user, sub_task, payload.assignee_id)
+    if not can_update_sub_task_weekly(current_user, sub_task, assignee.id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No update access to this sub task")
     if sub_task.status == "pending_update":
         raise HTTPException(status.HTTP_409_CONFLICT, detail="Sub task must be started before weekly update")
@@ -1363,6 +1621,7 @@ def save_weekly_update(
         db,
         sub_task=sub_task,
         user=current_user,
+        assignee=assignee,
         week_key=payload.week_key,
         progress=payload.progress,
         this_week=payload.this_week,
@@ -1422,8 +1681,8 @@ def list_risks(db: Session = Depends(get_db), _: User = Depends(get_current_user
             "level": item.level,
             "description": item.description,
             "status": item.status,
-            "owner": item.sub_task.owner.name if item.sub_task and item.sub_task.owner else None,
-            "executor": item.sub_task.executor.name if item.sub_task and item.sub_task.executor else None,
+            "owner": people_payload(owner_people(item.sub_task))[2] if item.sub_task else None,
+            "executor": people_payload(executor_people(item.sub_task))[2] if item.sub_task else None,
             "due_date": item.sub_task.due_date.isoformat()
             if item.sub_task and item.sub_task.due_date
             else None,
@@ -1522,6 +1781,119 @@ def mock_reminders(
 @router.get("/lark/diagnostics")
 async def lark_diagnostics(_: User = Depends(require_permission("notification.nudge"))) -> dict:
     return await lark_client.health_check()
+
+
+@router.post("/lark/resolve-open-ids")
+async def resolve_lark_open_ids(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+) -> dict:
+    candidates = list(
+        db.scalars(
+            select(User)
+            .where(User.email.is_not(None), User.open_id.is_(None), User.status != "disabled")
+            .order_by(User.id)
+        ).all()
+    )
+    results = []
+    resolved = 0
+    blocked = 0
+    failed = 0
+    for start in range(0, len(candidates), 50):
+        batch = candidates[start : start + 50]
+        emails = [user.email for user in batch if user.email]
+        try:
+            lookup = await lark_client.batch_get_user_ids_by_email(emails)
+        except Exception as exc:
+            failed += len(batch)
+            for user in batch:
+                results.append(
+                    {
+                        "user_id": user.id,
+                        "name": user.name,
+                        "email": user.email,
+                        "status": "failed",
+                        "message": str(exc),
+                    }
+                )
+            continue
+
+        users_by_email = lookup.get("users") or {}
+        for user in batch:
+            item = users_by_email.get(user.email or "")
+            if not item:
+                blocked += 1
+                results.append(
+                    {
+                        "user_id": user.id,
+                        "name": user.name,
+                        "email": user.email,
+                        "status": "blocked",
+                        "message": "飞书未找到该邮箱",
+                    }
+                )
+                continue
+            remote_name = item.get("name") or item.get("user_name") or item.get("en_name")
+            if remote_name and remote_name != user.name:
+                blocked += 1
+                results.append(
+                    {
+                        "user_id": user.id,
+                        "name": user.name,
+                        "email": user.email,
+                        "status": "conflict",
+                        "message": f"飞书姓名不一致：{remote_name}",
+                    }
+                )
+                continue
+            open_id = normalize_open_id(item.get("open_id") or item.get("user_id"))
+            if not open_id:
+                blocked += 1
+                results.append(
+                    {
+                        "user_id": user.id,
+                        "name": user.name,
+                        "email": user.email,
+                        "status": "blocked",
+                        "message": "飞书返回结果缺少 open_id",
+                    }
+                )
+                continue
+            conflict = db.scalar(select(User).where(User.open_id == open_id, User.id != user.id))
+            if conflict:
+                blocked += 1
+                results.append(
+                    {
+                        "user_id": user.id,
+                        "name": user.name,
+                        "email": user.email,
+                        "status": "conflict",
+                        "message": f"open_id 已绑定到 {conflict.name}",
+                    }
+                )
+                continue
+            user.open_id = open_id
+            user.open_id_bound_at = datetime.now(timezone.utc)
+            db.add(user)
+            resolved += 1
+            results.append(
+                {
+                    "user_id": user.id,
+                    "name": user.name,
+                    "email": user.email,
+                    "status": "resolved",
+                    "message": "已绑定 open_id",
+                }
+            )
+    db.commit()
+    return {
+        "ok": failed == 0,
+        "scanned": len(candidates),
+        "resolved": resolved,
+        "blocked": blocked,
+        "failed": failed,
+        "results": results,
+    }
 
 
 @router.post("/notifications/lark-weekly-reminders")

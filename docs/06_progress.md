@@ -6,7 +6,7 @@
 
 ## 2. 当前状态
 
-当前状态：2.0.2 飞书多人测试版已进入实施，聚焦手动 open_id 绑定、飞书卡片签名免密码入口、多人测试卡片和周更新提醒真实触达。
+当前状态：2.0.4 生产迁移前版本已进入实施，聚焦邮箱预绑定 open_id、多人负责人/执行人、多执行人周更新和生产内网端口 `28081`。
 
 记录日期：2026-06-08。
 
@@ -52,6 +52,7 @@
 - 已完成 2.0.0 飞书出站消息第一版：新增企业应用配置、tenant_access_token 获取、飞书诊断接口、周更新提醒卡片发送入口和通知记录真实状态。
 - 已完成 2.0.1 飞书局域网实测改造：支持手动 open_id 录入、指定人员测试卡片、本地 `.env` 保存 App ID/Secret 和局域网 Web 地址透传。
 - 已完成 2.0.2 飞书多人测试改造：卡片按钮通过服务端签名链接自动创建 session，避免测试人员输入系统账号密码。
+- 已完成 2.0.3 飞书免登录首版改造：人员档案支持手机号，通知页支持批量解析 open_id，登录页支持飞书免登入口。
 
 ## 4. 待确认问题
 
@@ -61,7 +62,7 @@
 - 飞书企业自建应用机器人发消息权限是否已审核通过。
 - 测试人员 open_id，2.0.2 已加入刘星科，后续可继续扩展少量人员。
 - 生产 Web 访问地址。
-- 飞书免登、卡片回调、事件长连接和按身份卡片的后续 2.x 边界。
+- 飞书卡片回调、事件长连接和按身份卡片的后续 2.x 边界。
 - 现有 Base 数据字段、自动化和历史快照的迁移范围。
 - lark-cli 宿主机命令卡住、backend 容器内未安装 lark-cli，需先修复后才能真实导入 2026任务跟踪表。
 - 组织与人才发展中心观察角色的最终查看边界。
@@ -70,8 +71,8 @@
 
 ## 5. 下一步
 
-- 继续推进更多测试人员手动绑定，2.0.3 飞书免登绑定。
-- 再执行多人“发送飞书提醒”，持续观察未绑定人员 blocked、已绑定人员进入签名入口和真实发送链路。
+- 在飞书开放平台确认局域网 OAuth 回调地址已加入重定向 URL，并确认手机号换 ID 和用户信息字段权限。
+- 给更多测试人员录入手机号，执行“解析 open_id”后再发送飞书提醒。
 - 修复 lark-cli 运行环境后再恢复 Base 预览和一次性导入。
 
 ## 6. 最近验证
@@ -187,3 +188,33 @@
 - 已将刘星科 open_id 绑定到人员 `刘星科`，并发送 2.0.2 飞书测试卡片成功；通知记录 `record_id=2`，状态为 `sent`。
 - 通知记录 `record_id=2` 的 `web_url` 已确认为 `10.10.11.229` 局域网 `/api/auth/lark-link` 签名入口；容器内请求该完整入口返回 302，写入 session cookie，并跳转 `/meeting-board/overview`。
 - 已完成 2.0.2 子任务执行入口权限补丁：`子任务执行` 改为个人更新入口，按“我执行 / 我负责 / 管理查看”分组；执行人和管理员可进入更新链路，负责人和总经理/观察者的管理查看项只读；部门级任务、会议看板和其他管理视角继续沿用原可见性。
+
+2.0.3 飞书免登录首版代码级验证结果：
+
+- `users.mobile`、手机号唯一校验、人员页手机号维护和脱敏显示已完成。
+- 飞书客户端已新增手机号批量解析 open_id、OAuth code 换 user_access_token、获取登录用户信息能力。
+- 后端已新增 `POST /api/lark/resolve-open-ids`、`GET /api/auth/lark-oauth/start` 和 `GET /api/auth/lark-oauth/callback`。
+- 登录页已新增“飞书免登”入口，通知页已新增“解析 open_id”入口。
+- `python3 -m compileall backend/app` 通过。
+- `npm run build` 通过；仍存在 Vite 大 chunk 提示，不影响构建结果。
+- `docker compose -f deploy/docker-compose.yml config --quiet` 通过。
+- `docker compose -f deploy/docker-compose.yml up --build -d` 已成功重建并启动 2.0.3 backend/frontend/nginx。
+- `GET http://127.0.0.1:8080/api/health` 返回 `{"status":"ok","version":"2.0.3"}`。
+- 数据库运行时检查确认 `users.mobile` 字段存在。
+- 容器内飞书诊断返回 `tenant_token`、`oauth_app_token`、`mobile_lookup` 均 `ok=true`。
+- `GET /api/auth/lark-oauth/start` 返回飞书授权 302，redirect_uri 使用局域网 callback。
+- 无效 OAuth state 会回登录页并展示飞书免登错误。
+- 2.0.2 签名卡片入口仍可创建 session 并跳转目标页面。
+
+2.0.4 生产迁移前版本实施内容：
+
+- 人员手机号字段已改为邮箱字段，邮箱导入按姓名匹配人员。
+- 飞书 open_id 批量解析已改为邮箱换 ID，诊断项改为 `email_lookup`。
+- 母任务负责人、部门任务负责人、子任务负责人和子任务执行人已支持多人关系。
+- 多执行人子任务按执行人分别生成周更新和飞书提醒，周更新增加 `assignee_id`。
+- Docker Compose 默认内网 HTTP 入口端口改为 `28081`，外网反代交由 IT 配置。
+- `python3 -m compileall backend/app` 通过。
+- `npm run build` 通过；仍存在 Vite 大 chunk 提示，不影响构建结果。
+- `docker compose -f deploy/docker-compose.yml config --quiet` 通过。
+- `git diff --check` 通过。
+- 额外 SQLAlchemy mapper 导入检查在本机 Python 环境导入 `sqlalchemy` 时卡住，已终止；本条不计为运行验证通过，运行级验证应在 Docker/后端虚拟环境中完成。

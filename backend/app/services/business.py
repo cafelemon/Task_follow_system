@@ -20,6 +20,8 @@ from app.models.entities import (
 from app.services.auth import create_lark_login_url
 from app.services.lark_client import lark_client
 
+RISK_ORDER = {"none": 0, "low": 1, "medium": 2, "high": 3}
+
 
 def current_week_key(today: date | None = None) -> str:
     today = today or date.today()
@@ -68,6 +70,65 @@ def serialize_user(user: User | None) -> dict | None:
     }
 
 
+def serialize_person_brief(user: User) -> dict:
+    return {"id": user.id, "name": user.name}
+
+
+def task_people(people: list[User] | None, fallback: User | None) -> list[User]:
+    selected = list(people or [])
+    if not selected and fallback:
+        selected = [fallback]
+    return sorted(selected, key=lambda item: item.id)
+
+
+def owner_people(task: ParentTask | DepartmentTask | SubTask) -> list[User]:
+    return task_people(getattr(task, "owners", None), getattr(task, "owner", None))
+
+
+def executor_people(task: SubTask) -> list[User]:
+    return task_people(task.executors, task.executor)
+
+
+def people_payload(people: list[User]) -> tuple[list[int], list[dict], str | None]:
+    ids = [user.id for user in people]
+    items = [serialize_person_brief(user) for user in people]
+    return ids, items, "、".join(user.name for user in people) if people else None
+
+
+def highest_risk(levels: list[str | None]) -> str:
+    chosen = "none"
+    for level in levels:
+        if level and RISK_ORDER.get(level, 0) > RISK_ORDER.get(chosen, 0):
+            chosen = level
+    return chosen
+
+
+def recalculate_sub_task_from_week(db: Session, sub_task: SubTask, week_key: str) -> None:
+    assignees = executor_people(sub_task)
+    updates = list(
+        db.scalars(
+            select(WeeklyUpdate).where(
+                WeeklyUpdate.sub_task_id == sub_task.id,
+                WeeklyUpdate.week_key == week_key,
+                WeeklyUpdate.status == "submitted",
+            )
+        ).all()
+    )
+    if not updates:
+        return
+    progress_by_assignee = {update.assignee_id: update.progress or 0 for update in updates}
+    expected_count = max(len(assignees), 1)
+    sub_task.progress = round(sum(progress_by_assignee.values()) / expected_count)
+    risk_level = highest_risk([update.risk_level for update in updates])
+    sub_task.risk_level = risk_level
+    if len(progress_by_assignee) >= expected_count and all(value >= 100 for value in progress_by_assignee.values()):
+        sub_task.status = "completed"
+    elif risk_level in {"high", "medium", "low"}:
+        sub_task.status = "risk"
+    elif sub_task.status == "pending_update":
+        sub_task.status = "in_progress"
+
+
 def serialize_goal(goal: StrategicGoal) -> dict:
     return {
         "id": goal.id,
@@ -83,6 +144,7 @@ def serialize_goal(goal: StrategicGoal) -> dict:
 def serialize_parent_task(task: ParentTask) -> dict:
     department_tasks = task.department_tasks or []
     sub_tasks = [sub_task for department_task in department_tasks for sub_task in department_task.sub_tasks]
+    owner_ids, owners, owner_text = people_payload(owner_people(task))
     return {
         "id": task.id,
         "code": task.code,
@@ -93,7 +155,9 @@ def serialize_parent_task(task: ParentTask) -> dict:
         "department_id": task.department_id,
         "department": task.department.name if task.department else None,
         "owner_id": task.owner_id,
-        "owner": task.owner.name if task.owner else None,
+        "owner_ids": owner_ids,
+        "owners": owners,
+        "owner": owner_text,
         "priority": task.priority,
         "status": task.status,
         "progress": task.progress,
@@ -106,6 +170,7 @@ def serialize_parent_task(task: ParentTask) -> dict:
 
 def serialize_department_task(task: DepartmentTask) -> dict:
     departments = task.departments or ([task.department] if task.department else [])
+    owner_ids, owners, owner_text = people_payload(owner_people(task))
     return {
         "id": task.id,
         "code": task.code,
@@ -117,7 +182,9 @@ def serialize_department_task(task: DepartmentTask) -> dict:
         "department_ids": [department.id for department in departments],
         "departments": [{"id": department.id, "name": department.name} for department in departments],
         "owner_id": task.owner_id,
-        "owner": task.owner.name if task.owner else None,
+        "owner_ids": owner_ids,
+        "owners": owners,
+        "owner": owner_text,
         "status": task.status,
         "progress": task.progress,
         "due_date": task.due_date.isoformat() if task.due_date else None,
@@ -138,6 +205,8 @@ def sub_task_weekly_status(task: SubTask, update: WeeklyUpdate | None) -> str:
 
 
 def serialize_sub_task(task: SubTask, current_update: WeeklyUpdate | None = None) -> dict:
+    executor_ids, executors, executor_text = people_payload(executor_people(task))
+    owner_ids, owners, owner_text = people_payload(owner_people(task))
     return {
         "id": task.id,
         "code": task.code,
@@ -146,9 +215,13 @@ def serialize_sub_task(task: SubTask, current_update: WeeklyUpdate | None = None
         "department_task": task.department_task.title if task.department_task else None,
         "parent_task": task.department_task.parent_task.title if task.department_task else None,
         "executor_id": task.executor_id,
-        "executor": task.executor.name if task.executor else None,
+        "executor_ids": executor_ids,
+        "executors": executors,
+        "executor": executor_text,
         "owner_id": task.owner_id,
-        "owner": task.owner.name if task.owner else None,
+        "owner_ids": owner_ids,
+        "owners": owners,
+        "owner": owner_text,
         "status": task.status,
         "weekly_status": sub_task_weekly_status(task, current_update),
         "weekly_update_status": current_update.status if current_update else None,
@@ -170,12 +243,15 @@ def serialize_weekly_update(update: WeeklyUpdate) -> dict:
         "id": update.id,
         "sub_task_id": update.sub_task_id,
         "sub_task": update.sub_task.title if update.sub_task else None,
+        "assignee_id": update.assignee_id,
+        "assignee": update.assignee.name if update.assignee else None,
         "week_key": update.week_key,
         "status": update.status,
         "progress": update.progress,
         "this_week": update.this_week,
         "next_week": update.next_week,
         "risk": update.risk,
+        "risk_level": update.risk_level,
         "needs_coordination": update.needs_coordination,
         "submitter_id": update.submitter_id,
         "submitter": update.submitter.name if update.submitter else None,
@@ -188,6 +264,7 @@ def upsert_weekly_update(
     *,
     sub_task: SubTask,
     user: User,
+    assignee: User,
     week_key: str,
     progress: int | None,
     this_week: str | None,
@@ -199,7 +276,9 @@ def upsert_weekly_update(
 ) -> WeeklyUpdate:
     update = db.scalar(
         select(WeeklyUpdate).where(
-            WeeklyUpdate.sub_task_id == sub_task.id, WeeklyUpdate.week_key == week_key
+            WeeklyUpdate.sub_task_id == sub_task.id,
+            WeeklyUpdate.week_key == week_key,
+            WeeklyUpdate.assignee_id == assignee.id,
         )
     )
     if update and update.status == "submitted" and submit:
@@ -211,27 +290,25 @@ def upsert_weekly_update(
             )
         )
     if not update:
-        update = WeeklyUpdate(sub_task_id=sub_task.id, week_key=week_key, submitter_id=user.id)
+        update = WeeklyUpdate(
+            sub_task_id=sub_task.id,
+            assignee_id=assignee.id,
+            week_key=week_key,
+            submitter_id=user.id,
+        )
         db.add(update)
     update.progress = progress if progress is not None else (update.progress or sub_task.progress or 0)
     update.this_week = this_week
     update.next_week = next_week
     update.risk = risk
+    update.risk_level = risk_level
     update.needs_coordination = needs_coordination
     update.status = "submitted" if submit else "draft"
     if submit:
         update.submitted_at = datetime.now(timezone.utc)
-    if progress is not None:
-        sub_task.progress = progress
-        if progress >= 100:
-            sub_task.status = "completed"
-        elif sub_task.status == "pending_update":
-            sub_task.status = "in_progress"
-    if risk_level:
-        sub_task.risk_level = risk_level
-        if risk_level in {"high", "medium", "low"}:
-            sub_task.status = "risk"
     db.flush()
+    if submit:
+        recalculate_sub_task_from_week(db, sub_task, week_key)
     if submit and risk and risk_level in {"high", "medium", "low"}:
         exists = db.scalar(
             select(RiskRecord).where(RiskRecord.sub_task_id == sub_task.id, RiskRecord.status == "open")
@@ -276,17 +353,34 @@ def upsert_weekly_update(
     return update
 
 
-def missing_update_sub_tasks(db: Session, week_key: str) -> list[SubTask]:
-    submitted_ids = {
-        row[0]
+def missing_update_assignments(db: Session, week_key: str) -> list[tuple[SubTask, User]]:
+    submitted_pairs = {
+        (row[0], row[1])
         for row in db.execute(
-            select(WeeklyUpdate.sub_task_id).where(
+            select(WeeklyUpdate.sub_task_id, WeeklyUpdate.assignee_id).where(
                 WeeklyUpdate.week_key == week_key, WeeklyUpdate.status == "submitted"
             )
         ).all()
     }
     sub_tasks = list(db.scalars(select(SubTask)).all())
-    return [task for task in sub_tasks if task.id not in submitted_ids and task.status != "completed"]
+    missing: list[tuple[SubTask, User]] = []
+    for task in sub_tasks:
+        if task.status == "completed":
+            continue
+        for assignee in executor_people(task):
+            if (task.id, assignee.id) not in submitted_pairs:
+                missing.append((task, assignee))
+    return missing
+
+
+def missing_update_sub_tasks(db: Session, week_key: str) -> list[SubTask]:
+    seen: set[int] = set()
+    tasks: list[SubTask] = []
+    for task, _assignee in missing_update_assignments(db, week_key):
+        if task.id not in seen:
+            seen.add(task.id)
+            tasks.append(task)
+    return tasks
 
 
 def build_meeting_board(db: Session, week_key: str) -> dict:
@@ -296,14 +390,14 @@ def build_meeting_board(db: Session, week_key: str) -> dict:
         db.scalars(select(CoordinationItem).where(CoordinationItem.status == "open")).all()
     )
     completed = [task for task in sub_tasks if task.status == "completed"]
-    missing = missing_update_sub_tasks(db, week_key)
+    missing = missing_update_assignments(db, week_key)
 
     return {
         "week_key": week_key,
         "decision_items": [
             {
                 "title": item.title,
-                "owner": item.sub_task.owner.name if item.sub_task and item.sub_task.owner else None,
+                "owner": (people_payload(owner_people(item.sub_task))[2] if item.sub_task else None),
                 "problem": item.description,
                 "suggestion": "请在会议中明确责任边界与下一步时间点。",
             }
@@ -312,7 +406,7 @@ def build_meeting_board(db: Session, week_key: str) -> dict:
         "high_risks": [
             {
                 "title": risk.sub_task.title,
-                "owner": risk.sub_task.owner.name if risk.sub_task and risk.sub_task.owner else None,
+                "owner": people_payload(owner_people(risk.sub_task))[2],
                 "problem": risk.description,
                 "suggestion": "建议升级协调并确认处理时限。",
             }
@@ -322,11 +416,11 @@ def build_meeting_board(db: Session, week_key: str) -> dict:
         "missing_updates": [
             {
                 "title": task.title,
-                "owner": task.executor.name if task.executor else None,
+                "owner": assignee.name,
                 "problem": f"{week_key} 尚未提交周更新。",
                 "suggestion": "提醒执行人今日完成填报，避免影响部门进度统计。",
             }
-            for task in missing
+            for task, assignee in missing
         ],
         "completed": [serialize_sub_task(task) for task in completed],
         "next_focus": [
@@ -339,15 +433,15 @@ def build_meeting_board(db: Session, week_key: str) -> dict:
 
 def create_mock_notifications(db: Session, week_key: str) -> int:
     created = 0
-    for task in missing_update_sub_tasks(db, week_key):
+    for task, assignee in missing_update_assignments(db, week_key):
         db.add(
             NotificationRecord(
-                target_user_id=task.executor_id,
+                target_user_id=assignee.id,
                 notification_type="weekly_update_reminder",
                 related_type="sub_task",
                 related_id=task.id,
                 title=f"{week_key} 周更新提醒",
-                web_url=f"{settings.web_base_url}/weekly-updates?subTaskId={task.id}",
+                web_url=f"{settings.web_base_url}/weekly-updates?subTaskId={task.id}&assigneeId={assignee.id}",
                 result="模拟发送，等待用户处理",
             )
         )
@@ -412,7 +506,7 @@ def build_lark_test_card(web_url: str) -> dict:
         "config": {"wide_screen_mode": True},
         "header": {
             "template": "blue",
-            "title": {"tag": "plain_text", "content": "2.0.2 飞书测试卡片"},
+            "title": {"tag": "plain_text", "content": "2.0.4 飞书测试卡片"},
         },
         "elements": [
             {
@@ -458,7 +552,7 @@ async def send_lark_test_message(db: Session, target_user_id: int) -> dict:
         notification_type="lark_test_message",
         related_type="user",
         related_id=target.id,
-        title="2.0.2 飞书测试卡片",
+        title="2.0.4 飞书测试卡片",
         web_url=web_url,
         send_status="pending",
     )
@@ -493,12 +587,11 @@ async def send_weekly_update_reminders(db: Session, week_key: str) -> dict:
     failed = 0
     blocked = 0
     results = []
-    for task in missing_update_sub_tasks(db, week_key):
-        next_path = f"/weekly-updates?subTaskId={task.id}"
-        target = task.executor
+    for task, target in missing_update_assignments(db, week_key):
+        next_path = f"/weekly-updates?subTaskId={task.id}&assigneeId={target.id}"
         web_url = lark_entry_url(target, next_path) if target else f"{settings.web_base_url}{next_path}"
         record = NotificationRecord(
-            target_user_id=task.executor_id,
+            target_user_id=target.id,
             notification_type="weekly_update_reminder",
             related_type="sub_task",
             related_id=task.id,
@@ -510,7 +603,7 @@ async def send_weekly_update_reminders(db: Session, week_key: str) -> dict:
         db.flush()
         created += 1
 
-        if not target or not target.open_id:
+        if not target.open_id:
             record.send_status = "blocked"
             record.result = "目标用户未绑定飞书 open_id"
             blocked += 1

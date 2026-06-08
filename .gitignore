@@ -54,6 +54,18 @@ frontend/.env
 frontend/.env.*
 !frontend/.env.example
 
+# Local certificates / private keys
+*_nginx/
+*_nginx.zip
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local contact exports
+*通讯录*导出*.xlsx
+*contact*export*.xlsx
+
 # Local generated files
 *.sqlite
 *.sqlite3

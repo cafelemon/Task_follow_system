@@ -44,7 +44,7 @@ services:
   nginx:
     image: nginx:1.27-alpine
     ports:
-      - "8080:80"
+      - "${TASK_FOLLOW_DOCKER_HTTP_PORT:-28081}:80"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:

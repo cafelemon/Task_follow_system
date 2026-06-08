@@ -191,8 +191,10 @@ def import_excel_2026(db: Session, path: Path = DEFAULT_EXCEL_PATH, actor_id: in
         departments = split_departments(first.get("负责部门"))
         department = ensure_department(db, departments[0]) if departments else default_department
         owner_names = split_people(first.get("母任务负责人"))
-        owner = ensure_user(db, owner_names[0], department) if owner_names else default_owner
-        add_roles(db, owner, ["parent_owner"])
+        owners = [ensure_user(db, name, department) for name in owner_names] or [default_owner]
+        owner = owners[0]
+        for item in owners:
+            add_roles(db, item, ["parent_owner"])
         due_dates = [parse_date(row.get("截止时间")) for row in rows]
         due_dates = [item for item in due_dates if item]
         task = ParentTask(
@@ -207,6 +209,7 @@ def import_excel_2026(db: Session, path: Path = DEFAULT_EXCEL_PATH, actor_id: in
             progress=0,
             due_date=max(due_dates) if due_dates else None,
         )
+        task.owners = owners
         db.add(task)
         db.flush()
         parent_tasks[code] = task
@@ -219,8 +222,10 @@ def import_excel_2026(db: Session, path: Path = DEFAULT_EXCEL_PATH, actor_id: in
         department_names = split_departments(row.get("负责部门"))
         departments = [ensure_department(db, name) for name in department_names] or [default_department]
         owner_names = split_people(row.get("任务负责人"))
-        owner = ensure_user(db, owner_names[0], departments[0]) if owner_names else default_owner
-        add_roles(db, owner, ["department_owner", "task_owner"])
+        owners = [ensure_user(db, name, departments[0]) for name in owner_names] or [default_owner]
+        owner = owners[0]
+        for item in owners:
+            add_roles(db, item, ["department_owner", "task_owner"])
         task = DepartmentTask(
             code=code,
             title=strip_code_prefix(row.get("任务项"), code),
@@ -228,6 +233,7 @@ def import_excel_2026(db: Session, path: Path = DEFAULT_EXCEL_PATH, actor_id: in
             department=departments[0],
             departments=departments,
             owner=owner,
+            owners=owners,
             status=parse_status(row.get("状态")),
             progress=0,
             due_date=parse_date(row.get("截止时间")),
@@ -259,16 +265,22 @@ def import_excel_2026(db: Session, path: Path = DEFAULT_EXCEL_PATH, actor_id: in
         department = department_task.department
         owner_names = split_people(row.get("任务负责人（负责拆解任务到执行者）"))
         executor_names = split_people(row.get("执行责任人 (人员 )"))
-        owner = ensure_user(db, owner_names[0], department) if owner_names else department_task.owner
-        executor = ensure_user(db, executor_names[0], department) if executor_names else owner
-        add_roles(db, owner, ["task_owner"])
-        add_roles(db, executor, ["executor"])
+        owners = [ensure_user(db, name, department) for name in owner_names] or list(department_task.owners or [department_task.owner])
+        executors = [ensure_user(db, name, department) for name in executor_names] or [owners[0]]
+        owner = owners[0]
+        executor = executors[0]
+        for item in owners:
+            add_roles(db, item, ["task_owner"])
+        for item in executors:
+            add_roles(db, item, ["executor"])
         sub_task = SubTask(
             code=code,
             title=concrete,
             department_task=department_task,
             executor=executor,
             owner=owner,
+            executors=executors,
+            owners=owners,
             status=parse_status(row.get("状态")),
             progress=parse_progress(row.get("本周进度") or row.get("上周任务进度")),
             risk_level=parse_risk_level(row.get("遗留事项")),

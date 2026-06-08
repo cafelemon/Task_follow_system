@@ -24,6 +24,7 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     open_id: Mapped[str | None] = mapped_column(String(120), unique=True)
+    email: Mapped[str | None] = mapped_column(String(180), unique=True)
     username: Mapped[str | None] = mapped_column(String(120), unique=True)
     password_hash: Mapped[str | None] = mapped_column(String(260))
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -85,6 +86,34 @@ class DepartmentTaskDepartment(Base):
     department_id: Mapped[int] = mapped_column(ForeignKey("departments.id"), primary_key=True)
 
 
+class ParentTaskOwner(Base):
+    __tablename__ = "parent_task_owners"
+
+    parent_task_id: Mapped[int] = mapped_column(ForeignKey("parent_tasks.id"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+
+
+class DepartmentTaskOwner(Base):
+    __tablename__ = "department_task_owners"
+
+    department_task_id: Mapped[int] = mapped_column(ForeignKey("department_tasks.id"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+
+
+class SubTaskOwner(Base):
+    __tablename__ = "sub_task_owners"
+
+    sub_task_id: Mapped[int] = mapped_column(ForeignKey("sub_tasks.id"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+
+
+class SubTaskExecutor(Base):
+    __tablename__ = "sub_task_executors"
+
+    sub_task_id: Mapped[int] = mapped_column(ForeignKey("sub_tasks.id"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+
+
 class AuthSession(Base):
     __tablename__ = "auth_sessions"
 
@@ -128,6 +157,7 @@ class ParentTask(Base):
     goal: Mapped[StrategicGoal] = relationship()
     department: Mapped[Department] = relationship()
     owner: Mapped[User] = relationship()
+    owners: Mapped[list[User]] = relationship(secondary="parent_task_owners")
     department_tasks: Mapped[list["DepartmentTask"]] = relationship(back_populates="parent_task")
 
 
@@ -150,6 +180,7 @@ class DepartmentTask(Base):
     department: Mapped[Department] = relationship()
     departments: Mapped[list[Department]] = relationship(secondary="department_task_departments")
     owner: Mapped[User] = relationship()
+    owners: Mapped[list[User]] = relationship(secondary="department_task_owners")
     sub_tasks: Mapped[list["SubTask"]] = relationship(back_populates="department_task")
 
 
@@ -171,26 +202,33 @@ class SubTask(Base):
     department_task: Mapped[DepartmentTask] = relationship(back_populates="sub_tasks")
     executor: Mapped[User] = relationship(foreign_keys=[executor_id])
     owner: Mapped[User] = relationship(foreign_keys=[owner_id])
+    executors: Mapped[list[User]] = relationship(secondary="sub_task_executors")
+    owners: Mapped[list[User]] = relationship(secondary="sub_task_owners")
 
 
 class WeeklyUpdate(Base):
     __tablename__ = "weekly_updates"
-    __table_args__ = (UniqueConstraint("sub_task_id", "week_key", name="uq_weekly_update_subtask_week"),)
+    __table_args__ = (
+        UniqueConstraint("sub_task_id", "week_key", "assignee_id", name="uq_weekly_update_subtask_week_assignee"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     sub_task_id: Mapped[int] = mapped_column(ForeignKey("sub_tasks.id"))
+    assignee_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     week_key: Mapped[str] = mapped_column(String(20))
     status: Mapped[str] = mapped_column(String(32), default="draft")
     progress: Mapped[int] = mapped_column(Integer, default=0)
     this_week: Mapped[str | None] = mapped_column(Text)
     next_week: Mapped[str | None] = mapped_column(Text)
     risk: Mapped[str | None] = mapped_column(Text)
+    risk_level: Mapped[str | None] = mapped_column(String(32))
     needs_coordination: Mapped[bool] = mapped_column(Boolean, default=False)
     submitter_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     sub_task: Mapped[SubTask] = relationship()
-    submitter: Mapped[User] = relationship()
+    assignee: Mapped[User] = relationship(foreign_keys=[assignee_id])
+    submitter: Mapped[User] = relationship(foreign_keys=[submitter_id])
 
 
 class WeeklyUpdateRevision(Base):
