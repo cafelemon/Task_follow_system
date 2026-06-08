@@ -167,6 +167,13 @@ def sync_sub_task_executors(task: SubTask, users: list[User]) -> None:
     task.executor_id = users[0].id
 
 
+def expire_task_people(db: Session, task: ParentTask | DepartmentTask | SubTask, include_executors: bool = False) -> None:
+    attrs = ["owner", "owners"]
+    if include_executors:
+        attrs.extend(["executor", "executors"])
+    db.expire(task, [attr for attr in attrs if hasattr(task, attr)])
+
+
 def default_update_assignee(current_user: User, sub_task: SubTask, assignee_id: int | None) -> User:
     executors = executor_people(sub_task)
     executor_ids = {user.id for user in executors}
@@ -433,12 +440,15 @@ def build_parent_board_payload(db: Session, user: User, week_key: str) -> dict:
         parent = tasks[0].department_task.parent_task
         department_task_ids = {task.department_task_id for task in tasks}
         active = [task for task in tasks if task.status != "completed"]
+        owner_ids, owners, owner_text = people_payload(owner_people(parent))
         rows.append(
             {
                 "id": parent_id,
                 "code": parent.code,
                 "title": parent.title,
-                "owner": people_payload(owner_people(parent))[2],
+                "owner": owner_text,
+                "owner_ids": owner_ids,
+                "owners": owners,
                 "department": parent.department.name if parent.department else None,
                 "department_task_count": len(department_task_ids),
                 "sub_task_count": len(tasks),
@@ -1135,6 +1145,7 @@ def create_parent_task(
     )
     db.commit()
     db.refresh(task)
+    expire_task_people(db, task)
     return {**serialize_parent_task(task), "can_edit": can_edit_parent_task(current_user, task)}
 
 
@@ -1169,6 +1180,7 @@ def update_parent_task(
     )
     db.commit()
     db.refresh(task)
+    expire_task_people(db, task)
     return {**serialize_parent_task(task), "can_edit": can_edit_parent_task(current_user, task)}
 
 
@@ -1323,6 +1335,7 @@ def create_department_task(
     )
     db.commit()
     db.refresh(task)
+    expire_task_people(db, task)
     return serialize_department_task_for_user(db, current_user, task)
 
 
@@ -1362,6 +1375,7 @@ def update_department_task(
     )
     db.commit()
     db.refresh(task)
+    expire_task_people(db, task)
     return serialize_department_task_for_user(db, current_user, task)
 
 
@@ -1479,6 +1493,7 @@ def create_sub_task(
     )
     db.commit()
     db.refresh(task)
+    expire_task_people(db, task, include_executors=True)
     return serialize_sub_task(task)
 
 

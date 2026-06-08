@@ -18,6 +18,7 @@ import {
   Statistic,
   Table,
   Tag,
+  Tooltip,
   Typography,
   Upload,
   message
@@ -57,8 +58,22 @@ import { deleteJson, getJson, postJson, putJson } from './api/client';
 import type { AnyRecord } from './api/client';
 import { PageShell } from './components/PageShell';
 import { StatusTag } from './components/StatusTag';
+import companyLogoCompact from './assets/brand/company-logo-compact-light.png';
+import companyLogoFullname from './assets/brand/company-logo-fullname-light.png';
+import taskFollowIcon from './assets/brand/task-follow-icon.png';
+import taskFollowHero from './assets/brand/task-follow-hero.png';
 
 const { Header, Sider, Content } = Layout;
+
+function useIsCompactLayout() {
+  const [compact, setCompact] = useState(() => window.innerWidth < 1440);
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1440);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  return compact;
+}
 
 function currentIsoWeekKey() {
   const today = new Date();
@@ -131,31 +146,43 @@ function PeopleSelect({ options }: { options: { value: number; label: string }[]
   );
 }
 
+function renderEllipsis(value?: unknown) {
+  const text = value == null || value === '' ? '-' : String(value);
+  return (
+    <Tooltip title={text === '-' ? undefined : text}>
+      <span className="table-ellipsis-cell">{text}</span>
+    </Tooltip>
+  );
+}
+
 function renderPeople(value?: AnyRecord[] | string | null) {
   if (Array.isArray(value)) {
+    const names = value.map((item) => item.name).join('、');
     return (
-      <Space wrap>
-        {value.length ? value.map((item) => <Tag key={item.id}>{item.name}</Tag>) : <Typography.Text type="secondary">-</Typography.Text>}
-      </Space>
+      <Tooltip title={names || undefined}>
+        <Space wrap size={[4, 4]} className="people-cell">
+          {value.length ? value.map((item) => <Tag className="person-tag" title={item.name} key={item.id}>{item.name}</Tag>) : <Typography.Text type="secondary">-</Typography.Text>}
+        </Space>
+      </Tooltip>
     );
   }
   return value || '-';
 }
 
 const baseMenuItems = [
-  { key: '/meeting-board', icon: <ScheduleOutlined />, label: <Link to="/meeting-board/overview">会议看板</Link> },
-  { key: '/goals', icon: <NodeIndexOutlined />, label: <Link to="/goals">战略目标</Link> },
-  { key: '/parent-tasks', icon: <FolderOutlined />, label: <Link to="/parent-tasks">母任务管理</Link> },
-  { key: '/department-tasks', icon: <ApartmentOutlined />, label: <Link to="/department-tasks">部门任务</Link> },
-  { key: '/sub-tasks', icon: <CheckCircleOutlined />, label: <Link to="/sub-tasks">子任务执行</Link> },
-  { key: '/timeline', icon: <HistoryOutlined />, label: <Link to="/timeline">历史时间线</Link> },
-  { key: '/notifications', icon: <BellOutlined />, label: <Link to="/notifications">通知记录</Link> }
+  { key: '/meeting-board', title: '会议看板', icon: <ScheduleOutlined />, label: <Link to="/meeting-board/overview">会议看板</Link> },
+  { key: '/goals', title: '战略目标', icon: <NodeIndexOutlined />, label: <Link to="/goals">战略目标</Link> },
+  { key: '/parent-tasks', title: '母任务管理', icon: <FolderOutlined />, label: <Link to="/parent-tasks">母任务管理</Link> },
+  { key: '/department-tasks', title: '部门任务', icon: <ApartmentOutlined />, label: <Link to="/department-tasks">部门任务</Link> },
+  { key: '/sub-tasks', title: '子任务执行', icon: <CheckCircleOutlined />, label: <Link to="/sub-tasks">子任务执行</Link> },
+  { key: '/timeline', title: '历史时间线', icon: <HistoryOutlined />, label: <Link to="/timeline">历史时间线</Link> },
+  { key: '/notifications', title: '通知记录', icon: <BellOutlined />, label: <Link to="/notifications">通知记录</Link> }
 ];
 
 const adminMenuItems = [
-  { key: '/people', icon: <TeamOutlined />, label: <Link to="/people">人员</Link> },
-  { key: '/permissions', icon: <SafetyOutlined />, label: <Link to="/permissions">角色权限</Link> },
-  { key: '/base-sync', icon: <DatabaseOutlined />, label: <Link to="/base-sync">Base同步</Link> }
+  { key: '/people', title: '人员', icon: <TeamOutlined />, label: <Link to="/people">人员</Link> },
+  { key: '/permissions', title: '角色权限', icon: <SafetyOutlined />, label: <Link to="/permissions">角色权限</Link> },
+  { key: '/base-sync', title: 'Base同步', icon: <DatabaseOutlined />, label: <Link to="/base-sync">Base同步</Link> }
 ];
 
 function Login() {
@@ -180,27 +207,33 @@ function Login() {
   };
   return (
     <div className="login-page">
-      <Card className="login-panel">
-        <Space direction="vertical" size={18} className="full-width">
-          <div>
-            <Typography.Title level={3}>任务跟踪系统</Typography.Title>
-            <Typography.Text type="secondary">系统管理员登录或飞书免登</Typography.Text>
-          </div>
-          {larkError && <Alert type="warning" showIcon message={larkError} />}
-          <Form layout="vertical" onFinish={submit} autoComplete="off">
-            <Form.Item name="username" label="账号" rules={[{ required: true, message: '请输入账号' }]}>
-              <Input prefix={<UserOutlined />} autoFocus />
-            </Form.Item>
-            <Form.Item name="password" label="密码" rules={[{ required: true, message: '请输入密码' }]}>
-              <Input.Password prefix={<LockOutlined />} />
-            </Form.Item>
-            <Button type="primary" htmlType="submit" block loading={loading}>
-              登录
-            </Button>
-          </Form>
-          <Button block onClick={larkLogin}>飞书免登</Button>
-        </Space>
-      </Card>
+      <div className="login-shell">
+        <section className="login-visual">
+          <img className="login-company-logo" src={companyLogoFullname} alt="Fortune Microbot Technology" />
+          <img className="login-product-visual" src={taskFollowHero} alt="任务跟踪系统" />
+        </section>
+        <Card className="login-panel">
+          <Space direction="vertical" size={18} className="full-width">
+            <div className="login-title">
+              <Typography.Title level={3}>任务跟踪系统</Typography.Title>
+              <Typography.Text type="secondary">系统管理员登录或飞书免登</Typography.Text>
+            </div>
+            {larkError && <Alert type="warning" showIcon message={larkError} />}
+            <Form layout="vertical" onFinish={submit} autoComplete="off">
+              <Form.Item name="username" label="账号" rules={[{ required: true, message: '请输入账号' }]}>
+                <Input prefix={<UserOutlined />} autoFocus />
+              </Form.Item>
+              <Form.Item name="password" label="密码" rules={[{ required: true, message: '请输入密码' }]}>
+                <Input.Password prefix={<LockOutlined />} />
+              </Form.Item>
+              <Button type="primary" htmlType="submit" block loading={loading}>
+                登录
+              </Button>
+            </Form>
+            <Button block onClick={larkLogin}>飞书免登</Button>
+          </Space>
+        </Card>
+      </div>
     </div>
   );
 }
@@ -209,6 +242,7 @@ function AppLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const { data: auth, error, loading } = useApi<AnyRecord>('/auth/me', []);
+  const compactLayout = useIsCompactLayout();
   const selectedKey = `/${location.pathname.split('/')[1] || 'meeting-board'}`;
   const isAdmin = Boolean(auth?.user?.is_admin || (auth?.permission_codes || []).includes('permission.manage'));
   const canViewParentTasks = Boolean(auth?.features?.can_view_parent_tasks || isAdmin);
@@ -226,18 +260,21 @@ function AppLayout() {
 
   return (
     <Layout className="app-layout">
-      <Sider width={256} className="app-sider">
+      <Sider width={256} collapsedWidth={76} collapsed={compactLayout} className="app-sider">
         <div className="brand">
-          <div className="brand-icon">任</div>
-          <div>
+          <img className="brand-icon" src={taskFollowIcon} alt="任务跟踪系统" />
+          <div className="brand-text">
             <strong>任务跟踪系统</strong>
             <span>闭环管理</span>
           </div>
         </div>
         <Menu mode="inline" selectedKeys={[selectedKey]} items={menuItems} />
-        <div className="sider-user">
-          <TeamOutlined />
-          <span>{loading ? '加载中' : auth?.user?.name || '-'}</span>
+        <div className="sider-footer">
+          <img src={companyLogoCompact} alt="Fortune Microbot" />
+          <div className="sider-user">
+            <TeamOutlined />
+            <span>{loading ? '加载中' : auth?.user?.name || '-'}</span>
+          </div>
         </div>
       </Sider>
       <Layout>
@@ -245,7 +282,8 @@ function AppLayout() {
           <Space size={20}>
             <Typography.Title level={4}>公司任务推进与周更新跟踪系统</Typography.Title>
           </Space>
-          <Space split={<Divider type="vertical" />}>
+          <Space className="header-meta" split={<Divider type="vertical" />}>
+            <img className="header-company-logo" src={companyLogoCompact} alt="Fortune Microbot" />
             <span>{auth?.user?.name}</span>
             <span>{auth?.user?.department}</span>
             <Tag color="blue">{headerDate}</Tag>
@@ -327,7 +365,10 @@ function GoalDetail() {
                 <Space direction="vertical" className="full-width">
                   <Typography.Text type="secondary">{task.code}</Typography.Text>
                   <Typography.Title level={4}>{task.title}</Typography.Title>
-                  <span>{task.department || '-'} · {task.owner || '-'}</span>
+                  <Space size={6} wrap>
+                    <span>{task.department || '-'}</span>
+                    {renderPeople(task.owners || task.owner)}
+                  </Space>
                   <Space wrap>
                     <Tag color="blue">{task.department_task_count || 0} 个部门任务</Tag>
                     <Tag color="green">{task.sub_task_count || 0} 个子任务</Tag>
@@ -371,7 +412,7 @@ function ParentTasks() {
     message.success('母任务已新增');
     setCreateOpen(false);
     createForm.resetFields();
-    reload();
+    await reload();
   };
   const openEdit = (task: AnyRecord) => {
     setEditing(task);
@@ -390,7 +431,7 @@ function ParentTasks() {
     await putJson(`/parent-tasks/${editing.id}`, normalizeParentTaskValues(values));
     message.success('母任务已更新');
     setEditing(null);
-    reload();
+    await reload();
   };
   const archiveParentTask = async () => {
     const values = await deleteForm.validateFields();
@@ -398,7 +439,7 @@ function ParentTasks() {
     message.success('母任务已归档');
     setDeleteOpen(false);
     deleteForm.resetFields();
-    reload();
+    await reload();
   };
 
   return (
@@ -592,7 +633,7 @@ function SplitSubTaskForm({ form, task, peopleOptions }: {
 function ParentTaskDetail() {
   const navigate = useNavigate();
   const { parentTaskId } = useParams();
-  const { data: task } = useApi<AnyRecord>(`/parent-tasks/${parentTaskId}`, [parentTaskId]);
+  const { data: task, reload: reloadParentTask } = useApi<AnyRecord>(`/parent-tasks/${parentTaskId}`, [parentTaskId]);
   const { data: departmentTasks, reload } = useApi<AnyRecord[]>(`/parent-tasks/${parentTaskId}/department-tasks`, [parentTaskId]);
   const { data: departments } = useApi<AnyRecord[]>('/departments', []);
   const { data: people } = useApi<AnyRecord[]>('/user-options', []);
@@ -623,7 +664,8 @@ function ParentTaskDetail() {
     message.success('部门级任务已新增');
     setCreateOpen(false);
     createForm.resetFields();
-    reload();
+    await reload();
+    await reloadParentTask();
   };
   const openDepartmentTaskEdit = (row: AnyRecord) => {
     setEditing(row);
@@ -640,7 +682,8 @@ function ParentTaskDetail() {
     await putJson(`/department-tasks/${editing.id}`, normalizeDepartmentTaskValues(values));
     message.success('部门级任务已更新');
     setEditing(null);
-    reload();
+    await reload();
+    await reloadParentTask();
   };
   const archiveDepartmentTask = async () => {
     const values = await deleteForm.validateFields();
@@ -648,17 +691,18 @@ function ParentTaskDetail() {
     message.success('部门级任务已归档');
     setDeleteOpen(false);
     deleteForm.resetFields();
-    reload();
+    await reload();
+    await reloadParentTask();
   };
   const columns: ColumnsType<AnyRecord> = [
-    { title: '任务编号', dataIndex: 'code', width: 130 },
-    { title: '部门级任务', dataIndex: 'title' },
-    { title: '负责部门', dataIndex: 'departments', render: (value) => <Space wrap>{(value || []).map((item: AnyRecord) => <Tag key={item.id}>{item.name}</Tag>)}</Space> },
-    { title: '负责人', dataIndex: 'owners', width: 180, render: renderPeople },
-    { title: '状态', dataIndex: 'status', width: 110, render: (value) => <StatusTag value={value} /> },
+    { title: '任务编号', dataIndex: 'code', width: 110 },
+    { title: '部门级任务', dataIndex: 'title', width: 230, ellipsis: true, render: renderEllipsis },
+    { title: '负责部门', dataIndex: 'departments', width: 160, responsive: ['lg'], render: (value) => <Space wrap>{(value || []).map((item: AnyRecord) => <Tag key={item.id}>{item.name}</Tag>)}</Space> },
+    { title: '负责人', dataIndex: 'owners', width: 140, render: renderPeople },
+    { title: '状态', dataIndex: 'status', width: 96, render: (value) => <StatusTag value={value} /> },
     {
       title: '编辑',
-      width: 120,
+      width: 96,
       render: (_, row) => (
         <Button size="small" disabled={!row.can_edit} onClick={() => openDepartmentTaskEdit(row)}>
           编辑
@@ -675,7 +719,7 @@ function ParentTaskDetail() {
       <Card className="mb16">
         <Descriptions column={3}>
           <Descriptions.Item label="战略目标">{task?.goal || '-'}</Descriptions.Item>
-          <Descriptions.Item label="负责人">{task?.owner || '-'}</Descriptions.Item>
+          <Descriptions.Item label="负责人">{renderPeople(task?.owners || task?.owner)}</Descriptions.Item>
           <Descriptions.Item label="牵头部门">{task?.department || '-'}</Descriptions.Item>
           <Descriptions.Item label="状态"><StatusTag value={task?.status} /></Descriptions.Item>
           <Descriptions.Item label="截止日期">{task?.due_date || '-'}</Descriptions.Item>
@@ -694,6 +738,8 @@ function ParentTaskDetail() {
           rowKey="id"
           dataSource={departmentTasks || []}
           columns={columns}
+          tableLayout="fixed"
+          scroll={{ x: 900 }}
           expandable={{
             expandedRowRender: (row) => (
               <Table
@@ -703,11 +749,13 @@ function ParentTaskDetail() {
                 dataSource={row.sub_tasks || []}
                 columns={[
                   { title: '子任务编号', dataIndex: 'code', width: 150 },
-                  { title: '具体任务', dataIndex: 'title' },
-                  { title: '执行人', dataIndex: 'executors', width: 180, render: renderPeople },
-                  { title: '风险', dataIndex: 'risk_level', width: 100, render: (value) => <StatusTag value={value} /> },
-                  { title: '截止日期', dataIndex: 'due_date', width: 120 }
+                  { title: '具体任务', dataIndex: 'title', width: 240, ellipsis: true, render: renderEllipsis },
+                  { title: '执行人', dataIndex: 'executors', width: 140, render: renderPeople },
+                  { title: '风险', dataIndex: 'risk_level', width: 92, render: (value) => <StatusTag value={value} /> },
+                  { title: '截止日期', dataIndex: 'due_date', width: 108, responsive: ['lg'] }
                 ]}
+                tableLayout="fixed"
+                scroll={{ x: 704 }}
               />
             ),
             rowExpandable: (row) => Boolean((row.sub_tasks || []).length)
@@ -763,18 +811,18 @@ function DepartmentTasks() {
     message.success('子任务已拆解');
     setSplitting(null);
     splitForm.resetFields();
-    reload();
+    await reload();
   };
   const departmentTaskColumns: ColumnsType<AnyRecord> = [
-    { title: '任务编号', dataIndex: 'code', width: 120 },
-    { title: '部门任务', dataIndex: 'title' },
-    { title: '所属母任务', dataIndex: 'parent_task', width: 220 },
-    { title: '负责部门', dataIndex: 'departments', render: (value) => <Space wrap>{(value || []).map((item: AnyRecord) => <Tag key={item.id}>{item.name}</Tag>)}</Space> },
-    { title: '负责人', dataIndex: 'owners', width: 180, render: renderPeople },
-    { title: '状态', dataIndex: 'status', width: 110, render: (value) => <StatusTag value={value} /> },
+    { title: '任务编号', dataIndex: 'code', width: 106 },
+    { title: '部门任务', dataIndex: 'title', width: 220, ellipsis: true, render: renderEllipsis },
+    { title: '所属母任务', dataIndex: 'parent_task', width: 190, ellipsis: true, render: renderEllipsis },
+    { title: '负责部门', dataIndex: 'departments', width: 160, responsive: ['lg'], render: (value) => <Space wrap>{(value || []).map((item: AnyRecord) => <Tag key={item.id}>{item.name}</Tag>)}</Space> },
+    { title: '负责人', dataIndex: 'owners', width: 138, render: renderPeople },
+    { title: '状态', dataIndex: 'status', width: 96, render: (value) => <StatusTag value={value} /> },
     {
       title: '拆解',
-      width: 150,
+      width: 116,
       render: (_, row) => (
         <Space>
           {row.pending_split_count ? <Tag color="orange">{row.pending_split_count} 个</Tag> : <Tag>无</Tag>}
@@ -806,6 +854,8 @@ function DepartmentTasks() {
               rowKey="id"
               dataSource={departmentTasks}
               columns={departmentTaskColumns}
+              tableLayout="fixed"
+              scroll={{ x: 866 }}
               expandable={{
                 expandedRowRender: (row) => (
                   <Table
@@ -814,12 +864,14 @@ function DepartmentTasks() {
                     pagination={false}
                     dataSource={row.sub_tasks || []}
                     columns={[
-                      { title: '子任务编号', dataIndex: 'code', width: 140 },
-                      { title: '具体任务', dataIndex: 'title' },
-                      { title: '执行人', dataIndex: 'executors', width: 180, render: renderPeople },
-                      { title: '风险', dataIndex: 'risk_level', width: 100, render: (value) => <StatusTag value={value} /> },
-                      { title: '截止日期', dataIndex: 'due_date', width: 120 }
+                      { title: '子任务编号', dataIndex: 'code', width: 124 },
+                      { title: '具体任务', dataIndex: 'title', width: 240, ellipsis: true, render: renderEllipsis },
+                      { title: '执行人', dataIndex: 'executors', width: 140, render: renderPeople },
+                      { title: '风险', dataIndex: 'risk_level', width: 92, render: (value) => <StatusTag value={value} /> },
+                      { title: '截止日期', dataIndex: 'due_date', width: 108, responsive: ['lg'] }
                     ]}
+                    tableLayout="fixed"
+                    scroll={{ x: 704 }}
                   />
                 ),
                 rowExpandable: (row) => Boolean((row.sub_tasks || []).length)
@@ -848,24 +900,24 @@ function SubTasks() {
     management: { label: '管理查看', color: 'default' }
   };
   const columns: ColumnsType<AnyRecord> = [
-    { title: '编号', dataIndex: 'code', width: 150 },
-    { title: '子任务', dataIndex: 'title' },
-    { title: '部门级任务', dataIndex: 'department_task' },
-    { title: '执行人', dataIndex: 'executors', width: 180, render: renderPeople },
-    { title: '负责人', dataIndex: 'owners', width: 180, render: renderPeople },
+    { title: '编号', dataIndex: 'code', width: 124 },
+    { title: '子任务', dataIndex: 'title', width: 240, ellipsis: true, render: renderEllipsis },
+    { title: '部门级任务', dataIndex: 'department_task', width: 190, ellipsis: true, render: renderEllipsis },
+    { title: '执行人', dataIndex: 'executors', width: 132, render: renderPeople },
+    { title: '负责人', dataIndex: 'owners', width: 132, render: renderPeople },
     {
       title: '我的身份',
       dataIndex: 'viewer_relation',
-      width: 120,
+      width: 96,
       render: (value) => {
         const meta = relationLabels[String(value)] || { label: '-', color: 'default' };
         return <Tag color={meta.color}>{meta.label}</Tag>;
       }
     },
-    { title: '状态', dataIndex: 'status', width: 120, render: (value) => <StatusTag value={value} /> },
-    { title: '本周状态', dataIndex: 'weekly_status', width: 120, render: (value) => <StatusTag value={value} /> },
-    { title: '风险', dataIndex: 'risk_level', width: 110, render: (value) => <StatusTag value={value} /> },
-    { title: '截止日期', dataIndex: 'due_date', width: 120 },
+    { title: '状态', dataIndex: 'status', width: 96, render: (value) => <StatusTag value={value} /> },
+    { title: '本周状态', dataIndex: 'weekly_status', width: 96, render: (value) => <StatusTag value={value} /> },
+    { title: '风险', dataIndex: 'risk_level', width: 92, render: (value) => <StatusTag value={value} /> },
+    { title: '截止日期', dataIndex: 'due_date', width: 108, responsive: ['lg'] },
     {
       title: '操作',
       width: 100,
@@ -883,8 +935,10 @@ function SubTasks() {
         rowKey="id"
         dataSource={items}
         columns={columns}
+        tableLayout="fixed"
+        scroll={{ x: 1120 }}
         title={() => (
-          <Space>
+          <Space className="subtask-group-title" wrap>
             <Typography.Text strong>{title}</Typography.Text>
             <Tag>{items.length}</Tag>
             <Typography.Text type="secondary">{description}</Typography.Text>
@@ -1046,8 +1100,8 @@ function SubTaskUpdate() {
       <Card className="mb16">
         <Descriptions column={3}>
           <Descriptions.Item label="部门级任务">{subTask?.department_task || '-'}</Descriptions.Item>
-          <Descriptions.Item label="执行人">{subTask?.executor || '-'}</Descriptions.Item>
-          <Descriptions.Item label="负责人">{subTask?.owner || '-'}</Descriptions.Item>
+          <Descriptions.Item label="执行人">{renderPeople(subTask?.executors || subTask?.executor)}</Descriptions.Item>
+          <Descriptions.Item label="负责人">{renderPeople(subTask?.owners || subTask?.owner)}</Descriptions.Item>
           <Descriptions.Item label="当前填报人">{update?.assignee || '-'}</Descriptions.Item>
           <Descriptions.Item label="状态"><StatusTag value={subTask?.status} /></Descriptions.Item>
           <Descriptions.Item label="风险"><StatusTag value={subTask?.risk_level} /></Descriptions.Item>
@@ -1088,7 +1142,7 @@ function SubTaskUpdate() {
 
 function MeetingBoardTabs() {
   return (
-    <Space className="mb16" wrap>
+    <Space className="mb16 meeting-tabs" wrap>
       <Button><Link to="/meeting-board/overview">总览</Link></Button>
       <Button><Link to="/meeting-board/parent">母任务看板</Link></Button>
       <Button><Link to="/meeting-board/department">部门看板</Link></Button>
@@ -1114,17 +1168,17 @@ function MeetingBoardOverview() {
   return (
     <PageShell title="会议看板" subtitle={`当前周期 ${data?.week_key || '-'}，汇总周更新、风险、逾期和任务节奏`}>
       <MeetingBoardTabs />
-      <Row gutter={[16, 16]}>
+      <Row gutter={[16, 16]} className="meeting-metric-row">
         {[
-          ['进行中子任务', cards.active_sub_tasks, '#2563c9'],
-          ['本周已更新', cards.updated_this_week, '#16a34a'],
+          ['进行中子任务', cards.active_sub_tasks, '#2457d6'],
+          ['本周已更新', cards.updated_this_week, '#5f9f25'],
           ['本周待更新', cards.missing_updates, '#d97706'],
           ['风险任务', cards.risk_tasks, '#dc2626'],
           ['逾期任务', cards.overdue_tasks, '#b91c1c'],
           ['已完成任务', cards.completed_tasks, '#0f766e']
         ].map(([label, value, color]) => (
           <Col xs={24} sm={12} xl={4} key={String(label)}>
-            <Card loading={loading} className="metric-card" style={{ borderTopColor: String(color) }}>
+            <Card loading={loading} className="metric-card meeting-metric-card" style={{ borderTopColor: String(color) }}>
               <Statistic title={label} value={Number(value || 0)} valueStyle={{ color: String(color) }} />
             </Card>
           </Col>
@@ -1139,7 +1193,7 @@ function MeetingBoardOverview() {
               grid: { left: 40, right: 16, top: 32, bottom: 32 },
               xAxis: { type: 'category', data: weeklyBar.map((item: AnyRecord) => item.name) },
               yAxis: { type: 'value' },
-              series: [{ type: 'bar', data: weeklyBar.map((item: AnyRecord) => item.value), itemStyle: { color: '#2563c9' } }]
+              series: [{ type: 'bar', data: weeklyBar.map((item: AnyRecord) => item.value), itemStyle: { color: '#2457d6' } }]
             }}
           />
         </Col>
@@ -1163,8 +1217,8 @@ function MeetingBoardOverview() {
               xAxis: { type: 'category', data: trend.map((item: AnyRecord) => item.week_key) },
               yAxis: { type: 'value' },
               series: [
-                { name: '已提交', type: 'line', smooth: true, data: trend.map((item: AnyRecord) => item.submitted) },
-                { name: '草稿', type: 'line', smooth: true, data: trend.map((item: AnyRecord) => item.draft) }
+                { name: '已提交', type: 'line', smooth: true, data: trend.map((item: AnyRecord) => item.submitted), itemStyle: { color: '#2457d6' } },
+                { name: '草稿', type: 'line', smooth: true, data: trend.map((item: AnyRecord) => item.draft), itemStyle: { color: '#8cc63f' } }
               ]
             }}
           />
@@ -1180,25 +1234,27 @@ function MeetingBoardOverview() {
               yAxis: { type: 'category', data: ganttCategories, inverse: true },
               series: [
                 { type: 'bar', stack: 'total', data: ganttOffset, itemStyle: { color: 'transparent' }, emphasis: { disabled: true } },
-                { type: 'bar', stack: 'total', data: ganttDuration, itemStyle: { color: '#16a34a' } }
+                { type: 'bar', stack: 'total', data: ganttDuration, itemStyle: { color: '#5f9f25' } }
               ]
             }}
           />
         </Col>
       </Row>
-      <Card id="risk-overdue" title="风险与逾期汇总" className="section-row">
+      <Card id="risk-overdue" title="风险与逾期汇总" className="section-row meeting-table-card">
         <Table
           rowKey="id"
           dataSource={data?.risk_overdue || []}
+          tableLayout="fixed"
+          scroll={{ x: 960 }}
           columns={[
-            { title: '类型', dataIndex: 'issue_type', width: 90, render: (value) => <Tag color={value === '逾期' ? 'red' : 'orange'}>{value}</Tag> },
-            { title: '编号', dataIndex: 'code', width: 150 },
-            { title: '子任务', dataIndex: 'title' },
-            { title: '部门级任务', dataIndex: 'department_task', width: 220 },
-            { title: '执行人', dataIndex: 'executors', width: 180, render: renderPeople },
-            { title: '负责人', dataIndex: 'owners', width: 180, render: renderPeople },
-            { title: '风险', dataIndex: 'risk_level', width: 100, render: (value) => <StatusTag value={value} /> },
-            { title: '截止日期', dataIndex: 'due_date', width: 120 }
+            { title: '类型', dataIndex: 'issue_type', width: 78, render: (value) => <Tag color={value === '逾期' ? 'red' : 'orange'}>{value}</Tag> },
+            { title: '编号', dataIndex: 'code', width: 124 },
+            { title: '子任务', dataIndex: 'title', width: 230, ellipsis: true, render: renderEllipsis },
+            { title: '部门级任务', dataIndex: 'department_task', width: 190, ellipsis: true, render: renderEllipsis },
+            { title: '执行人', dataIndex: 'executors', width: 132, render: renderPeople },
+            { title: '负责人', dataIndex: 'owners', width: 132, render: renderPeople },
+            { title: '风险', dataIndex: 'risk_level', width: 88, render: (value) => <StatusTag value={value} /> },
+            { title: '截止日期', dataIndex: 'due_date', width: 108, responsive: ['lg'] }
           ]}
         />
       </Card>
@@ -1222,21 +1278,23 @@ function MeetingBoardParent() {
           series: [{ type: 'bar', data: rows.map((item: AnyRecord) => item.missing_updates), itemStyle: { color: '#d97706' } }]
         }}
       />
-      <Card title="母任务汇总" className="section-row">
+      <Card title="母任务汇总" className="section-row meeting-table-card">
         <Table
           rowKey="id"
           dataSource={rows}
+          tableLayout="fixed"
+          scroll={{ x: 900 }}
           columns={[
-            { title: '编号', dataIndex: 'code', width: 120 },
-            { title: '母任务', dataIndex: 'title' },
-            { title: '牵头部门', dataIndex: 'department', width: 140 },
-            { title: '负责人', dataIndex: 'owner', width: 120 },
-            { title: '部门任务', dataIndex: 'department_task_count', width: 100 },
-            { title: '子任务', dataIndex: 'sub_task_count', width: 90 },
-            { title: '待更新', dataIndex: 'missing_updates', width: 90 },
-            { title: '风险', dataIndex: 'risk_count', width: 80 },
-            { title: '逾期', dataIndex: 'overdue_count', width: 80 },
-            { title: '完成', dataIndex: 'completed_count', width: 80 }
+            { title: '编号', dataIndex: 'code', width: 106 },
+            { title: '母任务', dataIndex: 'title', width: 230, ellipsis: true, render: renderEllipsis },
+            { title: '牵头部门', dataIndex: 'department', width: 120, ellipsis: true, render: renderEllipsis },
+            { title: '负责人', dataIndex: 'owners', width: 132, render: (_: AnyRecord[] | string | null, row: AnyRecord) => renderPeople(row.owners || row.owner) },
+            { title: '部门任务', dataIndex: 'department_task_count', width: 88 },
+            { title: '子任务', dataIndex: 'sub_task_count', width: 76 },
+            { title: '待更新', dataIndex: 'missing_updates', width: 76 },
+            { title: '风险', dataIndex: 'risk_count', width: 68 },
+            { title: '逾期', dataIndex: 'overdue_count', width: 68 },
+            { title: '完成', dataIndex: 'completed_count', width: 68 }
           ]}
         />
       </Card>
@@ -1259,7 +1317,7 @@ function MeetingBoardDepartment() {
               grid: { left: 80, right: 16, top: 24, bottom: 80 },
               xAxis: { type: 'category', data: rows.map((item: AnyRecord) => item.name), axisLabel: { rotate: 35 } },
               yAxis: { type: 'value' },
-              series: [{ type: 'bar', data: rows.map((item: AnyRecord) => item.sub_task_count), itemStyle: { color: '#2563c9' } }]
+              series: [{ type: 'bar', data: rows.map((item: AnyRecord) => item.sub_task_count), itemStyle: { color: '#2457d6' } }]
             }}
           />
         </Col>
@@ -1276,18 +1334,20 @@ function MeetingBoardDepartment() {
           />
         </Col>
       </Row>
-      <Card title="部门汇总" className="section-row">
+      <Card title="部门汇总" className="section-row meeting-table-card">
         <Table
           rowKey="id"
           dataSource={rows}
+          tableLayout="fixed"
+          scroll={{ x: 680 }}
           columns={[
-            { title: '部门', dataIndex: 'name' },
-            { title: '部门任务', dataIndex: 'department_task_count', width: 110 },
-            { title: '子任务', dataIndex: 'sub_task_count', width: 90 },
-            { title: '待更新', dataIndex: 'missing_updates', width: 90 },
-            { title: '风险', dataIndex: 'risk_count', width: 80 },
-            { title: '逾期', dataIndex: 'overdue_count', width: 80 },
-            { title: '完成', dataIndex: 'completed_count', width: 80 }
+            { title: '部门', dataIndex: 'name', width: 200, ellipsis: true, render: renderEllipsis },
+            { title: '部门任务', dataIndex: 'department_task_count', width: 92 },
+            { title: '子任务', dataIndex: 'sub_task_count', width: 78 },
+            { title: '待更新', dataIndex: 'missing_updates', width: 78 },
+            { title: '风险', dataIndex: 'risk_count', width: 68 },
+            { title: '逾期', dataIndex: 'overdue_count', width: 68 },
+            { title: '完成', dataIndex: 'completed_count', width: 68 }
           ]}
         />
       </Card>

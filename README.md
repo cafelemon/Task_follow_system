@@ -1,8 +1,8 @@
 # 公司任务跟踪系统
 
-版本：`2.0.4`
+版本：`2.0.6`
 
-公司任务跟踪系统是面向公司级任务推进、每周更新、风险协调和会议看板的独立 Web 系统。2.0.4 聚焦生产迁移前整理：管理员上传邮箱表并批量解析 open_id，任务负责人和执行者支持多人，多个执行人各自提交周更新。
+公司任务跟踪系统是面向公司级任务推进、每周更新、风险协调和会议看板的独立 Web 系统。2.0.6 在 2.0.5 全局美化基础上，补齐小屏幕适配：侧栏自动收起、表格列宽收敛、长文本省略并悬停显示完整内容。
 
 ## 技术栈
 
@@ -18,24 +18,26 @@
 docker compose -f deploy/docker-compose.yml up --build
 ```
 
-启动后访问：
+本地启动后访问：
 
-- 前端：http://localhost:28081
-- 后端健康检查：http://localhost:28081/api/health
+- 前端：http://localhost:8080
+- 后端健康检查：http://localhost:8080/api/health
+
+生产环境由 IT 反代到内网服务端口时，可设置 `TASK_FOLLOW_DOCKER_HTTP_PORT=28081`。
 
 首次初始化全新数据库时，需要通过本地环境变量提供系统管理员初始密码，仓库不保存明文密码或密码哈希。可参考 `.env.example`，在本机创建不提交的 `.env`，或在启动前导出 `TASK_FOLLOW_ADMIN_PASSWORD` / `TASK_FOLLOW_ADMIN_PASSWORD_HASH`。
 
-## 飞书 2.0.4 接入配置
+## 飞书 2.0.6 接入配置
 
-2.0.4 使用飞书企业自建应用接口获取 `tenant_access_token`、`app_access_token`，支持按邮箱解析 `open_id`、发送互动卡片和网页免登录。默认不发送真实消息，需要显式启用：
+2.0.6 使用飞书企业自建应用接口获取 `tenant_access_token`、`app_access_token`，支持按邮箱解析 `open_id`、发送互动卡片和网页免登录。默认不发送真实消息，需要显式启用：
 
 ```bash
 TASK_FOLLOW_LARK_ENABLED=true
 TASK_FOLLOW_LARK_APP_ID=cli_xxx
 TASK_FOLLOW_LARK_APP_SECRET=xxx
-TASK_FOLLOW_WEB_BASE_URL=http://localhost:28081
+TASK_FOLLOW_WEB_BASE_URL=http://localhost:8080
 TASK_FOLLOW_LINK_SECRET=
-TASK_FOLLOW_LARK_OAUTH_REDIRECT_URI=http://localhost:28081/api/auth/lark-oauth/callback
+TASK_FOLLOW_LARK_OAUTH_REDIRECT_URI=http://localhost:8080/api/auth/lark-oauth/callback
 TASK_FOLLOW_LARK_OAUTH_STATE_SECRET=
 ```
 
@@ -67,5 +69,6 @@ npm run dev
 - 多执行人子任务按执行人分别提交周更新，支持草稿和提交；提交后修改生成修订记录。
 - 自动会议看板：高风险、未更新、协调事项、完成事项、下周重点自动汇总。
 - 权限矩阵可配置，并叠加任务关系权限。
-- 飞书 2.0.4 支持真实周更新提醒卡片、测试卡片、邮箱解析 open_id、签名免密码卡片入口、飞书免登、诊断接口和通知记录状态追踪。
+- 飞书 2.0.6 支持真实周更新提醒卡片、测试卡片、邮箱解析 open_id、签名免密码卡片入口、飞书免登、诊断接口和通知记录状态追踪。
+- 全局布局已完成小屏适配，侧栏在中小屏自动收起，宽表优先收敛列宽并用省略提示保留完整信息。
 - 本地 Docker Compose 部署，附件默认写入本地挂载目录。
