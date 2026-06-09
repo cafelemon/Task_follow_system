@@ -106,7 +106,7 @@ function useApi<T = any>(url: string, deps: any[] = []) {
   return { data, error, loading, reload };
 }
 
-function ChartCard({ title, option, height = 300, className }: { title: string; option: any; height?: number; className?: string }) {
+function ChartCard({ title, option, height = 300, className, onChartClick }: { title: string; option: any; height?: number; className?: string; onChartClick?: (params: any) => void }) {
   const ref = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!ref.current) return;
@@ -114,11 +114,17 @@ function ChartCard({ title, option, height = 300, className }: { title: string; 
     chart.setOption(option);
     const resize = () => chart.resize();
     window.addEventListener('resize', resize);
+    if (onChartClick) {
+      chart.on('click', onChartClick);
+    }
     return () => {
       window.removeEventListener('resize', resize);
+      if (onChartClick) {
+        chart.off('click', onChartClick);
+      }
       chart.dispose();
     };
-  }, [option]);
+  }, [option, onChartClick]);
   return (
     <Card title={title} className={className}>
       <div ref={ref} style={{ height }} />
@@ -133,9 +139,22 @@ function personOptions(people?: AnyRecord[] | null) {
   }));
 }
 
-function PeopleSelect({ options }: { options: { value: number; label: string }[] }) {
+function selectedPersonIds(record: AnyRecord, pluralKey: string, idsKey: string, idKey: string) {
+  const directIds = record?.[idsKey];
+  if (Array.isArray(directIds) && directIds.length) {
+    return directIds;
+  }
+  const people = record?.[pluralKey];
+  if (Array.isArray(people) && people.length) {
+    return people.map((item) => item.id).filter(Boolean);
+  }
+  return record?.[idKey] ? [record[idKey]] : [];
+}
+
+function PeopleSelect({ options, ...props }: { options: { value: number; label: string }[]; [key: string]: any }) {
   return (
     <Select
+      {...props}
       mode="multiple"
       allowClear
       showSearch
@@ -153,6 +172,11 @@ function renderEllipsis(value?: unknown) {
       <span className="table-ellipsis-cell">{text}</span>
     </Tooltip>
   );
+}
+
+function renderBlankEllipsis(value?: unknown) {
+  if (value == null || value === '') return '';
+  return renderEllipsis(value);
 }
 
 function renderPeople(value?: AnyRecord[] | string | null) {
@@ -472,6 +496,19 @@ function ParentTasks() {
   const departmentOptions = (departments || []).map((item) => ({ value: item.id, label: item.name }));
   const peopleOptions = personOptions(people);
 
+  useEffect(() => {
+    if (!editing) return;
+    editForm.resetFields();
+    editForm.setFieldsValue({
+      title: editing.title,
+      description: editing.description,
+      goal_id: editing.goal_id,
+      department_id: editing.department_id,
+      owner_ids: selectedPersonIds(editing, 'owners', 'owner_ids', 'owner_id'),
+      due_date: editing.due_date ? dayjs(editing.due_date) : null
+    });
+  }, [editing, editForm]);
+
   const normalizeParentTaskValues = (values: AnyRecord) => ({
     ...values,
     due_date: values.due_date ? values.due_date.format('YYYY-MM-DD') : null
@@ -486,14 +523,6 @@ function ParentTasks() {
   };
   const openEdit = (task: AnyRecord) => {
     setEditing(task);
-    editForm.setFieldsValue({
-      title: task.title,
-      description: task.description,
-      goal_id: task.goal_id,
-      department_id: task.department_id,
-      owner_ids: task.owner_ids?.length ? task.owner_ids : (task.owner_id ? [task.owner_id] : []),
-      due_date: task.due_date ? dayjs(task.due_date) : null
-    });
   };
   const saveEdit = async () => {
     const values = await editForm.validateFields();
@@ -501,6 +530,7 @@ function ParentTasks() {
     await putJson(`/parent-tasks/${editing.id}`, normalizeParentTaskValues(values));
     message.success('母任务已更新');
     setEditing(null);
+    editForm.resetFields();
     await reload();
   };
   const archiveParentTask = async () => {
@@ -564,7 +594,26 @@ function ParentTasks() {
       <Modal title="新增母任务" open={createOpen} onOk={createParentTask} onCancel={() => setCreateOpen(false)} destroyOnClose>
         <ParentTaskForm form={createForm} goalOptions={goalOptions} departmentOptions={departmentOptions} peopleOptions={peopleOptions} />
       </Modal>
-      <Modal title="编辑母任务" open={Boolean(editing)} onOk={saveEdit} onCancel={() => setEditing(null)} destroyOnClose>
+      <Modal
+        title="编辑母任务"
+        open={Boolean(editing)}
+        onOk={saveEdit}
+        onCancel={() => setEditing(null)}
+        afterOpenChange={(open) => {
+          if (open && editing) {
+            editForm.setFieldsValue({
+              title: editing.title,
+              description: editing.description,
+              goal_id: editing.goal_id,
+              department_id: editing.department_id,
+              owner_ids: selectedPersonIds(editing, 'owners', 'owner_ids', 'owner_id'),
+              due_date: editing.due_date ? dayjs(editing.due_date) : null
+            });
+          }
+        }}
+        destroyOnClose
+        forceRender
+      >
         <ParentTaskForm form={editForm} goalOptions={goalOptions} departmentOptions={departmentOptions} peopleOptions={peopleOptions} />
       </Modal>
       <Modal title="删除母任务" open={deleteOpen} onOk={archiveParentTask} onCancel={() => setDeleteOpen(false)} okText="归档隐藏" okButtonProps={{ danger: true }} destroyOnClose>
@@ -699,6 +748,43 @@ function SplitSubTaskForm({ form, task, peopleOptions }: {
   );
 }
 
+function SubTaskEditForm({ form, task, peopleOptions }: {
+  form: any;
+  task?: AnyRecord | null;
+  peopleOptions: { value: number; label: string }[];
+}) {
+  return (
+    <Form form={form} layout="vertical">
+      {task && (
+        <Alert
+          type="info"
+          showIcon
+          className="mb16"
+          message={`正在编辑：${task.code || ''} ${task.title || ''}`}
+        />
+      )}
+      <Form.Item name="title" label="具体任务" rules={[{ required: true, message: '请输入具体任务' }]}>
+        <Input.TextArea rows={4} />
+      </Form.Item>
+      <Row gutter={16}>
+        <Col xs={24} md={12}>
+          <Form.Item name="owner_ids" label="负责人" rules={[{ required: true, message: '请选择负责人' }]}>
+            <PeopleSelect options={peopleOptions} />
+          </Form.Item>
+        </Col>
+        <Col xs={24} md={12}>
+          <Form.Item name="executor_ids" label="执行人" rules={[{ required: true, message: '请选择执行人' }]}>
+            <PeopleSelect options={peopleOptions} />
+          </Form.Item>
+        </Col>
+      </Row>
+      <Form.Item name="due_date" label="截止日期">
+        <DatePicker className="full-width" />
+      </Form.Item>
+    </Form>
+  );
+}
+
 function ParentTaskDetail() {
   const navigate = useNavigate();
   const { parentTaskId } = useParams();
@@ -715,6 +801,18 @@ function ParentTaskDetail() {
   const departmentOptions = (departments || []).map((item) => ({ value: item.id, label: item.name }));
   const peopleOptions = personOptions(people);
   const canManageDepartmentTasks = Boolean(task?.can_edit);
+
+  useEffect(() => {
+    if (!editing) return;
+    editForm.resetFields();
+    editForm.setFieldsValue({
+      title: editing.title,
+      department_ids: editing.department_ids?.length ? editing.department_ids : (editing.department_id ? [editing.department_id] : []),
+      owner_ids: selectedPersonIds(editing, 'owners', 'owner_ids', 'owner_id'),
+      due_date: editing.due_date ? dayjs(editing.due_date) : null
+    });
+  }, [editing, editForm]);
+
   const normalizeDepartmentTaskValues = (values: AnyRecord) => {
     const departmentIds = values.department_ids || [];
     return {
@@ -738,12 +836,6 @@ function ParentTaskDetail() {
   };
   const openDepartmentTaskEdit = (row: AnyRecord) => {
     setEditing(row);
-    editForm.setFieldsValue({
-      title: row.title,
-      department_ids: row.department_ids?.length ? row.department_ids : (row.department_id ? [row.department_id] : []),
-      owner_ids: row.owner_ids?.length ? row.owner_ids : (row.owner_id ? [row.owner_id] : []),
-      due_date: row.due_date ? dayjs(row.due_date) : null
-    });
   };
   const saveDepartmentTaskEdit = async () => {
     const values = await editForm.validateFields();
@@ -751,6 +843,7 @@ function ParentTaskDetail() {
     await putJson(`/department-tasks/${editing.id}`, normalizeDepartmentTaskValues(values));
     message.success('部门级任务已更新');
     setEditing(null);
+    editForm.resetFields();
     await reload();
     await reloadParentTask();
   };
@@ -820,14 +913,16 @@ function ParentTaskDetail() {
                 dataSource={row.sub_tasks || []}
                 className="business-table nested-table"
                 columns={[
-                  { title: '子任务编号', dataIndex: 'code', width: 150 },
-                  { title: '具体任务', dataIndex: 'title', width: 240, ellipsis: true, render: renderEllipsis },
-                  { title: '执行人', dataIndex: 'executors', width: 140, render: renderPeople },
-                  { title: '风险', dataIndex: 'risk_level', width: 92, render: (value) => <StatusTag value={value} /> },
-                  { title: '截止日期', dataIndex: 'due_date', width: 108, responsive: ['lg'] }
+                  { title: '子任务编号', dataIndex: 'code', width: 124 },
+                  { title: '具体任务', dataIndex: 'title', width: 210, ellipsis: true, render: renderEllipsis },
+                  { title: '执行人', dataIndex: 'executors', width: 124, render: renderPeople },
+                  { title: '本周完成内容', dataIndex: 'weekly_this_week', width: 190, render: renderBlankEllipsis },
+                  { title: '遗留事项', dataIndex: 'weekly_risk', width: 190, render: renderBlankEllipsis },
+                  { title: '风险', dataIndex: 'risk_level', width: 88, render: (value) => <StatusTag value={value} /> },
+                  { title: '截止日期', dataIndex: 'due_date', width: 104, responsive: ['lg'] }
                 ]}
                 tableLayout="fixed"
-                scroll={{ x: 704 }}
+                scroll={{ x: 1030 }}
               />
             ),
             rowExpandable: (row) => Boolean((row.sub_tasks || []).length)
@@ -837,7 +932,24 @@ function ParentTaskDetail() {
       <Modal title="新增部门级任务" open={createOpen} onOk={createDepartmentTask} onCancel={() => setCreateOpen(false)} destroyOnClose>
         <DepartmentTaskForm form={createForm} parentTask={task} departmentOptions={departmentOptions} peopleOptions={peopleOptions} />
       </Modal>
-      <Modal title="编辑部门级任务" open={Boolean(editing)} onOk={saveDepartmentTaskEdit} onCancel={() => setEditing(null)} destroyOnClose>
+      <Modal
+        title="编辑部门级任务"
+        open={Boolean(editing)}
+        onOk={saveDepartmentTaskEdit}
+        onCancel={() => setEditing(null)}
+        afterOpenChange={(open) => {
+          if (open && editing) {
+            editForm.setFieldsValue({
+              title: editing.title,
+              department_ids: editing.department_ids?.length ? editing.department_ids : (editing.department_id ? [editing.department_id] : []),
+              owner_ids: selectedPersonIds(editing, 'owners', 'owner_ids', 'owner_id'),
+              due_date: editing.due_date ? dayjs(editing.due_date) : null
+            });
+          }
+        }}
+        destroyOnClose
+        forceRender
+      >
         <DepartmentTaskForm form={editForm} parentTask={task} departmentOptions={departmentOptions} peopleOptions={peopleOptions} />
       </Modal>
       <Modal title="删除部门级任务" open={deleteOpen} onOk={archiveDepartmentTask} onCancel={() => setDeleteOpen(false)} okText="归档隐藏" okButtonProps={{ danger: true }} destroyOnClose>
@@ -858,17 +970,39 @@ function DepartmentTasks() {
   const { data, reload } = useApi<AnyRecord>(query, [selectedDepartmentId]);
   const { data: people } = useApi<AnyRecord[]>('/user-options', []);
   const [splitting, setSplitting] = useState<AnyRecord | null>(null);
+  const [editingSubTask, setEditingSubTask] = useState<AnyRecord | null>(null);
   const [splitForm] = Form.useForm();
+  const [subTaskEditForm] = Form.useForm();
   const departmentTasks: AnyRecord[] = data?.department_tasks || [];
   const peopleOptions = personOptions(people);
-  const openSplit = (row: AnyRecord) => {
-    setSplitting(row);
+
+  useEffect(() => {
+    if (!splitting) return;
+    splitForm.resetFields();
     splitForm.setFieldsValue({
       title: undefined,
-      owner_ids: row.owner_ids?.length ? row.owner_ids : (row.owner_id ? [row.owner_id] : []),
+      owner_ids: selectedPersonIds(splitting, 'owners', 'owner_ids', 'owner_id'),
       executor_ids: undefined,
-      due_date: row.due_date ? dayjs(row.due_date) : null
+      due_date: splitting.due_date ? dayjs(splitting.due_date) : null
     });
+  }, [splitting, splitForm]);
+
+  useEffect(() => {
+    if (!editingSubTask) return;
+    subTaskEditForm.resetFields();
+    subTaskEditForm.setFieldsValue({
+      title: editingSubTask.title,
+      owner_ids: selectedPersonIds(editingSubTask, 'owners', 'owner_ids', 'owner_id'),
+      executor_ids: selectedPersonIds(editingSubTask, 'executors', 'executor_ids', 'executor_id'),
+      due_date: editingSubTask.due_date ? dayjs(editingSubTask.due_date) : null
+    });
+  }, [editingSubTask, subTaskEditForm]);
+
+  const openSplit = (row: AnyRecord) => {
+    setSplitting(row);
+  };
+  const openSubTaskEdit = (subTask: AnyRecord) => {
+    setEditingSubTask(subTask);
   };
   const createSubTask = async () => {
     const values = await splitForm.validateFields();
@@ -883,6 +1017,20 @@ function DepartmentTasks() {
     message.success('子任务已拆解');
     setSplitting(null);
     splitForm.resetFields();
+    await reload();
+  };
+  const saveSubTaskEdit = async () => {
+    const values = await subTaskEditForm.validateFields();
+    if (!editingSubTask) return;
+    await putJson(`/sub-tasks/${editingSubTask.id}`, {
+      title: values.title,
+      owner_ids: values.owner_ids,
+      executor_ids: values.executor_ids,
+      due_date: values.due_date ? values.due_date.format('YYYY-MM-DD') : null
+    });
+    message.success('子任务已更新');
+    setEditingSubTask(null);
+    subTaskEditForm.resetFields();
     await reload();
   };
   const departmentTaskColumns: ColumnsType<AnyRecord> = [
@@ -940,13 +1088,24 @@ function DepartmentTasks() {
                     className="business-table nested-table"
                     columns={[
                       { title: '子任务编号', dataIndex: 'code', width: 124 },
-                      { title: '具体任务', dataIndex: 'title', width: 240, ellipsis: true, render: renderEllipsis },
-                      { title: '执行人', dataIndex: 'executors', width: 140, render: renderPeople },
-                      { title: '风险', dataIndex: 'risk_level', width: 92, render: (value) => <StatusTag value={value} /> },
-                      { title: '截止日期', dataIndex: 'due_date', width: 108, responsive: ['lg'] }
+                      { title: '具体任务', dataIndex: 'title', width: 210, ellipsis: true, render: renderEllipsis },
+                      { title: '执行人', dataIndex: 'executors', width: 124, render: renderPeople },
+                      { title: '本周完成内容', dataIndex: 'weekly_this_week', width: 190, render: renderBlankEllipsis },
+                      { title: '遗留事项', dataIndex: 'weekly_risk', width: 190, render: renderBlankEllipsis },
+                      { title: '风险', dataIndex: 'risk_level', width: 88, render: (value) => <StatusTag value={value} /> },
+                      { title: '截止日期', dataIndex: 'due_date', width: 104, responsive: ['lg'] },
+                      {
+                        title: '操作',
+                        width: 82,
+                        render: (_: unknown, subTask: AnyRecord) => (
+                          <Button size="small" disabled={!row.can_split} onClick={() => openSubTaskEdit(subTask)}>
+                            编辑
+                          </Button>
+                        )
+                      }
                     ]}
                     tableLayout="fixed"
-                    scroll={{ x: 704 }}
+                    scroll={{ x: 1112 }}
                   />
                 ),
                 rowExpandable: (row) => Boolean((row.sub_tasks || []).length)
@@ -955,8 +1114,45 @@ function DepartmentTasks() {
           </Card>
         </Space>
       </div>
-      <Modal title="拆解子任务" open={Boolean(splitting)} onOk={createSubTask} onCancel={() => setSplitting(null)} destroyOnClose>
+      <Modal
+        title="拆解子任务"
+        open={Boolean(splitting)}
+        onOk={createSubTask}
+        onCancel={() => setSplitting(null)}
+        afterOpenChange={(open) => {
+          if (open && splitting) {
+            splitForm.setFieldsValue({
+              title: undefined,
+              owner_ids: selectedPersonIds(splitting, 'owners', 'owner_ids', 'owner_id'),
+              executor_ids: undefined,
+              due_date: splitting.due_date ? dayjs(splitting.due_date) : null
+            });
+          }
+        }}
+        destroyOnClose
+        forceRender
+      >
         <SplitSubTaskForm form={splitForm} task={splitting} peopleOptions={peopleOptions} />
+      </Modal>
+      <Modal
+        title="编辑子任务"
+        open={Boolean(editingSubTask)}
+        onOk={saveSubTaskEdit}
+        onCancel={() => setEditingSubTask(null)}
+        afterOpenChange={(open) => {
+          if (open && editingSubTask) {
+            subTaskEditForm.setFieldsValue({
+              title: editingSubTask.title,
+              owner_ids: selectedPersonIds(editingSubTask, 'owners', 'owner_ids', 'owner_id'),
+              executor_ids: selectedPersonIds(editingSubTask, 'executors', 'executor_ids', 'executor_id'),
+              due_date: editingSubTask.due_date ? dayjs(editingSubTask.due_date) : null
+            });
+          }
+        }}
+        destroyOnClose
+        forceRender
+      >
+        <SubTaskEditForm form={subTaskEditForm} task={editingSubTask} peopleOptions={peopleOptions} />
       </Modal>
     </PageShell>
   );
@@ -1228,35 +1424,96 @@ function MeetingBoardTabs() {
   );
 }
 
+function DashboardDetailModal({ detail, onClose }: { detail: AnyRecord | null; onClose: () => void }) {
+  const [keyword, setKeyword] = useState('');
+  useEffect(() => {
+    setKeyword('');
+  }, [detail?.title]);
+  const rows: AnyRecord[] = detail?.rows || [];
+  const visibleRows = rows.filter((row) => JSON.stringify(row).toLowerCase().includes(keyword.trim().toLowerCase()));
+  const subTaskColumns: ColumnsType<AnyRecord> = [
+    { title: '母任务', width: 190, render: (_, row) => renderEllipsis(`${row.parent_task_code || '-'} ${row.parent_task || ''}`) },
+    { title: '部门任务', width: 190, render: (_, row) => renderEllipsis(`${row.department_task_code || '-'} ${row.department_task || ''}`) },
+    { title: '子任务', width: 210, render: (_, row) => renderEllipsis(`${row.code || '-'} ${row.title || ''}`) },
+    { title: '执行人', dataIndex: 'executors', width: 126, render: renderPeople },
+    { title: '负责人', dataIndex: 'owners', width: 126, render: renderPeople },
+    { title: '状态', dataIndex: 'status', width: 88, render: (value) => <StatusTag value={value} /> },
+    { title: '本周', dataIndex: 'weekly_status', width: 88, render: (value) => <StatusTag value={value} /> },
+    { title: '风险', dataIndex: 'risk_level', width: 86, render: (value) => <StatusTag value={value} /> },
+    { title: '截止', dataIndex: 'due_date', width: 104 },
+    { title: '本周完成内容', dataIndex: 'weekly_this_week', width: 210, render: renderBlankEllipsis },
+    { title: '遗留事项', dataIndex: 'weekly_risk', width: 210, render: renderBlankEllipsis }
+  ];
+  const parentColumns: ColumnsType<AnyRecord> = [
+    { title: '母任务编号', dataIndex: 'code', width: 120 },
+    { title: '母任务', dataIndex: 'title', width: 280, ellipsis: true, render: renderEllipsis },
+    { title: '负责人', dataIndex: 'owners', width: 150, render: (_: AnyRecord[] | string | null, row: AnyRecord) => renderPeople(row.owners || row.owner) },
+    { title: '牵头部门', dataIndex: 'department', width: 150, ellipsis: true, render: renderEllipsis },
+    { title: '状态', dataIndex: 'status', width: 100, render: (value) => <StatusTag value={value} /> },
+    { title: '截止日期', dataIndex: 'due_date', width: 120 }
+  ];
+  return (
+    <Modal
+      title={detail ? `${detail.title}（${visibleRows.length}/${rows.length}）` : '数据详情'}
+      open={Boolean(detail)}
+      onCancel={onClose}
+      footer={null}
+      width={1280}
+      className="dashboard-detail-modal"
+      destroyOnClose
+    >
+      <Input.Search
+        allowClear
+        placeholder="请输入关键词搜索"
+        value={keyword}
+        onChange={(event) => setKeyword(event.target.value)}
+        className="mb16"
+      />
+      <Table
+        rowKey={(row) => `${detail?.type || 'detail'}-${row.id}`}
+        size="small"
+        dataSource={visibleRows}
+        columns={detail?.type === 'parent' ? parentColumns : subTaskColumns}
+        tableLayout="fixed"
+        scroll={{ x: detail?.type === 'parent' ? 920 : 1620, y: 520 }}
+        pagination={{ pageSize: 12, showSizeChanger: false }}
+      />
+    </Modal>
+  );
+}
+
 function MeetingBoardOverview() {
   const { data, loading } = useApi<AnyRecord>('/meeting-board/overview', []);
+  const [detail, setDetail] = useState<AnyRecord | null>(null);
   const cards = data?.cards || {};
   const weeklyBar = data?.weekly_bar || [];
   const riskPie = data?.risk_pie || [];
   const trend = data?.trend || [];
   const gantt = data?.gantt || [];
-  const ganttBase = Math.min(...gantt.map((item: AnyRecord) => new Date(item.start_date).getTime()), Date.now());
+  const detailRows = data?.details || {};
+  const parentDetails = data?.parent_details || [];
+  const ganttMonths = Array.from(new Set(gantt.map((item: AnyRecord) => String(item.due_date || '').slice(0, 7) || '-'))).sort();
   const ganttCategories = gantt.map((item: AnyRecord) => item.code);
-  const ganttOffset = gantt.map((item: AnyRecord) => Math.max(0, Math.round((new Date(item.start_date).getTime() - ganttBase) / 86400000)));
-  const ganttDuration = gantt.map((item: AnyRecord) => {
-    const start = new Date(item.start_date).getTime();
-    const end = new Date(item.due_date).getTime();
-    return Math.max(1, Math.round((end - start) / 86400000));
-  });
+  const openSubTaskDetail = (title: string, detailKey: string) => {
+    setDetail({ title, type: 'sub_task', rows: detailRows[detailKey] || [] });
+  };
+  const openParentDetail = (title = '母任务截止日期明细', rows = parentDetails) => {
+    setDetail({ title, type: 'parent', rows });
+  };
   return (
     <PageShell title="会议看板" subtitle={`当前周期 ${data?.week_key || '-'}，汇总周更新、风险、逾期和任务节奏`}>
       <MeetingBoardTabs />
       <Row gutter={[16, 16]} className="meeting-metric-row">
         {[
-          ['进行中子任务', cards.active_sub_tasks, '#2457d6'],
-          ['本周已更新', cards.updated_this_week, '#5f9f25'],
-          ['本周待更新', cards.missing_updates, '#d97706'],
-          ['风险任务', cards.risk_tasks, '#dc2626'],
-          ['逾期任务', cards.overdue_tasks, '#b91c1c'],
-          ['已完成任务', cards.completed_tasks, '#0f766e']
-        ].map(([label, value, color]) => (
+          ['进行中子任务', cards.active_sub_tasks, '#2457d6', 'active_sub_tasks'],
+          ['本周已更新', cards.updated_this_week, '#5f9f25', 'updated_this_week'],
+          ['本周待更新', cards.missing_updates, '#d97706', 'missing_updates'],
+          ['风险任务', cards.risk_tasks, '#dc2626', 'risk_tasks'],
+          ['逾期任务', cards.overdue_tasks, '#b91c1c', 'overdue_tasks'],
+          ['已完成任务', cards.completed_tasks, '#0f766e', 'completed_tasks']
+        ].map(([label, value, color, detailKey]) => (
           <Col xs={24} sm={12} xl={4} key={String(label)}>
-            <Card loading={loading} className="metric-card meeting-metric-card" style={{ borderTopColor: String(color) }}>
+            <Card loading={loading} hoverable className="metric-card meeting-metric-card clickable-card" style={{ borderTopColor: String(color) }} onClick={() => openSubTaskDetail(String(label), String(detailKey))}>
               <Statistic title={label} value={Number(value || 0)} valueStyle={{ color: String(color) }} />
             </Card>
           </Col>
@@ -1267,12 +1524,16 @@ function MeetingBoardOverview() {
           <ChartCard
             title="本周更新状态"
             className="meeting-chart-card"
+            onChartClick={(params) => {
+              const item = params?.data;
+              if (item?.detail_key) openSubTaskDetail(`本周更新状态：${item.name}`, item.detail_key);
+            }}
             option={{
               tooltip: {},
               grid: { left: 40, right: 16, top: 32, bottom: 32 },
               xAxis: { type: 'category', data: weeklyBar.map((item: AnyRecord) => item.name) },
               yAxis: { type: 'value' },
-              series: [{ type: 'bar', data: weeklyBar.map((item: AnyRecord) => item.value), itemStyle: { color: '#2457d6' } }]
+              series: [{ type: 'bar', data: weeklyBar.map((item: AnyRecord) => ({ name: item.name, value: item.value, detail_key: item.detail_key })), itemStyle: { color: '#2457d6' } }]
             }}
           />
         </Col>
@@ -1280,6 +1541,10 @@ function MeetingBoardOverview() {
           <ChartCard
             title="风险占比"
             className="meeting-chart-card"
+            onChartClick={(params) => {
+              const item = params?.data;
+              if (item?.detail_key) openSubTaskDetail(`风险占比：${item.name}`, item.detail_key);
+            }}
             option={{
               tooltip: { trigger: 'item' },
               legend: { bottom: 0 },
@@ -1306,17 +1571,43 @@ function MeetingBoardOverview() {
         </Col>
         <Col xs={24} xl={12}>
           <ChartCard
-            title="近期任务甘特"
+            title="母任务截止日期管理"
             height={340}
             className="meeting-chart-card"
+            onChartClick={(params) => {
+              const id = params?.data?.parent_id;
+              const row = parentDetails.find((item: AnyRecord) => item.id === id);
+              openParentDetail(row ? `母任务截止日期：${row.code}` : '母任务截止日期明细', row ? [row] : parentDetails);
+            }}
             option={{
-              tooltip: { trigger: 'axis' },
-              grid: { left: 80, right: 20, top: 24, bottom: 30 },
-              xAxis: { type: 'value', name: '天' },
+              tooltip: {
+                trigger: 'item',
+                formatter: (params: AnyRecord) => {
+                  const item = params.data || {};
+                  return `${item.code} ${item.title}<br/>负责人：${item.owner || '-'}<br/>牵头部门：${item.department || '-'}<br/>截止日期：${item.due_date || '-'}<br/>状态：${item.status || '-'}`;
+                }
+              },
+              grid: { left: 82, right: 24, top: 24, bottom: 44 },
+              xAxis: { type: 'category', name: '月份', data: ganttMonths },
               yAxis: { type: 'category', data: ganttCategories, inverse: true },
               series: [
-                { type: 'bar', stack: 'total', data: ganttOffset, itemStyle: { color: 'transparent' }, emphasis: { disabled: true } },
-                { type: 'bar', stack: 'total', data: ganttDuration, itemStyle: { color: '#5f9f25' } }
+                {
+                  type: 'scatter',
+                  symbol: 'roundRect',
+                  symbolSize: [54, 20],
+                  label: { show: true, formatter: (params: AnyRecord) => params.data?.code || '', color: '#fff', fontSize: 11 },
+                  itemStyle: { color: '#2457d6' },
+                  data: gantt.map((item: AnyRecord) => ({
+                    value: [String(item.due_date || '').slice(0, 7) || '-', item.code],
+                    parent_id: item.id,
+                    code: item.code,
+                    title: item.title,
+                    owner: item.owner,
+                    department: item.department,
+                    due_date: item.due_date,
+                    status: item.status
+                  }))
+                }
               ]
             }}
           />
@@ -1342,6 +1633,7 @@ function MeetingBoardOverview() {
           ]}
         />
       </Card>
+      <DashboardDetailModal detail={detail} onClose={() => setDetail(null)} />
     </PageShell>
   );
 }

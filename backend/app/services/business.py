@@ -78,6 +78,8 @@ def task_people(people: list[User] | None, fallback: User | None) -> list[User]:
     selected = list(people or [])
     if not selected and fallback:
         selected = [fallback]
+    if fallback:
+        return [fallback, *sorted([user for user in selected if user.id != fallback.id], key=lambda item: item.id)]
     return sorted(selected, key=lambda item: item.id)
 
 
@@ -506,7 +508,7 @@ def build_lark_test_card(web_url: str) -> dict:
         "config": {"wide_screen_mode": True},
         "header": {
             "template": "blue",
-            "title": {"tag": "plain_text", "content": "2.0.8 飞书测试卡片"},
+            "title": {"tag": "plain_text", "content": "2.0.9 飞书测试卡片"},
         },
         "elements": [
             {
@@ -552,7 +554,7 @@ async def send_lark_test_message(db: Session, target_user_id: int) -> dict:
         notification_type="lark_test_message",
         related_type="user",
         related_id=target.id,
-        title="2.0.8 飞书测试卡片",
+        title="2.0.9 飞书测试卡片",
         web_url=web_url,
         send_status="pending",
     )

@@ -465,6 +465,17 @@ body {
     #fff;
 }
 
+.clickable-card {
+  cursor: pointer;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+}
+
+.clickable-card:hover {
+  border-color: rgba(36, 87, 214, 0.32);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.09);
+  transform: translateY(-1px);
+}
+
 .meeting-chart-card {
   height: 100%;
 }
@@ -494,6 +505,14 @@ body {
 
 .meeting-table-card .ant-table-tbody > tr > td {
   vertical-align: top;
+}
+
+.dashboard-detail-modal .ant-modal-body {
+  padding-top: 12px;
+}
+
+.dashboard-detail-modal .ant-table-thead > tr > th {
+  white-space: nowrap;
 }
 
 .admin-toolbar-card {

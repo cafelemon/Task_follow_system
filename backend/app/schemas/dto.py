@@ -61,6 +61,15 @@ class SubTaskCreate(BaseModel):
     due_date: date | None = None
 
 
+class SubTaskUpdate(BaseModel):
+    title: str | None = None
+    owner_id: int | None = None
+    owner_ids: list[int] | None = None
+    executor_id: int | None = None
+    executor_ids: list[int] | None = None
+    due_date: date | None = None
+
+
 class WeeklyUpdateUpsert(BaseModel):
     sub_task_id: int
     assignee_id: int | None = None

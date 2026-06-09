@@ -6,7 +6,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Cookie, Depends, File, HTTPException, Response, UploadFile, status
 from fastapi.responses import RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 from openpyxl import load_workbook
 
@@ -17,13 +17,18 @@ from app.models.entities import (
     CoordinationItem,
     Department,
     DepartmentTask,
+    DepartmentTaskDepartment,
+    DepartmentTaskOwner,
     NotificationRecord,
     ParentTask,
+    ParentTaskOwner,
     Permission,
     RiskRecord,
     Role,
     StrategicGoal,
     SubTask,
+    SubTaskExecutor,
+    SubTaskOwner,
     TaskEvent,
     User,
     WeeklyUpdate,
@@ -42,6 +47,7 @@ from app.schemas.dto import (
     PersonUpdate,
     RolePermissionUpdate,
     SubTaskCreate,
+    SubTaskUpdate,
     WeeklyUpdateUpsert,
 )
 from app.services.business import (
@@ -157,14 +163,37 @@ def resolve_users(db: Session, user_ids: list[int] | None, fallback_id: int | No
     return sorted(users, key=lambda item: selected_ids.index(item.id))
 
 
-def sync_task_owners(task: ParentTask | DepartmentTask | SubTask, users: list[User]) -> None:
-    task.owners = users
+def sync_department_task_departments(db: Session, task: DepartmentTask, departments: list[Department]) -> None:
+    task.department_id = departments[0].id
+    db.flush()
+    db.execute(
+        delete(DepartmentTaskDepartment).where(DepartmentTaskDepartment.department_task_id == task.id)
+    )
+    db.add_all(
+        DepartmentTaskDepartment(department_task_id=task.id, department_id=department.id)
+        for department in departments
+    )
+
+
+def sync_task_owners(db: Session, task: ParentTask | DepartmentTask | SubTask, users: list[User]) -> None:
     task.owner_id = users[0].id
+    db.flush()
+    if isinstance(task, ParentTask):
+        db.execute(delete(ParentTaskOwner).where(ParentTaskOwner.parent_task_id == task.id))
+        db.add_all(ParentTaskOwner(parent_task_id=task.id, user_id=user.id) for user in users)
+    elif isinstance(task, DepartmentTask):
+        db.execute(delete(DepartmentTaskOwner).where(DepartmentTaskOwner.department_task_id == task.id))
+        db.add_all(DepartmentTaskOwner(department_task_id=task.id, user_id=user.id) for user in users)
+    else:
+        db.execute(delete(SubTaskOwner).where(SubTaskOwner.sub_task_id == task.id))
+        db.add_all(SubTaskOwner(sub_task_id=task.id, user_id=user.id) for user in users)
 
 
-def sync_sub_task_executors(task: SubTask, users: list[User]) -> None:
-    task.executors = users
+def sync_sub_task_executors(db: Session, task: SubTask, users: list[User]) -> None:
     task.executor_id = users[0].id
+    db.flush()
+    db.execute(delete(SubTaskExecutor).where(SubTaskExecutor.sub_task_id == task.id))
+    db.add_all(SubTaskExecutor(sub_task_id=task.id, user_id=user.id) for user in users)
 
 
 def expire_task_people(db: Session, task: ParentTask | DepartmentTask | SubTask, include_executors: bool = False) -> None:
@@ -233,21 +262,53 @@ def serialize_department_task_for_user(db: Session, user: User, task: Department
     }
 
 
+def updates_by_sub_task(db: Session, sub_task_ids: list[int], week_key: str) -> dict[int, list[WeeklyUpdate]]:
+    if not sub_task_ids:
+        return {}
+    result: dict[int, list[WeeklyUpdate]] = defaultdict(list)
+    for update in db.scalars(
+        select(WeeklyUpdate).where(WeeklyUpdate.week_key == week_key, WeeklyUpdate.sub_task_id.in_(sub_task_ids))
+    ).all():
+        result[update.sub_task_id].append(update)
+    return result
+
+
+def merge_weekly_update_field(updates: list[WeeklyUpdate], field_name: str) -> str | None:
+    parts = []
+    for update in sorted(updates, key=lambda item: ((item.assignee.name if item.assignee else ""), item.id)):
+        value = getattr(update, field_name)
+        if value:
+            assignee = update.assignee.name if update.assignee else "未指定"
+            parts.append(f"{assignee}：{value}")
+    return "；".join(parts) if parts else None
+
+
+def weekly_update_summary(updates: list[WeeklyUpdate]) -> dict:
+    return {
+        "weekly_this_week": merge_weekly_update_field(updates, "this_week"),
+        "weekly_risk": merge_weekly_update_field(updates, "risk"),
+    }
+
+
+def serialize_sub_task_with_weekly_summary(
+    task: SubTask,
+    updates: list[WeeklyUpdate] | None = None,
+    current_update: WeeklyUpdate | None = None,
+) -> dict:
+    update_list = updates or ([] if current_update is None else [current_update])
+    return {
+        **serialize_sub_task(task, current_update or (update_list[0] if update_list else None)),
+        **weekly_update_summary(update_list),
+    }
+
+
 def serialize_department_task_tree_for_user(db: Session, user: User, task: DepartmentTask) -> dict:
     current_week = current_week_key()
-    updates = {
-        update.sub_task_id: update
-        for update in db.scalars(
-            select(WeeklyUpdate).where(
-                WeeklyUpdate.week_key == current_week,
-                WeeklyUpdate.sub_task_id.in_([sub_task.id for sub_task in task.sub_tasks] or [0]),
-            )
-        ).all()
-    }
+    updates = updates_by_sub_task(db, [sub_task.id for sub_task in task.sub_tasks], current_week)
     return {
         **serialize_department_task_for_user(db, user, task),
         "sub_tasks": [
-            serialize_sub_task(sub_task, updates.get(sub_task.id))
+            serialize_sub_task_with_weekly_summary(sub_task, updates.get(sub_task.id, []))
             for sub_task in sorted(task.sub_tasks, key=lambda item: item.code)
         ],
     }
@@ -354,9 +415,32 @@ def sub_task_summary(task: SubTask, current_update: WeeklyUpdate | None = None) 
     }
 
 
+def sub_task_detail_summary(task: SubTask, updates: list[WeeklyUpdate], current_update: WeeklyUpdate | None = None) -> dict:
+    return {
+        **sub_task_summary(task, current_update or (updates[0] if updates else None)),
+        **weekly_update_summary(updates),
+    }
+
+
+def parent_task_detail_summary(task: ParentTask) -> dict:
+    owner_ids, owners, owner_text = people_payload(owner_people(task))
+    return {
+        "id": task.id,
+        "code": task.code,
+        "title": task.title,
+        "owner": owner_text,
+        "owner_ids": owner_ids,
+        "owners": owners,
+        "department": task.department.name if task.department else None,
+        "status": task.status,
+        "due_date": task.due_date.isoformat() if task.due_date else None,
+    }
+
+
 def build_meeting_overview_payload(db: Session, user: User, week_key: str) -> dict:
     sub_tasks = visible_sub_tasks(db, user)
     current_updates = update_by_sub_task(db, sub_tasks, week_key)
+    grouped_updates = updates_by_sub_task(db, [task.id for task in sub_tasks], week_key)
     today = date.today()
     active_tasks = [task for task in sub_tasks if task.status != "completed"]
     updated_tasks = [task for task in active_tasks if task.id in current_updates]
@@ -377,8 +461,34 @@ def build_meeting_overview_payload(db: Session, user: User, week_key: str) -> di
         }
         for key in weeks
     ]
-    gantt_source = sorted(active_tasks, key=lambda item: item.due_date or date.max)[:14]
-    earliest_weeks = earliest_update_week_map(db, gantt_source)
+    visible_parent_tasks = {
+        task.department_task.parent_task.id: task.department_task.parent_task
+        for task in sub_tasks
+        if task.department_task and task.department_task.parent_task
+    }
+    gantt_source = sorted(visible_parent_tasks.values(), key=lambda item: item.due_date or date.max)[:18]
+
+    def details_for(tasks: list[SubTask]) -> list[dict]:
+        return [
+            sub_task_detail_summary(task, grouped_updates.get(task.id, []), current_updates.get(task.id))
+            for task in tasks
+        ]
+
+    detail_rows = {
+        "active_sub_tasks": details_for(active_tasks),
+        "updated_this_week": details_for(updated_tasks),
+        "missing_updates": details_for(missing_tasks),
+        "risk_tasks": details_for(risk_tasks),
+        "overdue_tasks": details_for(overdue_tasks),
+        "completed_tasks": details_for(completed_tasks),
+        "weekly_updated": details_for(updated_tasks),
+        "weekly_missing": details_for(missing_tasks),
+        "weekly_completed": details_for(completed_tasks),
+        "risk_high": details_for([task for task in sub_tasks if task.risk_level == "high"]),
+        "risk_medium": details_for([task for task in sub_tasks if task.risk_level == "medium"]),
+        "risk_low": details_for([task for task in sub_tasks if task.risk_level == "low"]),
+        "risk_none": details_for([task for task in sub_tasks if task.risk_level not in {"high", "medium", "low"}]),
+    }
     return {
         "week_key": week_key,
         "cards": {
@@ -390,15 +500,15 @@ def build_meeting_overview_payload(db: Session, user: User, week_key: str) -> di
             "completed_tasks": len(completed_tasks),
         },
         "weekly_bar": [
-            {"name": "已更新", "value": len(updated_tasks)},
-            {"name": "待更新", "value": len(missing_tasks)},
-            {"name": "已完成", "value": len(completed_tasks)},
+            {"name": "已更新", "value": len(updated_tasks), "detail_key": "weekly_updated"},
+            {"name": "待更新", "value": len(missing_tasks), "detail_key": "weekly_missing"},
+            {"name": "已完成", "value": len(completed_tasks), "detail_key": "weekly_completed"},
         ],
         "risk_pie": [
-            {"name": "高风险", "value": len([task for task in risk_tasks if task.risk_level == "high"])},
-            {"name": "中风险", "value": len([task for task in risk_tasks if task.risk_level == "medium"])},
-            {"name": "低风险", "value": len([task for task in risk_tasks if task.risk_level == "low"])},
-            {"name": "无风险", "value": len([task for task in sub_tasks if task.risk_level not in {"high", "medium", "low"}])},
+            {"name": "高风险", "value": len(detail_rows["risk_high"]), "detail_key": "risk_high"},
+            {"name": "中风险", "value": len(detail_rows["risk_medium"]), "detail_key": "risk_medium"},
+            {"name": "低风险", "value": len(detail_rows["risk_low"]), "detail_key": "risk_low"},
+            {"name": "无风险", "value": len(detail_rows["risk_none"]), "detail_key": "risk_none"},
         ],
         "trend": trend,
         "gantt": [
@@ -407,16 +517,18 @@ def build_meeting_overview_payload(db: Session, user: User, week_key: str) -> di
                 "code": task.code,
                 "title": task.title,
                 "owner": people_payload(owner_people(task))[2],
-                "executor": people_payload(executor_people(task))[2],
+                "department": task.department.name if task.department else None,
                 "status": task.status,
-                "start_date": task_start_date(task, earliest_weeks).isoformat(),
+                "start_date": task.due_date.replace(day=1).isoformat() if task.due_date else today.replace(day=1).isoformat(),
                 "due_date": task.due_date.isoformat() if task.due_date else today.isoformat(),
             }
             for task in gantt_source
         ],
+        "details": detail_rows,
+        "parent_details": [parent_task_detail_summary(task) for task in gantt_source],
         "risk_overdue": [
             {
-                **sub_task_summary(task, current_updates.get(task.id)),
+                **sub_task_detail_summary(task, grouped_updates.get(task.id, []), current_updates.get(task.id)),
                 "issue_type": "逾期" if task in overdue_tasks else "风险",
             }
             for task in sorted(
@@ -1130,9 +1242,9 @@ def create_parent_task(
     data = payload.model_dump(exclude={"owner_ids"})
     data["owner_id"] = owners[0].id
     task = ParentTask(code=generate_code(db, ParentTask, "MT"), **data)
-    task.owners = owners
     db.add(task)
     db.flush()
+    sync_task_owners(db, task, owners)
     db.add(
         TaskEvent(
             object_type="parent_task",
@@ -1165,7 +1277,7 @@ def update_parent_task(
     owner_ids = data.pop("owner_ids", None)
     owner_id = data.pop("owner_id", None)
     if owner_ids is not None or owner_id is not None:
-        sync_task_owners(task, resolve_users(db, owner_ids, owner_id, "母任务负责人"))
+        sync_task_owners(db, task, resolve_users(db, owner_ids, owner_id, "母任务负责人"))
     for key, value in data.items():
         setattr(task, key, value)
     db.add(
@@ -1319,10 +1431,10 @@ def create_department_task(
     data["department_id"] = primary_department_id
     data["owner_id"] = owners[0].id
     task = DepartmentTask(code=generate_code(db, DepartmentTask, "DT"), **data)
-    task.departments = departments
-    task.owners = owners
     db.add(task)
     db.flush()
+    sync_department_task_departments(db, task, departments)
+    sync_task_owners(db, task, owners)
     db.add(
         TaskEvent(
             object_type="department_task",
@@ -1358,9 +1470,9 @@ def update_department_task(
     if department_ids is not None or "department_id" in data:
         primary_department_id, departments = resolve_departments(db, data.get("department_id"), department_ids)
         data["department_id"] = primary_department_id
-        task.departments = departments
+        sync_department_task_departments(db, task, departments)
     if owner_ids is not None or owner_id is not None:
-        sync_task_owners(task, resolve_users(db, owner_ids, owner_id, "负责人"))
+        sync_task_owners(db, task, resolve_users(db, owner_ids, owner_id, "负责人"))
     for key, value in data.items():
         setattr(task, key, value)
     db.add(
@@ -1473,20 +1585,65 @@ def create_sub_task(
     data["owner_id"] = owners[0].id
     data["executor_id"] = executors[0].id
     task = SubTask(code=generate_sub_task_code(db, department_task), **data)
-    task.owners = owners
-    task.executors = executors
     db.add(task)
     if department_task.pending_split_count:
         department_task.pending_split_count = max((department_task.pending_split_count or 0) - 1, 0)
         codes = list(department_task.pending_split_codes or [])
         department_task.pending_split_codes = codes[1:] if codes else []
     db.flush()
+    sync_task_owners(db, task, owners)
+    sync_sub_task_executors(db, task, executors)
     db.add(
         TaskEvent(
             object_type="sub_task",
             object_id=task.id,
             event_type="created",
             title="创建子任务",
+            content=task.title,
+            actor_id=current_user.id,
+        )
+    )
+    db.commit()
+    db.refresh(task)
+    expire_task_people(db, task, include_executors=True)
+    return serialize_sub_task(task)
+
+
+@router.put("/sub-tasks/{sub_task_id}")
+def update_sub_task(
+    sub_task_id: int,
+    payload: SubTaskUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    task = db.get(SubTask, sub_task_id)
+    if (
+        not task
+        or not task.department_task
+        or task.department_task.status == "archived"
+        or not task.department_task.parent_task
+        or task.department_task.parent_task.status == "archived"
+    ):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Sub task not found")
+    if not can_split_sub_task(db, current_user, task.department_task):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No edit access to this sub task")
+    data = payload.model_dump(exclude_unset=True)
+    owner_ids = data.pop("owner_ids", None)
+    owner_id = data.pop("owner_id", None)
+    executor_ids = data.pop("executor_ids", None)
+    executor_id = data.pop("executor_id", None)
+    if owner_ids is not None or owner_id is not None:
+        sync_task_owners(db, task, resolve_users(db, owner_ids, owner_id, "子任务负责人"))
+    if executor_ids is not None or executor_id is not None:
+        sync_sub_task_executors(db, task, resolve_users(db, executor_ids, executor_id, "执行人"))
+    for key, value in data.items():
+        setattr(task, key, value)
+    db.add(
+        TaskEvent(
+            object_type="sub_task",
+            object_id=task.id,
+            event_type="updated",
+            title="编辑子任务",
             content=task.title,
             actor_id=current_user.id,
         )
