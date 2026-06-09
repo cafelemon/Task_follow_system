@@ -106,7 +106,7 @@ function useApi<T = any>(url: string, deps: any[] = []) {
   return { data, error, loading, reload };
 }
 
-function ChartCard({ title, option, height = 300 }: { title: string; option: any; height?: number }) {
+function ChartCard({ title, option, height = 300, className }: { title: string; option: any; height?: number; className?: string }) {
   const ref = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!ref.current) return;
@@ -120,7 +120,7 @@ function ChartCard({ title, option, height = 300 }: { title: string; option: any
     };
   }, [option]);
   return (
-    <Card title={title}>
+    <Card title={title} className={className}>
       <div ref={ref} style={{ height }} />
     </Card>
   );
@@ -166,7 +166,80 @@ function renderPeople(value?: AnyRecord[] | string | null) {
       </Tooltip>
     );
   }
-  return value || '-';
+  if (value) {
+    return (
+      <Tooltip title={value}>
+        <Tag className="person-tag person-tag-single" title={value}>{value}</Tag>
+      </Tooltip>
+    );
+  }
+  return <Typography.Text type="secondary">-</Typography.Text>;
+}
+
+function renderDepartments(value?: AnyRecord[] | string | null) {
+  if (Array.isArray(value)) {
+    const names = value.map((item) => item.name).join('、');
+    return (
+      <Tooltip title={names || undefined}>
+        <Space wrap size={[4, 4]} className="people-cell">
+          {value.length ? value.map((item) => <Tag className="department-tag" title={item.name} key={item.id}>{item.name}</Tag>) : <Typography.Text type="secondary">-</Typography.Text>}
+        </Space>
+      </Tooltip>
+    );
+  }
+  return value ? <Tag className="department-tag" title={value}>{value}</Tag> : <Typography.Text type="secondary">-</Typography.Text>;
+}
+
+function TaskTitle({ code, title }: { code?: string; title?: string }) {
+  return (
+    <Space direction="vertical" size={4} className="task-title-stack">
+      {code ? <Typography.Text className="task-code">{code}</Typography.Text> : null}
+      <Tooltip title={title}>
+        <Typography.Text strong className="task-title-text">{title || '-'}</Typography.Text>
+      </Tooltip>
+    </Space>
+  );
+}
+
+function TaskMetricTags({ task }: { task: AnyRecord }) {
+  return (
+    <Space wrap size={[6, 6]} className="task-metric-tags">
+      <Tag color="blue">{task.department_task_count || 0} 部门任务</Tag>
+      <Tag color="green">{task.sub_task_count || 0} 子任务</Tag>
+      {task.pending_split_count ? <Tag color="orange">{task.pending_split_count} 待拆解</Tag> : null}
+    </Space>
+  );
+}
+
+function renderTableHeader(title: string, count: number, description?: string) {
+  return (
+    <Space className="table-section-title" wrap>
+      <Typography.Text strong>{title}</Typography.Text>
+      <Tag>{count}</Tag>
+      {description ? <Typography.Text type="secondary">{description}</Typography.Text> : null}
+    </Space>
+  );
+}
+
+function renderTimelineText(value?: unknown, emptyText = '-') {
+  const text = value == null || value === '' ? emptyText : String(value);
+  return (
+    <Tooltip title={text === emptyText ? undefined : text}>
+      <span className={text === emptyText ? 'muted-cell timeline-cell-text' : 'timeline-cell-text'}>{text}</span>
+    </Tooltip>
+  );
+}
+
+function renderBindingStatus(value?: string | null, labels = { bound: '已绑定', empty: '未绑定' }) {
+  return value ? <Tag color="green">{labels.bound}</Tag> : <Tag>{labels.empty}</Tag>;
+}
+
+function renderEmail(value?: string | null) {
+  return value ? (
+    <Tooltip title={value}>
+      <Tag color="blue" className="email-tag">{value}</Tag>
+    </Tooltip>
+  ) : <Tag>未录入</Tag>;
 }
 
 const baseMenuItems = [
@@ -358,27 +431,24 @@ function GoalDetail() {
       back={<Button size="small" icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回</Button>}
     >
       <Row gutter={[16, 16]}>
-        {(tasks || []).map((task) => (
-          <Col xs={24} md={12} xl={8} key={task.id}>
-            <Link to={`/parent-tasks/${task.id}`} className="card-link">
-              <Card loading={loading} hoverable className="task-card" extra={<StatusTag value={task.status} />}>
+          {(tasks || []).map((task) => (
+            <Col xs={24} md={12} xl={8} key={task.id}>
+              <Link to={`/parent-tasks/${task.id}`} className="card-link">
+              <Card loading={loading} hoverable className="task-card refined-task-card" extra={<StatusTag value={task.status} />}>
                 <Space direction="vertical" className="full-width">
-                  <Typography.Text type="secondary">{task.code}</Typography.Text>
-                  <Typography.Title level={4}>{task.title}</Typography.Title>
-                  <Space size={6} wrap>
-                    <span>{task.department || '-'}</span>
-                    {renderPeople(task.owners || task.owner)}
-                  </Space>
-                  <Space wrap>
-                    <Tag color="blue">{task.department_task_count || 0} 个部门任务</Tag>
-                    <Tag color="green">{task.sub_task_count || 0} 个子任务</Tag>
-                    {task.pending_split_count ? <Tag color="orange">{task.pending_split_count} 个待拆解</Tag> : null}
-                  </Space>
+                  <TaskTitle code={task.code} title={task.title} />
+                  <div className="task-meta-grid">
+                    <Typography.Text type="secondary">负责人</Typography.Text>
+                    <div>{renderPeople(task.owners || task.owner)}</div>
+                    <Typography.Text type="secondary">牵头部门</Typography.Text>
+                    <div>{renderDepartments(task.department)}</div>
+                  </div>
+                  <TaskMetricTags task={task} />
                 </Space>
               </Card>
-            </Link>
-          </Col>
-        ))}
+              </Link>
+            </Col>
+          ))}
       </Row>
     </PageShell>
   );
@@ -467,7 +537,7 @@ function ParentTasks() {
             <Col xs={24} lg={12} xl={8} key={task.id}>
               <Card
                 loading={loading}
-                className="task-card"
+                className="task-card refined-task-card"
                 extra={<StatusTag value={task.status} />}
                 actions={[
                   <Link to={`/parent-tasks/${task.id}`} key="detail">查看任务详情</Link>,
@@ -475,15 +545,16 @@ function ParentTasks() {
                 ].filter(Boolean)}
               >
                 <Space direction="vertical" className="full-width">
-                  <Typography.Text type="secondary">{task.code}</Typography.Text>
-                  <Typography.Title level={4}>{task.title}</Typography.Title>
-                  <span>{task.department || '-'} · {task.owner || '-'}</span>
-                  <span>截止 {task.due_date || '-'}</span>
-                  <Space wrap>
-                    <Tag color="blue">{task.department_task_count || 0} 个部门任务</Tag>
-                    <Tag color="green">{task.sub_task_count || 0} 个子任务</Tag>
-                    {task.pending_split_count ? <Tag color="orange">{task.pending_split_count} 个待拆解</Tag> : null}
-                  </Space>
+                  <TaskTitle code={task.code} title={task.title} />
+                  <div className="task-meta-grid">
+                    <Typography.Text type="secondary">负责人</Typography.Text>
+                    <div>{renderPeople(task.owners || task.owner)}</div>
+                    <Typography.Text type="secondary">牵头部门</Typography.Text>
+                    <div>{renderDepartments(task.department)}</div>
+                    <Typography.Text type="secondary">截止日期</Typography.Text>
+                    <Typography.Text>{task.due_date || '-'}</Typography.Text>
+                  </div>
+                  <TaskMetricTags task={task} />
                 </Space>
               </Card>
             </Col>
@@ -599,9 +670,7 @@ function SplitSubTaskForm({ form, task, peopleOptions }: {
         <Descriptions column={1} size="small" className="mb16" bordered>
           <Descriptions.Item label="所属母任务">{task.parent_task || '-'}</Descriptions.Item>
           <Descriptions.Item label="部门级任务">{task.code} {task.title}</Descriptions.Item>
-          <Descriptions.Item label="负责部门">
-            <Space wrap>{(task.departments || []).map((item: AnyRecord) => <Tag key={item.id}>{item.name}</Tag>)}</Space>
-          </Descriptions.Item>
+          <Descriptions.Item label="负责部门">{renderDepartments(task.departments)}</Descriptions.Item>
         </Descriptions>
       )}
       <Form.Item name="title" label="具体任务" rules={[{ required: true, message: '请输入具体任务' }]}>
@@ -697,7 +766,7 @@ function ParentTaskDetail() {
   const columns: ColumnsType<AnyRecord> = [
     { title: '任务编号', dataIndex: 'code', width: 110 },
     { title: '部门级任务', dataIndex: 'title', width: 230, ellipsis: true, render: renderEllipsis },
-    { title: '负责部门', dataIndex: 'departments', width: 160, responsive: ['lg'], render: (value) => <Space wrap>{(value || []).map((item: AnyRecord) => <Tag key={item.id}>{item.name}</Tag>)}</Space> },
+    { title: '负责部门', dataIndex: 'departments', width: 160, responsive: ['lg'], render: renderDepartments },
     { title: '负责人', dataIndex: 'owners', width: 140, render: renderPeople },
     { title: '状态', dataIndex: 'status', width: 96, render: (value) => <StatusTag value={value} /> },
     {
@@ -716,8 +785,8 @@ function ParentTaskDetail() {
       subtitle="查看该母任务下的部门级任务与有效子任务"
       back={<Button size="small" icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回</Button>}
     >
-      <Card className="mb16">
-        <Descriptions column={3}>
+      <Card className="mb16 summary-card">
+        <Descriptions column={{ xs: 1, md: 2, xl: 3 }} size="small">
           <Descriptions.Item label="战略目标">{task?.goal || '-'}</Descriptions.Item>
           <Descriptions.Item label="负责人">{renderPeople(task?.owners || task?.owner)}</Descriptions.Item>
           <Descriptions.Item label="牵头部门">{task?.department || '-'}</Descriptions.Item>
@@ -726,6 +795,7 @@ function ParentTaskDetail() {
         </Descriptions>
       </Card>
       <Card
+        className="business-card"
         title="部门级任务"
         extra={canManageDepartmentTasks ? (
           <Space>
@@ -738,6 +808,7 @@ function ParentTaskDetail() {
           rowKey="id"
           dataSource={departmentTasks || []}
           columns={columns}
+          className="business-table"
           tableLayout="fixed"
           scroll={{ x: 900 }}
           expandable={{
@@ -747,6 +818,7 @@ function ParentTaskDetail() {
                 size="small"
                 pagination={false}
                 dataSource={row.sub_tasks || []}
+                className="business-table nested-table"
                 columns={[
                   { title: '子任务编号', dataIndex: 'code', width: 150 },
                   { title: '具体任务', dataIndex: 'title', width: 240, ellipsis: true, render: renderEllipsis },
@@ -817,7 +889,7 @@ function DepartmentTasks() {
     { title: '任务编号', dataIndex: 'code', width: 106 },
     { title: '部门任务', dataIndex: 'title', width: 220, ellipsis: true, render: renderEllipsis },
     { title: '所属母任务', dataIndex: 'parent_task', width: 190, ellipsis: true, render: renderEllipsis },
-    { title: '负责部门', dataIndex: 'departments', width: 160, responsive: ['lg'], render: (value) => <Space wrap>{(value || []).map((item: AnyRecord) => <Tag key={item.id}>{item.name}</Tag>)}</Space> },
+    { title: '负责部门', dataIndex: 'departments', width: 160, responsive: ['lg'], render: renderDepartments },
     { title: '负责人', dataIndex: 'owners', width: 138, render: renderPeople },
     { title: '状态', dataIndex: 'status', width: 96, render: (value) => <StatusTag value={value} /> },
     {
@@ -849,13 +921,15 @@ function DepartmentTasks() {
           </aside>
         )}
         <Space direction="vertical" size={16} className="full-width">
-          <Card title="部门级任务" extra={<Tag>{departmentTasks.length} 项</Tag>}>
+          <Card className="business-card">
             <Table
               rowKey="id"
               dataSource={departmentTasks}
               columns={departmentTaskColumns}
+              className="business-table"
               tableLayout="fixed"
               scroll={{ x: 866 }}
+              title={() => renderTableHeader('部门级任务', departmentTasks.length, '按负责部门和母任务快速扫描')}
               expandable={{
                 expandedRowRender: (row) => (
                   <Table
@@ -863,6 +937,7 @@ function DepartmentTasks() {
                     size="small"
                     pagination={false}
                     dataSource={row.sub_tasks || []}
+                    className="business-table nested-table"
                     columns={[
                       { title: '子任务编号', dataIndex: 'code', width: 124 },
                       { title: '具体任务', dataIndex: 'title', width: 240, ellipsis: true, render: renderEllipsis },
@@ -923,7 +998,7 @@ function SubTasks() {
       width: 100,
       render: (_, row) => (
         row.can_update_weekly
-          ? <Link to={`/sub-tasks/${row.id}/update${row.current_assignee_id ? `?assigneeId=${row.current_assignee_id}` : ''}`}>更新</Link>
+          ? <Link className="table-action-link" to={`/sub-tasks/${row.id}/update${row.current_assignee_id ? `?assigneeId=${row.current_assignee_id}` : ''}`}>更新</Link>
           : <Typography.Text type="secondary">只读</Typography.Text>
       )
     }
@@ -935,15 +1010,10 @@ function SubTasks() {
         rowKey="id"
         dataSource={items}
         columns={columns}
+        className={`business-table subtask-table subtask-table-${title === '管理查看' ? 'management' : 'personal'}`}
         tableLayout="fixed"
         scroll={{ x: 1120 }}
-        title={() => (
-          <Space className="subtask-group-title" wrap>
-            <Typography.Text strong>{title}</Typography.Text>
-            <Tag>{items.length}</Tag>
-            <Typography.Text type="secondary">{description}</Typography.Text>
-          </Space>
-        )}
+        title={() => renderTableHeader(title, items.length, description)}
       />
     ) : null
   );
@@ -1141,11 +1211,19 @@ function SubTaskUpdate() {
 }
 
 function MeetingBoardTabs() {
+  const location = useLocation();
+  const items = [
+    { path: '/meeting-board/overview', label: '总览' },
+    { path: '/meeting-board/parent', label: '母任务看板' },
+    { path: '/meeting-board/department', label: '部门看板' }
+  ];
   return (
     <Space className="mb16 meeting-tabs" wrap>
-      <Button><Link to="/meeting-board/overview">总览</Link></Button>
-      <Button><Link to="/meeting-board/parent">母任务看板</Link></Button>
-      <Button><Link to="/meeting-board/department">部门看板</Link></Button>
+      {items.map((item) => (
+        <Button key={item.path} type={location.pathname === item.path ? 'primary' : 'default'}>
+          <Link to={item.path}>{item.label}</Link>
+        </Button>
+      ))}
     </Space>
   );
 }
@@ -1188,6 +1266,7 @@ function MeetingBoardOverview() {
         <Col xs={24} xl={12}>
           <ChartCard
             title="本周更新状态"
+            className="meeting-chart-card"
             option={{
               tooltip: {},
               grid: { left: 40, right: 16, top: 32, bottom: 32 },
@@ -1200,6 +1279,7 @@ function MeetingBoardOverview() {
         <Col xs={24} xl={12}>
           <ChartCard
             title="风险占比"
+            className="meeting-chart-card"
             option={{
               tooltip: { trigger: 'item' },
               legend: { bottom: 0 },
@@ -1210,6 +1290,7 @@ function MeetingBoardOverview() {
         <Col xs={24} xl={12}>
           <ChartCard
             title="近周提交趋势"
+            className="meeting-chart-card"
             option={{
               tooltip: { trigger: 'axis' },
               legend: { top: 0 },
@@ -1227,6 +1308,7 @@ function MeetingBoardOverview() {
           <ChartCard
             title="近期任务甘特"
             height={340}
+            className="meeting-chart-card"
             option={{
               tooltip: { trigger: 'axis' },
               grid: { left: 80, right: 20, top: 24, bottom: 30 },
@@ -1240,12 +1322,14 @@ function MeetingBoardOverview() {
           />
         </Col>
       </Row>
-      <Card id="risk-overdue" title="风险与逾期汇总" className="section-row meeting-table-card">
+      <Card id="risk-overdue" className="section-row meeting-table-card business-card">
         <Table
           rowKey="id"
           dataSource={data?.risk_overdue || []}
+          className="business-table"
           tableLayout="fixed"
           scroll={{ x: 960 }}
+          title={() => renderTableHeader('风险与逾期汇总', data?.risk_overdue?.length || 0, '风险、逾期和负责人快速核对')}
           columns={[
             { title: '类型', dataIndex: 'issue_type', width: 78, render: (value) => <Tag color={value === '逾期' ? 'red' : 'orange'}>{value}</Tag> },
             { title: '编号', dataIndex: 'code', width: 124 },
@@ -1270,6 +1354,7 @@ function MeetingBoardParent() {
       <MeetingBoardTabs />
       <ChartCard
         title="母任务待更新排行"
+        className="meeting-chart-card"
         option={{
           tooltip: { trigger: 'axis' },
           grid: { left: 80, right: 20, top: 24, bottom: 80 },
@@ -1278,12 +1363,14 @@ function MeetingBoardParent() {
           series: [{ type: 'bar', data: rows.map((item: AnyRecord) => item.missing_updates), itemStyle: { color: '#d97706' } }]
         }}
       />
-      <Card title="母任务汇总" className="section-row meeting-table-card">
+      <Card className="section-row meeting-table-card business-card">
         <Table
           rowKey="id"
           dataSource={rows}
+          className="business-table"
           tableLayout="fixed"
           scroll={{ x: 900 }}
+          title={() => renderTableHeader('母任务汇总', rows.length, '按母任务查看待更新、风险和完成情况')}
           columns={[
             { title: '编号', dataIndex: 'code', width: 106 },
             { title: '母任务', dataIndex: 'title', width: 230, ellipsis: true, render: renderEllipsis },
@@ -1312,6 +1399,7 @@ function MeetingBoardDepartment() {
         <Col xs={24} xl={12}>
           <ChartCard
             title="部门任务量"
+            className="meeting-chart-card"
             option={{
               tooltip: { trigger: 'axis' },
               grid: { left: 80, right: 16, top: 24, bottom: 80 },
@@ -1324,6 +1412,7 @@ function MeetingBoardDepartment() {
         <Col xs={24} xl={12}>
           <ChartCard
             title="部门待更新"
+            className="meeting-chart-card"
             option={{
               tooltip: { trigger: 'axis' },
               grid: { left: 80, right: 16, top: 24, bottom: 80 },
@@ -1334,12 +1423,14 @@ function MeetingBoardDepartment() {
           />
         </Col>
       </Row>
-      <Card title="部门汇总" className="section-row meeting-table-card">
+      <Card className="section-row meeting-table-card business-card">
         <Table
           rowKey="id"
           dataSource={rows}
+          className="business-table"
           tableLayout="fixed"
           scroll={{ x: 680 }}
+          title={() => renderTableHeader('部门汇总', rows.length, '按部门查看任务量和风险分布')}
           columns={[
             { title: '部门', dataIndex: 'name', width: 200, ellipsis: true, render: renderEllipsis },
             { title: '部门任务', dataIndex: 'department_task_count', width: 92 },
@@ -1358,26 +1449,27 @@ function MeetingBoardDepartment() {
 function TimelinePage() {
   const { data, loading } = useApi<AnyRecord>('/timeline/matrix', []);
   const weeks: string[] = data?.weeks || [];
-  const renderCell = (value?: string | null) => value ? <span>{value}</span> : <span className="muted-cell">-</span>;
+  const timelineColumns = `240px 132px repeat(${weeks.length}, 156px)`;
+  const renderCell = (value?: string | null) => renderTimelineText(value);
   return (
     <PageShell title="历史时间线" subtitle="按任务层级展开，以周为主轴查看完成内容、遗留事项和附件">
-      <Card loading={loading}>
+      <Card loading={loading} className="timeline-card">
         <div className="timeline-matrix">
-          <div className="timeline-grid timeline-header" style={{ gridTemplateColumns: `220px 140px repeat(${weeks.length}, 160px)` }}>
+          <div className="timeline-grid timeline-header" style={{ gridTemplateColumns: timelineColumns }}>
             <strong>任务</strong>
             <strong>任务开始时间</strong>
             {weeks.map((week) => <strong key={week}>{week.replace('2026-', '')}</strong>)}
           </div>
           {(data?.parents || []).map((parent: AnyRecord) => (
             <details key={parent.id} open className="timeline-node">
-              <summary>{parent.code} {parent.title}</summary>
+              <summary><span className="timeline-code">{parent.code}</span>{renderTimelineText(parent.title)}</summary>
               {(parent.department_tasks || []).map((departmentTask: AnyRecord) => (
                 <details key={departmentTask.id} open className="timeline-node child">
-                  <summary>{departmentTask.code} {departmentTask.title}</summary>
+                  <summary><span className="timeline-code">{departmentTask.code}</span>{renderTimelineText(departmentTask.title)}</summary>
                   {(departmentTask.sub_tasks || []).map((subTask: AnyRecord) => (
                     <div key={subTask.id} className="timeline-subtask">
-                      <div className="timeline-grid timeline-subtask-title" style={{ gridTemplateColumns: `220px 140px repeat(${weeks.length}, 160px)` }}>
-                        <strong>{subTask.code}<br />{subTask.title}</strong>
+                      <div className="timeline-grid timeline-subtask-title" style={{ gridTemplateColumns: timelineColumns }}>
+                        <strong><span className="timeline-code">{subTask.code}</span>{renderTimelineText(subTask.title)}</strong>
                         <span>{subTask.started_at || '-'}</span>
                         {weeks.map((week) => <span key={week}><StatusTag value={subTask.status} /></span>)}
                       </div>
@@ -1385,18 +1477,18 @@ function TimelinePage() {
                         ['完成内容', 'this_week'],
                         ['遗留事项', 'risk']
                       ].map(([label, field]) => (
-                        <div key={field} className="timeline-grid timeline-metric-row" style={{ gridTemplateColumns: `220px 140px repeat(${weeks.length}, 160px)` }}>
+                        <div key={field} className="timeline-grid timeline-metric-row" style={{ gridTemplateColumns: timelineColumns }}>
                           <span>{label}</span>
                           <span />
                           {weeks.map((week) => <span key={week}>{renderCell(subTask.cells?.[week]?.[field])}</span>)}
                         </div>
                       ))}
-                      <div className="timeline-grid timeline-metric-row" style={{ gridTemplateColumns: `220px 140px repeat(${weeks.length}, 160px)` }}>
+                      <div className="timeline-grid timeline-metric-row" style={{ gridTemplateColumns: timelineColumns }}>
                         <span>附件</span>
                         <span />
                         {weeks.map((week) => {
                           const attachments = subTask.cells?.[week]?.attachments || [];
-                          return <span key={week}>{attachments.length ? attachments.map((item: AnyRecord) => item.filename).join('、') : <span className="muted-cell">暂无附件</span>}</span>;
+                          return <span key={week}>{attachments.length ? renderTimelineText(attachments.map((item: AnyRecord) => item.filename).join('、')) : <span className="muted-cell timeline-cell-text">暂无附件</span>}</span>;
                         })}
                       </div>
                     </div>
@@ -1516,49 +1608,59 @@ function Notifications() {
     <PageShell
       title="通知记录"
       subtitle="追踪飞书机器人触达效果与用户响应情况"
-      extra={
-        <Space wrap>
-          <Button onClick={checkLark} loading={loading}>飞书诊断</Button>
-          <Upload beforeUpload={importEmails} showUploadList={false} accept=".csv,.xlsx">
-            <Button icon={<UploadOutlined />} loading={loading}>导入邮箱表</Button>
-          </Upload>
-          <Button onClick={resolveOpenIds} loading={loading}>邮箱解析 open_id</Button>
-          <Select
-            allowClear
-            showSearch
-            placeholder="测试接收人"
-            optionFilterProp="label"
-            options={userOptions}
-            value={testTargetUserId}
-            onChange={(value) => setTestTargetUserId(value || null)}
-            style={{ width: 220 }}
-          />
-          <Button onClick={sendTest} loading={loading}>发送测试卡片</Button>
-          <Button onClick={createMock} loading={loading}>生成模拟提醒</Button>
-          <Button type="primary" onClick={sendLark} loading={loading}>发送飞书提醒</Button>
-        </Space>
-      }
     >
-      <Card>
+      <Card className="admin-toolbar-card mb16">
+        <Space direction="vertical" size={12} className="full-width">
+          <Space wrap className="admin-toolbar">
+            <Button onClick={checkLark} loading={loading}>飞书诊断</Button>
+            <Upload beforeUpload={importEmails} showUploadList={false} accept=".csv,.xlsx">
+              <Button icon={<UploadOutlined />} loading={loading}>导入邮箱表</Button>
+            </Upload>
+            <Button onClick={resolveOpenIds} loading={loading}>邮箱解析 open_id</Button>
+            <Button onClick={createMock} loading={loading}>生成模拟提醒</Button>
+          </Space>
+          <Space wrap className="admin-toolbar primary-toolbar">
+            <Select
+              allowClear
+              showSearch
+              placeholder="测试接收人"
+              optionFilterProp="label"
+              options={userOptions}
+              value={testTargetUserId}
+              onChange={(value) => setTestTargetUserId(value || null)}
+              className="toolbar-select"
+            />
+            <Button onClick={sendTest} loading={loading}>发送测试卡片</Button>
+            <Button type="primary" onClick={sendLark} loading={loading}>发送飞书提醒</Button>
+          </Space>
+        </Space>
+      </Card>
+      <Card className="business-card">
         <Table
           rowKey="id"
           dataSource={data || []}
+          className="business-table"
+          tableLayout="fixed"
+          scroll={{ x: 980 }}
+          title={() => renderTableHeader('通知记录', data?.length || 0, '记录飞书提醒、测试卡片和模拟提醒的发送结果')}
           columns={[
             {
               title: '通知时间',
               dataIndex: 'created_at',
+              width: 150,
               render: (value) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-'
             },
-            { title: '通知对象', dataIndex: 'target_user' },
-            { title: '通知类型', dataIndex: 'notification_type' },
-            { title: '关联对象', render: (_, row) => `${row.related_type || '-'} ${row.related_id || ''}` },
+            { title: '通知对象', dataIndex: 'target_user', width: 120, ellipsis: true, render: renderEllipsis },
+            { title: '通知类型', dataIndex: 'notification_type', width: 160, ellipsis: true, render: renderEllipsis },
+            { title: '关联对象', width: 130, render: (_, row) => renderEllipsis(`${row.related_type || '-'} ${row.related_id || ''}`) },
             {
               title: '发送状态',
               dataIndex: 'send_status',
+              width: 104,
               render: (value) => <Tag color={statusColor(value)}>{value}</Tag>
             },
-            { title: '是否点击', dataIndex: 'clicked', render: (value) => value ? '已点击' : '未点击' },
-            { title: '处理结果', dataIndex: 'result' }
+            { title: '是否点击', dataIndex: 'clicked', width: 88, render: (value) => value ? <Tag color="green">已点击</Tag> : <Tag>未点击</Tag> },
+            { title: '处理结果', dataIndex: 'result', width: 228, ellipsis: true, render: renderEllipsis }
           ]}
         />
       </Card>
@@ -1603,7 +1705,7 @@ function People() {
   };
   return (
     <PageShell title="人员" subtitle="预设员工姓名、部门和角色；实际登录后绑定 open_id">
-      <Card title="新增预设人员" className="mb16">
+      <Card title="新增预设人员" className="mb16 admin-form-card">
         <Form form={form} layout="vertical" onFinish={createPerson} initialValues={{ status: 'active', role_ids: [] }}>
           <Row gutter={16}>
             <Col xs={24} md={6}>
@@ -1645,38 +1747,46 @@ function People() {
           <Button type="primary" htmlType="submit">新增人员</Button>
         </Form>
       </Card>
-      <Card title="人员列表">
+      <Card className="business-card">
         <Table
           rowKey="id"
           dataSource={data || []}
+          className="business-table"
+          tableLayout="fixed"
+          scroll={{ x: 1040 }}
+          title={() => renderTableHeader('人员列表', data?.length || 0, '维护部门、角色、邮箱和飞书绑定状态')}
           columns={[
-            { title: '姓名', dataIndex: 'name' },
-            { title: '部门', dataIndex: 'department', render: (value) => value || '-' },
-            { title: '岗位', dataIndex: 'title', render: (value) => value || '-' },
+            { title: '姓名', dataIndex: 'name', width: 110, ellipsis: true, render: renderEllipsis },
+            { title: '部门', dataIndex: 'department', width: 140, ellipsis: true, render: renderEllipsis },
+            { title: '岗位', dataIndex: 'title', width: 150, ellipsis: true, render: renderEllipsis },
             {
               title: '角色',
               dataIndex: 'roles',
+              width: 190,
               render: (value: AnyRecord[]) => (
-                <Space wrap>{(value || []).map((role) => <Tag key={role.id}>{role.name}</Tag>)}</Space>
+                <Space wrap size={[4, 4]}>{(value || []).map((role) => <Tag className="role-tag" key={role.id}>{role.name}</Tag>)}</Space>
               )
             },
-            { title: '状态', dataIndex: 'status', render: (value) => <StatusTag value={value} /> },
+            { title: '状态', dataIndex: 'status', width: 88, render: (value) => <StatusTag value={value} /> },
             {
               title: 'open_id',
               dataIndex: 'open_id',
-              render: (value) => value ? <Tag color="green">已绑定</Tag> : <Tag>未绑定</Tag>
+              width: 96,
+              render: (value) => renderBindingStatus(value)
             },
             {
               title: '邮箱',
               dataIndex: 'email',
-              render: (value) => value ? <Tag color="blue">{value}</Tag> : <Tag>未录入</Tag>
+              width: 210,
+              render: renderEmail
             },
             {
               title: '来源',
               dataIndex: 'source',
+              width: 96,
               render: (value) => <Tag>{value || '-'}</Tag>
             },
-            { title: '操作', render: (_, row) => <Button onClick={() => openEdit(row)}>编辑</Button> }
+            { title: '操作', width: 88, render: (_, row) => <Button size="small" onClick={() => openEdit(row)}>编辑</Button> }
           ]}
         />
       </Card>

@@ -300,6 +300,10 @@ body {
   font-weight: 600;
 }
 
+.ant-table-wrapper .ant-table-tbody > tr > td {
+  vertical-align: middle;
+}
+
 .ant-btn {
   border-radius: 6px;
 }
@@ -337,6 +341,89 @@ body {
   vertical-align: middle;
 }
 
+.person-tag,
+.department-tag {
+  margin-inline-end: 0;
+  line-height: 20px;
+}
+
+.person-tag-single,
+.department-tag {
+  max-width: 116px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+
+.department-tag {
+  color: #334155;
+  background: #f8fafc;
+  border-color: #dbe3ef;
+}
+
+.business-card .ant-card-body {
+  padding-top: 12px;
+}
+
+.business-table .ant-table {
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+}
+
+.business-table .ant-table-title {
+  padding: 12px 14px;
+  background: #fff;
+  border: 1px solid var(--line-soft);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+}
+
+.business-table .ant-table-container {
+  border-start-start-radius: 0;
+  border-start-end-radius: 0;
+}
+
+.business-table .ant-table-tbody > tr:hover > td {
+  background: #f8fbff;
+}
+
+.nested-table {
+  margin: 4px 0;
+}
+
+.nested-table .ant-table {
+  border-color: #dbe7f5;
+  background: #fbfdff;
+}
+
+.nested-table .ant-table-thead > tr > th {
+  background: #eef5ff;
+}
+
+.table-section-title {
+  max-width: 100%;
+  row-gap: 4px;
+}
+
+.table-section-title .ant-typography-secondary {
+  font-size: 12px;
+}
+
+.table-action-link {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: var(--system-blue);
+  background: rgba(36, 87, 214, 0.08);
+}
+
+.table-action-link:hover {
+  color: #1d4ed8;
+  background: rgba(36, 87, 214, 0.14);
+}
+
 .section-row {
   margin-top: 16px;
 }
@@ -353,10 +440,18 @@ body {
   background: transparent;
 }
 
+.meeting-tabs .ant-btn-primary a {
+  color: #fff;
+}
+
 .meeting-tabs .ant-btn:hover {
   color: var(--system-blue);
   border-color: rgba(36, 87, 214, 0.16);
   background: rgba(36, 87, 214, 0.06);
+}
+
+.meeting-tabs .ant-btn-primary:hover {
+  background: linear-gradient(135deg, #1d4ed8, #3027b8);
 }
 
 .meeting-metric-row .ant-col {
@@ -368,6 +463,20 @@ body {
   background:
     linear-gradient(180deg, rgba(36, 87, 214, 0.04), rgba(255, 255, 255, 0)),
     #fff;
+}
+
+.meeting-chart-card {
+  height: 100%;
+}
+
+.meeting-chart-card .ant-card-head {
+  border-bottom-color: #edf2f7;
+}
+
+.meeting-chart-card .ant-card-head-title,
+.meeting-table-card .ant-card-head-title {
+  font-size: 15px;
+  font-weight: 700;
 }
 
 .meeting-metric-card .ant-statistic-title {
@@ -387,13 +496,35 @@ body {
   vertical-align: top;
 }
 
-.subtask-group-title {
-  max-width: 100%;
-  row-gap: 4px;
+.admin-toolbar-card {
+  background:
+    linear-gradient(180deg, rgba(36, 87, 214, 0.035), rgba(255, 255, 255, 0)),
+    #fff;
 }
 
-.subtask-group-title .ant-typography-secondary {
-  font-size: 12px;
+.admin-toolbar {
+  width: 100%;
+}
+
+.primary-toolbar {
+  padding-top: 10px;
+  border-top: 1px dashed #e2e8f0;
+}
+
+.toolbar-select {
+  width: 240px;
+}
+
+.admin-form-card .ant-card-body {
+  padding-bottom: 18px;
+}
+
+.email-tag,
+.role-tag {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
 }
 
 .risk-tile {
@@ -430,6 +561,68 @@ body {
 .goal-card,
 .task-card {
   min-height: 230px;
+}
+
+.refined-task-card {
+  height: 100%;
+}
+
+.refined-task-card .ant-card-body {
+  min-height: 198px;
+}
+
+.refined-task-card .ant-card-actions {
+  border-top-color: var(--line-soft);
+}
+
+.refined-task-card .ant-card-actions > li {
+  margin: 8px 0;
+}
+
+.task-title-stack {
+  width: 100%;
+  min-height: 58px;
+}
+
+.task-code {
+  width: fit-content;
+  max-width: 100%;
+  padding: 1px 7px;
+  border: 1px solid #dbe7f5;
+  border-radius: 6px;
+  color: #475569;
+  background: #f8fbff;
+  font-size: 12px;
+}
+
+.task-title-text {
+  display: -webkit-box;
+  min-height: 44px;
+  overflow: hidden;
+  color: var(--ink-strong);
+  line-height: 22px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.task-meta-grid {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 8px 10px;
+  align-items: center;
+  min-height: 76px;
+  padding: 10px 0;
+  border-top: 1px dashed #e2e8f0;
+  border-bottom: 1px dashed #e2e8f0;
+}
+
+.task-meta-grid > div,
+.task-meta-grid > span {
+  min-width: 0;
+}
+
+.task-metric-tags {
+  min-height: 26px;
 }
 
 .card-link {
@@ -474,6 +667,13 @@ body {
   padding: 0 16px 8px;
 }
 
+.page-directory .ant-menu-item,
+.department-directory .ant-menu-item {
+  height: 34px;
+  line-height: 34px;
+  border-radius: 6px;
+}
+
 .department-task-layout {
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
@@ -501,6 +701,29 @@ body {
 
 .department-directory .ant-menu {
   border-inline-end: 0 !important;
+}
+
+.summary-card {
+  background:
+    linear-gradient(180deg, rgba(36, 87, 214, 0.035), rgba(255, 255, 255, 0)),
+    #fff;
+}
+
+.summary-card .ant-descriptions-item-label {
+  color: var(--ink-muted);
+}
+
+.subtask-table-personal .ant-table-title {
+  border-top: 3px solid rgba(36, 87, 214, 0.64);
+}
+
+.subtask-table-management .ant-table-title {
+  border-top: 3px solid rgba(100, 116, 139, 0.32);
+  background: #fafafa;
+}
+
+.subtask-table-management .ant-table {
+  color: #475569;
 }
 
 .parent-task-card {
@@ -562,6 +785,7 @@ body {
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   background: #ffffff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
 .timeline-grid {
@@ -570,11 +794,11 @@ body {
 }
 
 .timeline-grid > * {
-  min-height: 38px;
-  padding: 8px 10px;
+  min-height: 40px;
+  padding: 9px 10px;
   border-right: 1px solid #e5e7eb;
   border-bottom: 1px solid #e5e7eb;
-  overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 .timeline-grid > *:last-child {
@@ -585,7 +809,8 @@ body {
   position: sticky;
   top: 0;
   z-index: 2;
-  background: #f8fafc;
+  color: #334155;
+  background: #f7f9fc;
 }
 
 .timeline-node {
@@ -593,11 +818,15 @@ body {
 }
 
 .timeline-node summary {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: max-content;
   cursor: pointer;
   padding: 10px 12px;
   font-weight: 700;
   border-bottom: 1px solid #e5e7eb;
-  background: #f8fafc;
+  background: #f8fbff;
 }
 
 .timeline-node.child summary {
@@ -614,10 +843,36 @@ body {
   background: #fbfdff;
 }
 
+.timeline-subtask-title strong {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
 .timeline-metric-row > *:first-child {
   padding-left: 34px;
   color: #374151;
   font-weight: 600;
+}
+
+.timeline-code {
+  flex: 0 0 auto;
+  width: fit-content;
+  padding: 1px 7px;
+  border: 1px solid #dbe7f5;
+  border-radius: 6px;
+  color: #475569;
+  background: #fff;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.timeline-cell-text {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .muted-cell {
