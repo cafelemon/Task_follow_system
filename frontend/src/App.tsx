@@ -538,7 +538,7 @@ function AppLayout() {
   const onboardingSavingRef = useRef(false);
   const tourCloseTimerRef = useRef<number | null>(null);
   const [tourOpen, setTourOpen] = useState(false);
-  const [tourKind, setTourKind] = useState<'legacy' | 'executive_system' | 'executive_meeting' | null>(null);
+  const [activeGuideKey, setActiveGuideKey] = useState<string | null>(null);
   const [tourTracksProgress, setTourTracksProgress] = useState(false);
   const selectedKey = `/${location.pathname.split('/')[1] || 'meeting-board'}`;
   const isAdmin = Boolean(auth?.user?.is_admin || (auth?.permission_codes || []).includes('permission.manage'));
@@ -560,32 +560,33 @@ function AppLayout() {
   };
   useEffect(() => {
     if (onboardingPresentedRef.current) return;
-    if (guideProfile === 'executive_office' && auth?.guides?.system?.required) {
+    if ((guideProfile === 'executive_office' || guideProfile === 'department_owner') && auth?.guides?.system?.required) {
       onboardingPresentedRef.current = true;
-      setTourKind('executive_system');
+      setActiveGuideKey(auth.guides.system.guide_key);
       setTourTracksProgress(true);
       setTourOpen(true);
       return;
     }
-    if (guideProfile && guideProfile !== 'executive_office' && auth?.onboarding?.required) {
+    if (guideProfile && !['executive_office', 'department_owner'].includes(guideProfile) && auth?.onboarding?.required) {
       onboardingPresentedRef.current = true;
-      setTourKind('legacy');
+      setActiveGuideKey('legacy');
       setTourTracksProgress(true);
       setTourOpen(true);
     }
   }, [auth?.guides?.system?.required, auth?.onboarding?.required, guideProfile]);
 
   const saveGuideProgress = async (action: 'completed' | 'skipped') => {
-    if (onboardingSavingRef.current || !tourKind) return;
+    if (onboardingSavingRef.current || !activeGuideKey) return;
+    const savingGuideKey = activeGuideKey;
     onboardingSavingRef.current = true;
     setTourOpen(false);
     try {
-      if (tourKind === 'legacy') {
+      if (savingGuideKey === 'legacy') {
         await postJson('/auth/onboarding', { version: auth?.onboarding?.version, action });
       } else {
-        const guide = tourKind === 'executive_system'
+        const guide = auth?.guides?.system?.guide_key === savingGuideKey
           ? auth?.guides?.system
-          : auth?.guides?.modules?.meeting_board;
+          : Object.values(auth?.guides?.modules || {}).find((item: any) => item?.guide_key === savingGuideKey) as AnyRecord | undefined;
         await postJson('/auth/guides', {
           guide_key: guide?.guide_key,
           version: guide?.version,
@@ -597,6 +598,7 @@ function AppLayout() {
       message.error('使用指南状态保存失败，请稍后重试');
     } finally {
       onboardingSavingRef.current = false;
+      setActiveGuideKey(null);
     }
   };
   const closeTour = (action: 'completed' | 'skipped') => {
@@ -712,35 +714,189 @@ function AppLayout() {
       target: () => contentRef.current || document.body
     }
   ];
-  const tourSteps = tourKind === 'executive_system'
-    ? executiveSystemSteps
-    : tourKind === 'executive_meeting'
-      ? executiveMeetingSteps
-      : legacyTourSteps;
+  const departmentOwnerFrameworkSteps: TourProps['steps'] = [
+    {
+      title: '部门任务承接与责任落地',
+      description: '部门负责人负责承接本部门牵头的公司任务，并把任务拆分到清晰的负责部门、任务负责人和截止节点。',
+      target: () => brandRef.current || document.body
+    },
+    {
+      title: '查看范围以部门责任为边界',
+      description: '你可以查看本部门牵头的母任务，以及与本人部门相关的部门任务；普通同部门人员不会自动获得这些视图。',
+      target: () => contentRef.current || document.body
+    },
+    {
+      title: '核心流程从母任务详情开始',
+      description: '进入母任务详情后，通过“新增”建立部门任务，明确负责部门、任务负责人和截止日期，再由任务负责人继续拆解子任务。',
+      target: () => menuRef.current || document.body
+    },
+    {
+      title: '跟进部门任务闭环',
+      description: '部门任务页用于检查任务状态、子任务进展、本周更新、遗留事项、风险和截止节点，便于及时推动责任人处理。',
+      target: () => contentRef.current || document.body
+    },
+    {
+      title: '区分管理责任和执行责任',
+      description: '部门负责人权限不自动包含子任务拆解或周更新。若你同时是任务负责人或执行人，请按对应身份完成拆解或填报。',
+      target: () => headerMetaRef.current || document.body
+    },
+    {
+      title: '板块首次进入会继续提示',
+      description: '首次主动点击母任务管理、部门任务等板块时，会出现专项说明；需要回顾时，可从右上角重新打开。',
+      target: () => guideButtonRef.current || document.body
+    }
+  ];
+  const departmentOwnerParentSteps: TourProps['steps'] = [
+    {
+      title: '只看本部门牵头母任务',
+      description: '母任务管理中展示与你所属部门牵头责任相关的母任务，便于从公司级事项开始向下拆分。',
+      target: () => document.querySelector('#department-owner-parent-list') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '先核对母任务关键信息',
+      description: '任务卡展示负责人、牵头部门、截止日期和进度指标。拆分前建议先确认这些信息是否与当前责任边界一致。',
+      target: () => document.querySelector('#department-owner-parent-cards') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '进入详情查看承接结果',
+      description: '通过“查看任务详情”进入母任务详情，可看到已经建立的部门任务，以及展开后的子任务执行情况。',
+      target: () => document.querySelector('#department-owner-parent-cards') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '用新增完成部门任务拆分',
+      description: '在母任务详情中点击“新增”，填写部门任务内容、负责部门、任务负责人和截止日期，这是部门负责人最核心的操作。',
+      target: () => contentRef.current || document.body
+    },
+    {
+      title: '任务负责人继续拆解子任务',
+      description: '部门任务建立后，任务负责人会收到通知，并负责继续拆解到执行人。部门负责人重点检查责任是否清晰、节点是否合理。',
+      target: () => contentRef.current || document.body
+    },
+    {
+      title: '删除是归档隐藏',
+      description: '删除部门任务时按归档处理，不物理删除历史记录。部门负责人不能仅凭该身份编辑母任务本身。',
+      target: () => contentRef.current || document.body
+    }
+  ];
+  const departmentOwnerDepartmentSteps: TourProps['steps'] = [
+    {
+      title: '查看本部门相关部门任务',
+      description: '这里集中展示本人部门负责，或本人部门牵头母任务下的部门任务，用于日常跟踪承接结果。',
+      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '重点核对四类信息',
+      description: '建议优先查看负责部门、任务负责人、状态和待拆解数量，快速判断任务是否已经进入执行层。',
+      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '展开查看执行进展',
+      description: '展开部门任务后，可以看到子任务执行人、本周完成内容、遗留事项和截止日期，用于判断推进质量。',
+      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '问题回到母任务详情维护',
+      description: '如果发现责任人、负责部门或截止日期不合理，请回到对应母任务详情维护部门任务。',
+      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '拆解子任务属于任务负责人',
+      description: '“拆解”按钮只在你同时是该部门任务负责人时可用。部门负责人本身负责管理承接关系，不代替任务负责人拆子任务。',
+      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
+    }
+  ];
+  const departmentOwnerSubTaskSteps: TourProps['steps'] = [
+    {
+      title: '先区分你在子任务中的身份',
+      description: '“我执行”表示需要你填写周更新；“我负责”表示跟进责任；“管理查看”是只读查看，不代执行人填写。',
+      target: () => document.querySelector('#department-owner-sub-task-groups') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '从执行任务进入更新页',
+      description: '在“我执行”或“负责+执行”的子任务中点击“更新”，进入本周填报页面。',
+      target: () => document.querySelector('#department-owner-sub-task-execution') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '未开启任务先开启',
+      description: '如果任务尚未开启，请先点击“开启任务”；任务完成后再标记已完成，完成后周更新表单会锁定。',
+      target: () => contentRef.current || document.body
+    },
+    {
+      title: '按周填写执行信息',
+      description: '本周完成内容、下周计划和遗留事项分别记录已完成工作、下一步安排和距离完全完成仍需处理的尾项。',
+      target: () => contentRef.current || document.body
+    },
+    {
+      title: '提交状态会影响提醒',
+      description: '保存草稿不会视为本周已提交；只有点击“提交保存”后，周五未提交提醒才会停止。',
+      target: () => contentRef.current || document.body
+    },
+    {
+      title: '遗留事项不等于风险',
+      description: '遗留事项继续作为周更新文本；确有影响和可能性的问题，请使用“登记风险”单独形成风险项。',
+      target: () => contentRef.current || document.body
+    }
+  ];
+  const guideStepsByKey: Record<string, TourProps['steps']> = {
+    legacy: legacyTourSteps,
+    executive_framework: executiveSystemSteps,
+    executive_meeting_board: executiveMeetingSteps,
+    department_owner_framework: departmentOwnerFrameworkSteps,
+    department_owner_parent_tasks: departmentOwnerParentSteps,
+    department_owner_department_tasks: departmentOwnerDepartmentSteps,
+    department_owner_sub_tasks: departmentOwnerSubTaskSteps
+  };
+  const tourSteps = guideStepsByKey[activeGuideKey || 'legacy'] || legacyTourSteps;
+
+  const guideKeyForCurrentPage = () => {
+    if (guideProfile === 'executive_office') {
+      return location.pathname.startsWith('/meeting-board')
+        ? auth?.guides?.modules?.meeting_board?.guide_key
+        : auth?.guides?.system?.guide_key;
+    }
+    if (guideProfile === 'department_owner') {
+      if (location.pathname.startsWith('/parent-tasks')) return auth?.guides?.modules?.parent_tasks?.guide_key;
+      if (location.pathname.startsWith('/department-tasks')) return auth?.guides?.modules?.department_tasks?.guide_key;
+      if (location.pathname.startsWith('/sub-tasks')) return auth?.guides?.modules?.sub_tasks?.guide_key;
+      return auth?.guides?.system?.guide_key;
+    }
+    return guideProfile ? 'legacy' : null;
+  };
 
   const openManualGuide = () => {
-    if (guideProfile === 'executive_office') {
-      setTourKind(location.pathname.startsWith('/meeting-board') ? 'executive_meeting' : 'executive_system');
-    } else {
-      setTourKind('legacy');
-    }
+    setActiveGuideKey(guideKeyForCurrentPage() || auth?.guides?.system?.guide_key || 'legacy');
     setTourTracksProgress(false);
     setTourOpen(true);
   };
 
-  const handleMenuClick = ({ key }: { key: string }) => {
-    if (
-      key === '/meeting-board'
-      && guideProfile === 'executive_office'
-      && auth?.guides?.modules?.meeting_board?.required
-      && !tourOpen
-    ) {
+  const guideForMenuPath = (key: string) => (
+    key === '/meeting-board'
+      ? auth?.guides?.modules?.meeting_board
+      : key === '/parent-tasks'
+        ? auth?.guides?.modules?.parent_tasks
+        : key === '/department-tasks'
+          ? auth?.guides?.modules?.department_tasks
+          : key === '/sub-tasks'
+            ? auth?.guides?.modules?.sub_tasks
+            : null
+  );
+  const triggerModuleGuide = (key: string) => {
+    const moduleGuide = guideForMenuPath(key);
+    if (moduleGuide?.required) {
       window.setTimeout(() => {
-        setTourKind('executive_meeting');
+        setActiveGuideKey(moduleGuide.guide_key);
         setTourTracksProgress(true);
         setTourOpen(true);
       }, 180);
     }
+  };
+  const handleMenuClick = ({ key }: { key: string }) => {
+    triggerModuleGuide(key);
+  };
+  const handleMenuLinkCapture = (event: React.MouseEvent<HTMLDivElement>) => {
+    const anchor = (event.target as HTMLElement | null)?.closest('a[href]') as HTMLAnchorElement | null;
+    if (!anchor) return;
+    triggerModuleGuide(new URL(anchor.href).pathname);
   };
 
   if ((error as any)?.response?.status === 401) {
@@ -757,7 +913,7 @@ function AppLayout() {
             <span>闭环管理</span>
           </div>
         </div>
-        <div ref={menuRef} className="app-menu-guide-target">
+        <div ref={menuRef} className="app-menu-guide-target" onClickCapture={handleMenuLinkCapture}>
           <Menu mode="inline" selectedKeys={[selectedKey]} items={menuItems} onClick={handleMenuClick} />
         </div>
         <div className="sider-footer">
@@ -961,7 +1117,7 @@ function ParentTasks() {
         </Space>
       ) : null}
     >
-      <div className="parent-task-layout">
+      <div id="department-owner-parent-list" className="parent-task-layout">
         <aside className="page-directory">
           <Typography.Text type="secondary">母任务目录</Typography.Text>
           <Menu
@@ -970,7 +1126,7 @@ function ParentTasks() {
             onClick={({ key }) => navigate(`/parent-tasks/${key}`)}
           />
         </aside>
-        <Row gutter={[16, 16]} className="full-width">
+        <Row id="department-owner-parent-cards" gutter={[16, 16]} className="full-width">
           {(data || []).map((task) => (
             <Col xs={24} lg={12} xl={8} key={task.id}>
               <Card
@@ -1293,6 +1449,7 @@ function ParentTaskDetail() {
         </Descriptions>
       </Card>
       <Card
+        id="department-owner-parent-detail-actions"
         className="business-card"
         title="部门级任务"
         extra={canCreateDepartmentTasks || canDeleteDepartmentTasks ? (
@@ -1469,7 +1626,7 @@ function DepartmentTasks() {
           </aside>
         )}
         <Space direction="vertical" size={16} className="full-width">
-          <Card className="business-card">
+          <Card id="department-owner-department-task-table" className="business-card">
             <Table
               rowKey="id"
               dataSource={departmentTasks}
@@ -1601,9 +1758,10 @@ function SubTasks() {
       )
     }
   ];
-  const renderGroup = (title: string, items: AnyRecord[], description: string) => (
+  const renderGroup = (title: string, items: AnyRecord[], description: string, id?: string) => (
     items.length ? (
       <Table
+        id={id}
         key={title}
         rowKey="id"
         dataSource={items}
@@ -1617,8 +1775,8 @@ function SubTasks() {
   );
   return (
     <PageShell title="子任务执行" subtitle="个人更新入口：执行人填写周更新，负责人查看跟进，管理查看只读区分">
-      <Space direction="vertical" size={16} style={{ width: '100%' }}>
-        {renderGroup('我执行', executionTasks, '可开启、完成并填写周更新')}
+      <Space id="department-owner-sub-task-groups" direction="vertical" size={16} style={{ width: '100%' }}>
+        {renderGroup('我执行', executionTasks, '可开启、完成并填写周更新', 'department-owner-sub-task-execution')}
         {renderGroup('我负责', ownerTasks, '仅查看负责的子任务，不代执行人填写')}
         {renderGroup('管理查看', managementTasks, '全局查看人员的只读入口；管理员可兜底更新')}
         {!tasks.length && <Alert type="info" showIcon message="当前没有与你相关的子任务。" />}

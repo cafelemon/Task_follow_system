@@ -126,6 +126,10 @@ logger = logging.getLogger(__name__)
 CURRENT_ONBOARDING_VERSION = "1"
 EXECUTIVE_FRAMEWORK_GUIDE = ("executive_framework", "1")
 EXECUTIVE_MEETING_GUIDE = ("executive_meeting_board", "1")
+DEPARTMENT_OWNER_FRAMEWORK_GUIDE = ("department_owner_framework", "1")
+DEPARTMENT_OWNER_PARENT_TASKS_GUIDE = ("department_owner_parent_tasks", "1")
+DEPARTMENT_OWNER_DEPARTMENT_TASKS_GUIDE = ("department_owner_department_tasks", "1")
+DEPARTMENT_OWNER_SUB_TASKS_GUIDE = ("department_owner_sub_tasks", "1")
 
 
 def feature_payload(db: Session, user: User) -> dict:
@@ -189,6 +193,24 @@ def guide_profile(db: Session, user: User) -> str | None:
     return None
 
 
+def has_active_execution_task(db: Session, user: User) -> bool:
+    return bool(
+        db.scalar(
+            select(SubTaskExecutor.user_id)
+            .join(SubTask, SubTask.id == SubTaskExecutor.sub_task_id)
+            .join(DepartmentTask, DepartmentTask.id == SubTask.department_task_id)
+            .join(ParentTask, ParentTask.id == DepartmentTask.parent_task_id)
+            .where(
+                SubTaskExecutor.user_id == user.id,
+                SubTask.status != "archived",
+                DepartmentTask.status != "archived",
+                ParentTask.status != "archived",
+            )
+            .limit(1)
+        )
+    )
+
+
 def guide_state(db: Session, user: User, guide_key: str, version: str) -> dict:
     progress = db.scalar(
         select(UserGuideProgress).where(
@@ -208,23 +230,47 @@ def guide_state(db: Session, user: User, guide_key: str, version: str) -> dict:
 
 def guides_payload(db: Session, user: User) -> dict:
     profile = guide_profile(db, user)
-    if profile != "executive_office":
-        return {"profile": profile, "system": None, "modules": {}}
-    framework_key, framework_version = EXECUTIVE_FRAMEWORK_GUIDE
-    meeting_key, meeting_version = EXECUTIVE_MEETING_GUIDE
-    return {
-        "profile": profile,
-        "system": guide_state(db, user, framework_key, framework_version),
-        "modules": {
-            "meeting_board": guide_state(db, user, meeting_key, meeting_version),
-        },
-    }
+    modules: dict[str, dict] = {}
+    if profile == "executive_office":
+        framework_key, framework_version = EXECUTIVE_FRAMEWORK_GUIDE
+        meeting_key, meeting_version = EXECUTIVE_MEETING_GUIDE
+        modules["meeting_board"] = guide_state(db, user, meeting_key, meeting_version)
+        return {
+            "profile": profile,
+            "system": guide_state(db, user, framework_key, framework_version),
+            "modules": modules,
+        }
+    if profile == "department_owner":
+        framework_key, framework_version = DEPARTMENT_OWNER_FRAMEWORK_GUIDE
+        parent_key, parent_version = DEPARTMENT_OWNER_PARENT_TASKS_GUIDE
+        department_key, department_version = DEPARTMENT_OWNER_DEPARTMENT_TASKS_GUIDE
+        modules["parent_tasks"] = guide_state(db, user, parent_key, parent_version)
+        modules["department_tasks"] = guide_state(db, user, department_key, department_version)
+        if has_active_execution_task(db, user):
+            sub_key, sub_version = DEPARTMENT_OWNER_SUB_TASKS_GUIDE
+            modules["sub_tasks"] = guide_state(db, user, sub_key, sub_version)
+        return {
+            "profile": profile,
+            "system": guide_state(db, user, framework_key, framework_version),
+            "modules": modules,
+        }
+    return {"profile": profile, "system": None, "modules": {}}
 
 
 def allowed_guides(db: Session, user: User) -> set[tuple[str, str]]:
-    if guide_profile(db, user) != "executive_office":
-        return set()
-    return {EXECUTIVE_FRAMEWORK_GUIDE, EXECUTIVE_MEETING_GUIDE}
+    profile = guide_profile(db, user)
+    if profile == "executive_office":
+        return {EXECUTIVE_FRAMEWORK_GUIDE, EXECUTIVE_MEETING_GUIDE}
+    if profile == "department_owner":
+        allowed = {
+            DEPARTMENT_OWNER_FRAMEWORK_GUIDE,
+            DEPARTMENT_OWNER_PARENT_TASKS_GUIDE,
+            DEPARTMENT_OWNER_DEPARTMENT_TASKS_GUIDE,
+        }
+        if has_active_execution_task(db, user):
+            allowed.add(DEPARTMENT_OWNER_SUB_TASKS_GUIDE)
+        return allowed
+    return set()
 
 
 def normalize_open_id(value: str | None) -> str | None:
