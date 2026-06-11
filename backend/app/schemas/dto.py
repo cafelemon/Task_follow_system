@@ -83,6 +83,27 @@ class WeeklyUpdateUpsert(BaseModel):
     submit: bool = False
 
 
+class RiskItemCreate(BaseModel):
+    sub_task_id: int
+    source_weekly_update_id: int | None = None
+    title: str
+    description: str | None = None
+    impact_score: int = Field(ge=1, le=5)
+    likelihood_score: int = Field(ge=1, le=5)
+    due_date: date | None = None
+
+
+class RiskItemUpdate(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    impact_score: int | None = Field(default=None, ge=1, le=5)
+    likelihood_score: int | None = Field(default=None, ge=1, le=5)
+    status: str | None = None
+    owner_id: int | None = None
+    due_date: date | None = None
+    resolution_note: str | None = None
+
+
 class RolePermissionUpdate(BaseModel):
     role_id: int
     permission_codes: list[str]
@@ -94,6 +115,15 @@ class MockNotificationRequest(BaseModel):
 
 class LarkTestMessageRequest(BaseModel):
     target_user_id: int
+
+
+class LarkCardPreviewRequest(BaseModel):
+    target_user_id: int
+
+
+class OnboardingUpdate(BaseModel):
+    version: str
+    action: str
 
 
 class LoginRequest(BaseModel):

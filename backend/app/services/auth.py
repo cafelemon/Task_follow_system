@@ -6,6 +6,7 @@ import json
 import secrets
 import time
 from urllib.parse import quote, urlencode
+import ipaddress
 
 from fastapi import Cookie, Depends, HTTPException, status
 from sqlalchemy import select
@@ -13,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.session import get_db
-from app.models.entities import AuthSession, User
+from app.models.entities import AuthSession, NotificationRecord, User
 
 SESSION_COOKIE = "task_follow_session"
 SESSION_DAYS = 7
@@ -80,7 +81,12 @@ def normalize_next_path(next_path: str | None) -> str:
     return next_path
 
 
-def create_lark_login_token(user: User, next_path: str | None) -> str:
+def create_lark_login_token(
+    user: User,
+    next_path: str | None,
+    *,
+    notification_id: int | None = None,
+) -> str:
     if not user.open_id:
         raise ValueError("User has no open_id")
     payload = {
@@ -90,14 +96,21 @@ def create_lark_login_token(user: User, next_path: str | None) -> str:
         "exp": int(time.time()) + settings.lark_link_ttl_seconds,
         "nonce": secrets.token_urlsafe(12),
     }
+    if notification_id is not None:
+        payload["notification_id"] = notification_id
     payload_text = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     payload_part = _b64url_encode(payload_text)
     signature = hmac.new(_lark_link_secret(), payload_part.encode("ascii"), hashlib.sha256).digest()
     return f"{payload_part}.{_b64url_encode(signature)}"
 
 
-def create_lark_login_url(user: User, next_path: str | None) -> str:
-    token = create_lark_login_token(user, next_path)
+def create_lark_login_url(
+    user: User,
+    next_path: str | None,
+    *,
+    notification_id: int | None = None,
+) -> str:
+    token = create_lark_login_token(user, next_path, notification_id=notification_id)
     return f"{settings.web_base_url.rstrip('/')}/api/auth/lark-link?token={quote(token)}"
 
 
@@ -129,20 +142,57 @@ def verify_lark_oauth_state(state: str) -> str:
     return normalize_next_path(payload.get("next_path"))
 
 
-def create_lark_oauth_authorize_url(next_path: str | None) -> str:
+def _host_name(host_header: str | None) -> str:
+    if not host_header:
+        return ""
+    value = host_header.strip()
+    if value.startswith("[") and "]" in value:
+        return value[1 : value.index("]")]
+    return value.rsplit(":", 1)[0].strip().lower()
+
+
+def _is_request_host_allowed_for_oauth(host_header: str | None) -> bool:
+    host = _host_name(host_header)
+    if not host or host in {"localhost", "0.0.0.0"}:
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.version == 4 and not ip.is_loopback and ip.is_private
+
+
+def _oauth_redirect_uri_from_request(host_header: str | None, scheme: str | None) -> str | None:
+    if settings.lark_oauth_redirect_mode != "request_host":
+        return None
+    if not _is_request_host_allowed_for_oauth(host_header):
+        return None
+    request_scheme = (scheme or "http").split(",", 1)[0].strip().lower()
+    if request_scheme not in {"http", "https"}:
+        request_scheme = "http"
+    return f"{request_scheme}://{host_header}/api/auth/lark-oauth/callback"
+
+
+def create_lark_oauth_authorize_url(
+    next_path: str | None,
+    *,
+    request_host: str | None = None,
+    request_scheme: str | None = None,
+) -> str:
     if not settings.lark_app_id:
         raise RuntimeError("Missing TASK_FOLLOW_LARK_APP_ID")
+    redirect_uri = _oauth_redirect_uri_from_request(request_host, request_scheme) or settings.lark_oauth_redirect_uri
     query = urlencode(
         {
             "app_id": settings.lark_app_id,
-            "redirect_uri": settings.lark_oauth_redirect_uri,
+            "redirect_uri": redirect_uri,
             "state": create_lark_oauth_state(next_path),
         }
     )
     return f"{settings.lark_api_base_url}/open-apis/authen/v1/authorize?{query}"
 
 
-def verify_lark_login_token(db: Session, token: str) -> tuple[User, str]:
+def verify_lark_login_token(db: Session, token: str) -> tuple[User, str, NotificationRecord | None]:
     try:
         payload_part, signature_part = token.split(".", 1)
         expected = hmac.new(_lark_link_secret(), payload_part.encode("ascii"), hashlib.sha256).digest()
@@ -161,7 +211,16 @@ def verify_lark_login_token(db: Session, token: str) -> tuple[User, str]:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="账号不可用")
     if not user.open_id or user.open_id != payload.get("open_id"):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="飞书身份已变更")
-    return user, normalize_next_path(payload.get("next_path"))
+
+    notification = None
+    notification_id = payload.get("notification_id")
+    if notification_id is not None:
+        if not isinstance(notification_id, int):
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="飞书通知标识无效")
+        notification = db.get(NotificationRecord, notification_id)
+        if not notification or notification.target_user_id != user.id:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="飞书通知与接收人不匹配")
+    return user, normalize_next_path(payload.get("next_path")), notification
 
 
 def create_session(db: Session, user: User) -> str:

@@ -1,8 +1,8 @@
 # 公司任务跟踪系统
 
-版本：`2.0.9`
+版本：`2.3.2`
 
-公司任务跟踪系统是面向公司级任务推进、每周更新、风险协调和会议看板的独立 Web 系统。2.0.9 在 UI 收尾版基础上补强看板关联性：会议看板指标、柱图、饼图和母任务截止日期管理支持点击查看数据详情，母任务详情和部门任务展开行补充本周完成内容与遗留事项。
+公司任务跟踪系统是面向公司级任务推进、每周更新、风险协调和会议看板的独立 Web 系统。2.3.2 统一飞书业务卡片、补齐风险通知与风险责任人管理，并提供四类卡片验收入口；生产反代与正式域名留到 3.0 阶段。
 
 ## 技术栈
 
@@ -23,11 +23,19 @@ docker compose -f deploy/docker-compose.yml up --build
 - 前端：http://localhost:8080
 - 后端健康检查：http://localhost:8080/api/health
 
+局域网飞书联调时，优先使用自动同步当前 LAN IP 的启动脚本：
+
+```bash
+bash scripts/start_lan_dev.sh
+```
+
+脚本会更新本机 `.env` 中的 Web 地址和飞书 OAuth callback，并在启动后输出飞书开发者后台需要确认的重定向 URL。
+
 生产环境由 IT 反代到内网服务端口时，可设置 `TASK_FOLLOW_DOCKER_HTTP_PORT=28081`。
 
 首次初始化全新数据库时，需要通过本地环境变量提供系统管理员初始密码，仓库不保存明文密码或密码哈希。可参考 `.env.example`，在本机创建不提交的 `.env`，或在启动前导出 `TASK_FOLLOW_ADMIN_PASSWORD` / `TASK_FOLLOW_ADMIN_PASSWORD_HASH`。
 
-## 飞书 2.0.9 接入配置
+## 飞书 2.3.x 接入配置
 
 2.0.9 使用飞书企业自建应用接口获取 `tenant_access_token`、`app_access_token`，支持按邮箱解析 `open_id`、发送互动卡片和网页免登录。默认不发送真实消息，需要显式启用：
 
@@ -38,8 +46,11 @@ TASK_FOLLOW_LARK_APP_SECRET=xxx
 TASK_FOLLOW_WEB_BASE_URL=http://localhost:8080
 TASK_FOLLOW_LINK_SECRET=
 TASK_FOLLOW_LARK_OAUTH_REDIRECT_URI=http://localhost:8080/api/auth/lark-oauth/callback
+TASK_FOLLOW_LARK_OAUTH_REDIRECT_MODE=configured
 TASK_FOLLOW_LARK_OAUTH_STATE_SECRET=
 ```
+
+局域网联调建议把 `TASK_FOLLOW_LARK_OAUTH_REDIRECT_MODE` 设为 `request_host`，并通过 `bash scripts/start_lan_dev.sh` 自动写入当前 LAN 地址。
 
 启用后，先在“通知记录”页上传包含 `姓名`、`邮箱` 的导出文件，再点击“飞书诊断”和“邮箱解析 open_id”。解析完成后可先发“测试卡片”，再点“发送飞书提醒”。飞书卡片按钮继续优先使用服务端签名入口；登录页提供“飞书免登”兜底入口。邮箱只用于管理员预绑定和免登辅助匹配，不作为单独登录凭证。
 

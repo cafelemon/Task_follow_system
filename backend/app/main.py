@@ -10,6 +10,7 @@ from app.db.session import SessionLocal, engine
 from app.models.base import Base
 from app.models import entities  # noqa: F401
 from app.services.schema import ensure_runtime_schema
+from app.services.scheduler import start_scheduler, stop_scheduler
 from app.services.seed import seed_demo_data
 
 
@@ -19,7 +20,11 @@ async def lifespan(app: FastAPI):
     ensure_runtime_schema()
     with SessionLocal() as db:
         seed_demo_data(db)
-    yield
+    start_scheduler()
+    try:
+        yield
+    finally:
+        stop_scheduler()
 
 
 app = FastAPI(title=settings.app_name, version=__version__, lifespan=lifespan)

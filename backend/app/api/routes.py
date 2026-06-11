@@ -1,12 +1,13 @@
 import csv
-from collections import Counter, defaultdict
+import logging
+from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from io import BytesIO, StringIO
 from urllib.parse import quote
 
-from fastapi import APIRouter, Cookie, Depends, File, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, Cookie, Depends, File, HTTPException, Request, Response, UploadFile, status
 from fastapi.responses import RedirectResponse
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 from openpyxl import load_workbook
 
@@ -23,7 +24,7 @@ from app.models.entities import (
     ParentTask,
     ParentTaskOwner,
     Permission,
-    RiskRecord,
+    RiskItem,
     Role,
     StrategicGoal,
     SubTask,
@@ -37,14 +38,18 @@ from app.schemas.dto import (
     DepartmentTaskCreate,
     DepartmentTaskUpdate,
     GoalCreate,
+    LarkCardPreviewRequest,
     LarkTestMessageRequest,
     LoginRequest,
     MockNotificationRequest,
+    OnboardingUpdate,
     OpenIdLoginRequest,
     ParentTaskCreate,
     ParentTaskUpdate,
     PersonCreate,
     PersonUpdate,
+    RiskItemCreate,
+    RiskItemUpdate,
     RolePermissionUpdate,
     SubTaskCreate,
     SubTaskUpdate,
@@ -59,14 +64,21 @@ from app.services.business import (
     owner_people,
     people_payload,
     send_lark_test_message,
+    send_lark_card_preview_suite,
+    send_department_task_due_reminders,
+    send_department_task_split_notifications,
+    send_risk_item_notifications,
+    send_risk_overdue_reminders,
     send_weekly_update_reminders,
     serialize_department_task,
     serialize_department_task_tree,
     serialize_goal,
     serialize_parent_task,
     serialize_sub_task,
+    serialize_risk_item,
     serialize_user,
     serialize_weekly_update,
+    risk_score,
     upsert_weekly_update,
 )
 from app.services.permissions import (
@@ -103,8 +115,12 @@ from app.services.auth import (
 )
 from app.services.lark_client import lark_client
 from app.services.lark_sync import import_base_2026, preview_base_2026
+from app.services.people_department_sync import count_open_id_candidates, sync_people_from_rows
+from app.services.scheduler import scheduler_status
 
 router = APIRouter(prefix="/api")
+logger = logging.getLogger(__name__)
+CURRENT_ONBOARDING_VERSION = "1"
 
 
 def feature_payload(db: Session, user: User) -> dict:
@@ -115,6 +131,17 @@ def feature_payload(db: Session, user: User) -> dict:
         "can_delete_parent_tasks": can_manage_parent,
         "can_manage_parent_tasks": can_manage_parent,
         "can_switch_department": can_view_department_directory(user),
+    }
+
+
+def onboarding_payload(user: User) -> dict:
+    return {
+        "version": CURRENT_ONBOARDING_VERSION,
+        "required": user.onboarding_version != CURRENT_ONBOARDING_VERSION,
+        "status": user.onboarding_status,
+        "completed_at": (
+            user.onboarding_completed_at.isoformat() if user.onboarding_completed_at else None
+        ),
     }
 
 
@@ -302,6 +329,97 @@ def serialize_sub_task_with_weekly_summary(
     }
 
 
+def can_create_risk_item(user: User, task: SubTask) -> bool:
+    if user.is_admin or "permission.manage" in user_permission_codes(user):
+        return True
+    if user.id in sub_task_executor_ids(task):
+        return True
+    if user.id in task_owner_ids(task):
+        return True
+    department_task = task.department_task
+    if department_task and user.id in task_owner_ids(department_task):
+        return True
+    return False
+
+
+def can_manage_risk_item(user: User, item: RiskItem) -> bool:
+    if user.is_admin or "permission.manage" in user_permission_codes(user):
+        return True
+    if item.owner_id == user.id:
+        return True
+    task = item.sub_task
+    if task and user.id in task_owner_ids(task):
+        return True
+    if task and task.department_task and user.id in task_owner_ids(task.department_task):
+        return True
+    return False
+
+
+def risk_owner_candidates(task: SubTask) -> list[User]:
+    return [owner for owner in owner_people(task) if owner.status != "disabled"]
+
+
+def risk_owner_options(task: SubTask) -> list[dict]:
+    return [{"id": owner.id, "name": owner.name} for owner in risk_owner_candidates(task)]
+
+
+def serialize_risk_item_for_user(item: RiskItem, user: User) -> dict:
+    return {
+        **serialize_risk_item(item),
+        "can_manage": can_manage_risk_item(user, item),
+        "owner_options": risk_owner_options(item.sub_task) if item.sub_task else [],
+    }
+
+
+def active_risk_items_for_tasks(db: Session, tasks: list[SubTask]) -> list[RiskItem]:
+    task_ids = [task.id for task in tasks]
+    if not task_ids:
+        return []
+    return list(
+        db.scalars(
+            select(RiskItem).where(
+                RiskItem.sub_task_id.in_(task_ids),
+                RiskItem.status.in_(["open", "in_progress"]),
+            )
+        ).all()
+    )
+
+
+def risk_item_detail_summary(item: RiskItem, user: User) -> dict:
+    task = item.sub_task
+    department_task = task.department_task if task else None
+    parent_task = department_task.parent_task if department_task else None
+    overdue = bool(item.due_date and item.due_date < date.today() and item.status != "closed")
+    return {
+        "id": item.id,
+        "code": item.code,
+        "title": item.title,
+        "description": item.description,
+        "level": item.level,
+        "risk_level": item.level,
+        "impact_score": item.impact_score,
+        "likelihood_score": item.likelihood_score,
+        "score": item.score,
+        "status": item.status,
+        "owner": item.owner.name if item.owner else None,
+        "owner_id": item.owner_id,
+        "owner_options": risk_owner_options(task) if task else [],
+        "can_manage": can_manage_risk_item(user, item),
+        "due_date": item.due_date.isoformat() if item.due_date else None,
+        "resolution_note": item.resolution_note,
+        "is_overdue": overdue,
+        "issue_type": "风险逾期" if overdue else "风险",
+        "sub_task_id": item.sub_task_id,
+        "sub_task_code": task.code if task else None,
+        "sub_task": task.title if task else None,
+        "department_task": department_task.title if department_task else None,
+        "department_task_code": department_task.code if department_task else None,
+        "parent_task": parent_task.title if parent_task else None,
+        "parent_task_code": parent_task.code if parent_task else None,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+    }
+
+
 def serialize_department_task_tree_for_user(db: Session, user: User, task: DepartmentTask) -> dict:
     current_week = current_week_key()
     updates = updates_by_sub_task(db, [sub_task.id for sub_task in task.sub_tasks], current_week)
@@ -350,11 +468,15 @@ def serialize_sub_task_for_execution(task: SubTask, user: User, current_update: 
     relation = sub_task_execution_relation(user, task)
     executor_ids = sub_task_executor_ids(task)
     assignee_id = user.id if user.id in executor_ids else (task.executor_id if task.executor_id in executor_ids else None)
+    owner_options = risk_owner_options(task)
     return {
         **serialize_sub_task(task, current_update),
         "viewer_relation": relation,
         "can_update_weekly": can_update_sub_task_weekly(user, task, assignee_id),
         "current_assignee_id": assignee_id,
+        "can_create_risk": can_create_risk_item(user, task),
+        "risk_owner_options": owner_options,
+        "default_risk_owner_id": owner_options[0]["id"] if owner_options else None,
     }
 
 
@@ -445,7 +567,10 @@ def build_meeting_overview_payload(db: Session, user: User, week_key: str) -> di
     active_tasks = [task for task in sub_tasks if task.status != "completed"]
     updated_tasks = [task for task in active_tasks if task.id in current_updates]
     missing_tasks = [task for task in active_tasks if task.id not in current_updates]
-    risk_tasks = [task for task in sub_tasks if task.risk_level in {"high", "medium", "low"}]
+    risk_items = active_risk_items_for_tasks(db, sub_tasks)
+    high_risks = [item for item in risk_items if item.level == "high"]
+    medium_risks = [item for item in risk_items if item.level == "medium"]
+    low_risks = [item for item in risk_items if item.level == "low"]
     overdue_tasks = [task for task in active_tasks if task.due_date and task.due_date < today]
     completed_tasks = [task for task in sub_tasks if task.status == "completed"]
     weeks = week_keys_between(monday_from_week_key(week_key) - timedelta(days=35), monday_from_week_key(week_key))
@@ -478,16 +603,15 @@ def build_meeting_overview_payload(db: Session, user: User, week_key: str) -> di
         "active_sub_tasks": details_for(active_tasks),
         "updated_this_week": details_for(updated_tasks),
         "missing_updates": details_for(missing_tasks),
-        "risk_tasks": details_for(risk_tasks),
+        "risk_tasks": [risk_item_detail_summary(item, user) for item in risk_items],
         "overdue_tasks": details_for(overdue_tasks),
         "completed_tasks": details_for(completed_tasks),
         "weekly_updated": details_for(updated_tasks),
         "weekly_missing": details_for(missing_tasks),
         "weekly_completed": details_for(completed_tasks),
-        "risk_high": details_for([task for task in sub_tasks if task.risk_level == "high"]),
-        "risk_medium": details_for([task for task in sub_tasks if task.risk_level == "medium"]),
-        "risk_low": details_for([task for task in sub_tasks if task.risk_level == "low"]),
-        "risk_none": details_for([task for task in sub_tasks if task.risk_level not in {"high", "medium", "low"}]),
+        "risk_high": [risk_item_detail_summary(item, user) for item in high_risks],
+        "risk_medium": [risk_item_detail_summary(item, user) for item in medium_risks],
+        "risk_low": [risk_item_detail_summary(item, user) for item in low_risks],
     }
     return {
         "week_key": week_key,
@@ -495,7 +619,7 @@ def build_meeting_overview_payload(db: Session, user: User, week_key: str) -> di
             "active_sub_tasks": len(active_tasks),
             "updated_this_week": len(updated_tasks),
             "missing_updates": len(missing_tasks),
-            "risk_tasks": len(risk_tasks),
+            "risk_tasks": len(risk_items),
             "overdue_tasks": len(overdue_tasks),
             "completed_tasks": len(completed_tasks),
         },
@@ -508,7 +632,6 @@ def build_meeting_overview_payload(db: Session, user: User, week_key: str) -> di
             {"name": "高风险", "value": len(detail_rows["risk_high"]), "detail_key": "risk_high"},
             {"name": "中风险", "value": len(detail_rows["risk_medium"]), "detail_key": "risk_medium"},
             {"name": "低风险", "value": len(detail_rows["risk_low"]), "detail_key": "risk_low"},
-            {"name": "无风险", "value": len(detail_rows["risk_none"]), "detail_key": "risk_none"},
         ],
         "trend": trend,
         "gantt": [
@@ -527,14 +650,14 @@ def build_meeting_overview_payload(db: Session, user: User, week_key: str) -> di
         "details": detail_rows,
         "parent_details": [parent_task_detail_summary(task) for task in gantt_source],
         "risk_overdue": [
+            *[risk_item_detail_summary(item, user) for item in sorted(risk_items, key=lambda item: item.due_date or date.max)],
+            *[
             {
                 **sub_task_detail_summary(task, grouped_updates.get(task.id, []), current_updates.get(task.id)),
-                "issue_type": "逾期" if task in overdue_tasks else "风险",
+                "issue_type": "逾期",
             }
-            for task in sorted(
-                {task.id: task for task in risk_tasks + overdue_tasks}.values(),
-                key=lambda item: item.due_date or date.max,
-            )
+            for task in sorted(overdue_tasks, key=lambda item: item.due_date or date.max)
+            ],
         ],
     }
 
@@ -542,6 +665,7 @@ def build_meeting_overview_payload(db: Session, user: User, week_key: str) -> di
 def build_parent_board_payload(db: Session, user: User, week_key: str) -> dict:
     sub_tasks = visible_sub_tasks(db, user)
     current_updates = update_by_sub_task(db, sub_tasks, week_key)
+    risk_items = active_risk_items_for_tasks(db, sub_tasks)
     today = date.today()
     rows = []
     by_parent: dict[int, list[SubTask]] = defaultdict(list)
@@ -565,7 +689,15 @@ def build_parent_board_payload(db: Session, user: User, week_key: str) -> dict:
                 "department_task_count": len(department_task_ids),
                 "sub_task_count": len(tasks),
                 "missing_updates": len([task for task in active if task.id not in current_updates]),
-                "risk_count": len([task for task in tasks if task.risk_level in {"high", "medium", "low"}]),
+                "risk_count": len(
+                    [
+                        item
+                        for item in risk_items
+                        if item.sub_task
+                        and item.sub_task.department_task
+                        and item.sub_task.department_task.parent_task_id == parent_id
+                    ]
+                ),
                 "overdue_count": len([task for task in active if task.due_date and task.due_date < today]),
                 "completed_count": len([task for task in tasks if task.status == "completed"]),
             }
@@ -576,6 +708,17 @@ def build_parent_board_payload(db: Session, user: User, week_key: str) -> dict:
 def build_department_board_payload(db: Session, user: User, week_key: str) -> dict:
     sub_tasks = visible_sub_tasks(db, user)
     current_updates = update_by_sub_task(db, sub_tasks, week_key)
+    risk_items = active_risk_items_for_tasks(db, sub_tasks)
+    risk_counts_by_department: dict[int, int] = defaultdict(int)
+    for item in risk_items:
+        task = item.sub_task
+        if not task or not task.department_task:
+            continue
+        departments = task.department_task.departments or (
+            [task.department_task.department] if task.department_task.department else []
+        )
+        for department in departments:
+            risk_counts_by_department[department.id] += 1
     today = date.today()
     rows_by_department: dict[int, dict] = {}
     for task in sub_tasks:
@@ -599,8 +742,6 @@ def build_department_board_payload(db: Session, user: User, week_key: str) -> di
             row["sub_task_ids"].add(task.id)
             if task.status != "completed" and task.id not in current_updates:
                 row["missing_updates"] += 1
-            if task.risk_level in {"high", "medium", "low"}:
-                row["risk_count"] += 1
             if task.status != "completed" and task.due_date and task.due_date < today:
                 row["overdue_count"] += 1
             if task.status == "completed":
@@ -610,6 +751,7 @@ def build_department_board_payload(db: Session, user: User, week_key: str) -> di
         rows.append(
             {
                 **{key: value for key, value in row.items() if key not in {"department_task_ids", "sub_task_ids"}},
+                "risk_count": risk_counts_by_department.get(row["id"], 0),
                 "department_task_count": len(row["department_task_ids"]),
                 "sub_task_count": len(row["sub_task_ids"]),
             }
@@ -700,7 +842,26 @@ def me(db: Session = Depends(get_db), current_user: User = Depends(get_current_u
         "permission_codes": sorted(user_permission_codes(current_user)),
         "week_key": current_week_key(),
         "features": feature_payload(db, current_user),
+        "onboarding": onboarding_payload(current_user),
     }
+
+
+@router.post("/auth/onboarding")
+def update_onboarding(
+    payload: OnboardingUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    if payload.version != CURRENT_ONBOARDING_VERSION:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="使用指南版本已更新，请刷新后重试")
+    if payload.action not in {"completed", "skipped"}:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="无效的使用指南状态")
+    current_user.onboarding_version = CURRENT_ONBOARDING_VERSION
+    current_user.onboarding_status = payload.action
+    current_user.onboarding_completed_at = datetime.now(timezone.utc)
+    db.add(current_user)
+    db.commit()
+    return onboarding_payload(current_user)
 
 
 @router.post("/auth/login")
@@ -779,7 +940,19 @@ def openid_login(payload: OpenIdLoginRequest, response: Response, db: Session = 
 
 @router.get("/auth/lark-link")
 def lark_link_login(token: str, db: Session = Depends(get_db)) -> RedirectResponse:
-    user, next_path = verify_lark_login_token(db, token)
+    user, next_path, notification = verify_lark_login_token(db, token)
+    if notification:
+        clicked_at = datetime.now(timezone.utc)
+        db.execute(
+            update(NotificationRecord)
+            .where(NotificationRecord.id == notification.id)
+            .values(
+                clicked=True,
+                first_clicked_at=func.coalesce(NotificationRecord.first_clicked_at, clicked_at),
+                last_clicked_at=clicked_at,
+                click_count=func.coalesce(NotificationRecord.click_count, 0) + 1,
+            )
+        )
     session_token = create_session(db, user)
     redirect = RedirectResponse(url=next_path, status_code=status.HTTP_302_FOUND)
     redirect.set_cookie(
@@ -793,9 +966,13 @@ def lark_link_login(token: str, db: Session = Depends(get_db)) -> RedirectRespon
 
 
 @router.get("/auth/lark-oauth/start")
-def lark_oauth_start(next_path: str | None = None) -> RedirectResponse:
+def lark_oauth_start(request: Request, next_path: str | None = None) -> RedirectResponse:
     try:
-        url = create_lark_oauth_authorize_url(next_path)
+        url = create_lark_oauth_authorize_url(
+            next_path,
+            request_host=request.headers.get("host"),
+            request_scheme=request.headers.get("x-forwarded-proto") or request.url.scheme,
+        )
     except RuntimeError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     return RedirectResponse(url=url, status_code=status.HTTP_302_FOUND)
@@ -983,13 +1160,6 @@ def parse_email_import(content: bytes, filename: str) -> list[dict[str, str]]:
     raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="仅支持 CSV 或 XLSX 邮箱导入文件")
 
 
-def pick_import_value(row: dict[str, str], names: tuple[str, ...]) -> str:
-    for name in names:
-        if row.get(name):
-            return row[name].strip()
-    return ""
-
-
 @router.post("/lark/import-user-emails")
 async def import_user_emails(
     file: UploadFile = File(...),
@@ -998,41 +1168,20 @@ async def import_user_emails(
 ) -> dict:
     content = await file.read()
     rows = parse_email_import(content, file.filename or "")
-    names = [pick_import_value(row, ("姓名", "name", "Name")) for row in rows]
-    duplicate_names = {name for name, count in Counter(name for name in names if name).items() if count > 1}
-    results = []
-    imported = 0
-    blocked = 0
-    for index, row in enumerate(rows, start=2):
-        name = pick_import_value(row, ("姓名", "name", "Name"))
-        email = normalize_email(pick_import_value(row, ("邮箱", "email", "Email", "工作邮箱")))
-        base = {"row": index, "name": name, "email": email}
-        if not name or not email:
-            blocked += 1
-            results.append({**base, "status": "blocked", "message": "姓名或邮箱为空"})
-            continue
-        if name in duplicate_names:
-            blocked += 1
-            results.append({**base, "status": "conflict", "message": "导入文件内姓名重复"})
-            continue
-        matches = list(db.scalars(select(User).where(User.name == name)).all())
-        if len(matches) != 1:
-            blocked += 1
-            message = "系统内未找到人员" if not matches else "系统内姓名重复"
-            results.append({**base, "status": "blocked" if not matches else "conflict", "message": message})
-            continue
-        user = matches[0]
-        conflict = db.scalar(select(User).where(User.email == email, User.id != user.id))
-        if conflict:
-            blocked += 1
-            results.append({**base, "status": "conflict", "message": f"邮箱已绑定到 {conflict.name}"})
-            continue
-        user.email = email
-        db.add(user)
-        imported += 1
-        results.append({**base, "user_id": user.id, "status": "imported", "message": "已写入邮箱"})
+    summary = sync_people_from_rows(db, rows, apply=True)
+    summary["open_id_candidates_after_apply"] = count_open_id_candidates(db)
     db.commit()
-    return {"ok": blocked == 0, "scanned": len(rows), "imported": imported, "blocked": blocked, "results": results}
+    return {
+        "ok": summary["blocked"] == 0,
+        "scanned": summary["source_rows"],
+        "imported": summary["email_updates"],
+        "created": summary["people_created"],
+        "unchanged": summary["people_unchanged"],
+        "skipped": summary["skipped_company_contacts"],
+        "blocked": summary["blocked"],
+        "open_id_candidates": summary["open_id_candidates_after_apply"],
+        "results": summary["results"],
+    }
 
 
 @router.get("/departments")
@@ -1383,19 +1532,14 @@ def department_tasks_overview(
         if not tasks:
             continue
         sub_tasks = [sub_task for task in tasks for sub_task in task.sub_tasks]
+        risk_items = active_risk_items_for_tasks(db, sub_tasks)
         parent_groups.append(
             {
                 **serialize_parent_task(parent),
                 "department_task_count": len(tasks),
                 "sub_task_count": len(sub_tasks),
                 "pending_split_count": sum(task.pending_split_count or 0 for task in tasks),
-                "risk_count": len(
-                    [
-                        sub_task
-                        for sub_task in sub_tasks
-                        if sub_task.risk_level in {"high", "medium", "low"}
-                    ]
-                ),
+                "risk_count": len(risk_items),
                 "department_tasks": [
                     {
                         **serialize_department_task_for_user(db, current_user, task),
@@ -1415,7 +1559,7 @@ def department_tasks_overview(
 
 
 @router.post("/department-tasks", status_code=201)
-def create_department_task(
+async def create_department_task(
     payload: DepartmentTaskCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -1448,11 +1592,15 @@ def create_department_task(
     db.commit()
     db.refresh(task)
     expire_task_people(db, task)
+    try:
+        await send_department_task_split_notifications(db, task, owner_people(task), event="created")
+    except Exception:
+        logger.exception("Department task created but split notification failed", extra={"department_task_id": task.id})
     return serialize_department_task_for_user(db, current_user, task)
 
 
 @router.put("/department-tasks/{department_task_id}")
-def update_department_task(
+async def update_department_task(
     department_task_id: int,
     payload: DepartmentTaskUpdate,
     db: Session = Depends(get_db),
@@ -1463,6 +1611,7 @@ def update_department_task(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Department task not found")
     if not can_edit_department_task(db, current_user, task):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No edit access to this department task")
+    previous_owner_ids = {user.id for user in owner_people(task)}
     data = payload.model_dump(exclude_unset=True)
     department_ids = data.pop("department_ids", None)
     owner_ids = data.pop("owner_ids", None)
@@ -1488,6 +1637,12 @@ def update_department_task(
     db.commit()
     db.refresh(task)
     expire_task_people(db, task)
+    added_owners = [user for user in owner_people(task) if user.id not in previous_owner_ids]
+    if added_owners:
+        try:
+            await send_department_task_split_notifications(db, task, added_owners, event="owner_added")
+        except Exception:
+            logger.exception("Department task updated but owner notification failed", extra={"department_task_id": task.id})
     return serialize_department_task_for_user(db, current_user, task)
 
 
@@ -1799,7 +1954,7 @@ def save_weekly_update(
         this_week=payload.this_week,
         next_week=payload.next_week,
         risk=payload.risk,
-        risk_level=payload.risk_level,
+        risk_level=None,
         needs_coordination=payload.needs_coordination,
         submit=payload.submit,
     )
@@ -1841,26 +1996,143 @@ def timeline_matrix(
     return build_timeline_matrix_payload(db, current_user)
 
 
-@router.get("/risks")
-def list_risks(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> list[dict]:
-    risks = db.scalars(select(RiskRecord).order_by(RiskRecord.id.desc())).all()
+@router.get("/risk-items")
+def list_risk_items(
+    status_filter: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[dict]:
+    stmt = select(RiskItem).order_by(RiskItem.id.desc())
+    if status_filter:
+        stmt = stmt.where(RiskItem.status == status_filter)
     return [
-        {
-            "id": item.id,
-            "code": item.code,
-            "sub_task_id": item.sub_task_id,
-            "sub_task": item.sub_task.title if item.sub_task else None,
-            "level": item.level,
-            "description": item.description,
-            "status": item.status,
-            "owner": people_payload(owner_people(item.sub_task))[2] if item.sub_task else None,
-            "executor": people_payload(executor_people(item.sub_task))[2] if item.sub_task else None,
-            "due_date": item.sub_task.due_date.isoformat()
-            if item.sub_task and item.sub_task.due_date
-            else None,
-        }
-        for item in risks
+        serialize_risk_item_for_user(item, current_user)
+        for item in db.scalars(stmt).all()
+        if item.sub_task and can_access_sub_task(db, current_user, item.sub_task)
     ]
+
+
+@router.get("/risks")
+def list_risks(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)) -> list[dict]:
+    return list_risk_items(db=db, current_user=current_user)
+
+
+@router.post("/risk-items", status_code=201)
+async def create_risk_item(
+    payload: RiskItemCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    sub_task = db.get(SubTask, payload.sub_task_id)
+    if not sub_task or not sub_task.department_task or sub_task.department_task.status == "archived":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Sub task not found")
+    if not can_create_risk_item(current_user, sub_task):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No risk create access")
+    source_update = db.get(WeeklyUpdate, payload.source_weekly_update_id) if payload.source_weekly_update_id else None
+    if source_update and source_update.sub_task_id != sub_task.id:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="风险来源周更新不属于该子任务")
+    owners = risk_owner_candidates(sub_task)
+    owner = owners[0] if owners else None
+    if not owner:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="子任务没有可用负责人，无法登记风险")
+    score, level = risk_score(payload.impact_score, payload.likelihood_score)
+    item = RiskItem(
+        code=generate_code(db, RiskItem, "RI"),
+        sub_task=sub_task,
+        source_weekly_update=source_update,
+        title=payload.title.strip(),
+        description=payload.description,
+        impact_score=payload.impact_score,
+        likelihood_score=payload.likelihood_score,
+        score=score,
+        level=level,
+        owner=owner,
+        status="open",
+        due_date=payload.due_date,
+        created_by_id=current_user.id,
+        updated_at=datetime.now(timezone.utc),
+    )
+    db.add(item)
+    db.flush()
+    db.add(
+        TaskEvent(
+            object_type="risk_item",
+            object_id=item.id,
+            event_type="created",
+            title="新增风险项",
+            content=f"{item.code} {item.title}",
+            actor_id=current_user.id,
+        )
+    )
+    db.commit()
+    db.refresh(item)
+    notification = None
+    if item.level == "high":
+        notification = await send_risk_item_notifications(db, item, "新增高风险")
+    return {"risk_item": serialize_risk_item_for_user(item, current_user), "notification": notification}
+
+
+@router.put("/risk-items/{risk_item_id}")
+async def update_risk_item(
+    risk_item_id: int,
+    payload: RiskItemUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    item = db.get(RiskItem, risk_item_id)
+    if not item or not item.sub_task:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Risk item not found")
+    if not can_manage_risk_item(current_user, item):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No risk manage access")
+    old_level = item.level
+    old_due_date = item.due_date
+    data = payload.model_dump(exclude_unset=True)
+    if "title" in data and data["title"]:
+        item.title = data["title"].strip()
+    if "description" in data:
+        item.description = data["description"]
+    if "impact_score" in data and data["impact_score"] is not None:
+        item.impact_score = data["impact_score"]
+    if "likelihood_score" in data and data["likelihood_score"] is not None:
+        item.likelihood_score = data["likelihood_score"]
+    item.score, item.level = risk_score(item.impact_score, item.likelihood_score)
+    if "status" in data and data["status"]:
+        if data["status"] not in {"open", "in_progress", "closed"}:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="风险状态不合法")
+        item.status = data["status"]
+    if "owner_id" in data and data["owner_id"] is not None:
+        owner_ids = {owner.id for owner in risk_owner_candidates(item.sub_task)}
+        if data["owner_id"] not in owner_ids:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="风险责任人必须是当前子任务负责人")
+        item.owner_id = data["owner_id"]
+    if "due_date" in data:
+        item.due_date = data["due_date"]
+    if "resolution_note" in data:
+        item.resolution_note = data["resolution_note"]
+    item.updated_at = datetime.now(timezone.utc)
+    db.add(
+        TaskEvent(
+            object_type="risk_item",
+            object_id=item.id,
+            event_type="updated",
+            title="更新风险项",
+            content=f"{item.code} {item.status} {item.level}",
+            actor_id=current_user.id,
+        )
+    )
+    db.commit()
+    db.refresh(item)
+    notification = None
+    if item.status in {"open", "in_progress"} and item.level == "high" and old_level != "high":
+        notification = await send_risk_item_notifications(db, item, "升级为高风险")
+    elif (
+        item.status in {"open", "in_progress"}
+        and item.due_date
+        and item.due_date < date.today()
+        and old_due_date != item.due_date
+    ):
+        notification = await send_risk_item_notifications(db, item, "风险逾期")
+    return {"risk_item": serialize_risk_item_for_user(item, current_user), "notification": notification}
 
 
 @router.get("/meeting-board")
@@ -1934,7 +2206,11 @@ def list_notifications(db: Session = Depends(get_db), _: User = Depends(get_curr
             "web_url": item.web_url,
             "send_status": item.send_status,
             "clicked": item.clicked,
+            "first_clicked_at": item.first_clicked_at.isoformat() if item.first_clicked_at else None,
+            "last_clicked_at": item.last_clicked_at.isoformat() if item.last_clicked_at else None,
+            "click_count": item.click_count,
             "result": item.result,
+            "dedupe_key": item.dedupe_key,
             "created_at": item.created_at.isoformat() if item.created_at else None,
         }
         for item in records
@@ -2077,6 +2353,38 @@ async def lark_weekly_reminders(
     return await send_weekly_update_reminders(db, payload.week_key)
 
 
+@router.post("/notifications/department-task-due-reminders")
+async def department_task_due_reminders(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("notification.nudge")),
+) -> dict:
+    return await send_department_task_due_reminders(db)
+
+
+@router.get("/notifications/scheduler-status")
+def notification_scheduler_status(
+    _: User = Depends(require_permission("notification.nudge")),
+) -> dict:
+    return scheduler_status()
+
+
+@router.post("/notifications/risk-overdue")
+async def risk_overdue_notifications(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("notification.nudge")),
+) -> dict:
+    return await send_risk_overdue_reminders(db)
+
+
+@router.post("/notifications/lark-card-preview-suite")
+async def lark_card_preview_suite(
+    payload: LarkCardPreviewRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("notification.nudge")),
+) -> dict:
+    return await send_lark_card_preview_suite(db, payload.target_user_id)
+
+
 @router.post("/notifications/lark-test-message")
 async def lark_test_message(
     payload: LarkTestMessageRequest,
@@ -2099,7 +2407,7 @@ def dashboard(db: Session = Depends(get_db), current_user: User = Depends(get_cu
         db.scalars(select(WeeklyUpdate).where(WeeklyUpdate.week_key == week_key)).all()
     )
     submitted = [item for item in updates if item.status == "submitted"]
-    risk_tasks = [item for item in sub_tasks if item.risk_level in {"high", "medium", "low"}]
+    risk_items = active_risk_items_for_tasks(db, sub_tasks)
     overdue = [item for item in sub_tasks if item.due_date and item.due_date < __import__("datetime").date.today() and item.status != "completed"]
     return {
         "week_key": week_key,
@@ -2109,7 +2417,7 @@ def dashboard(db: Session = Depends(get_db), current_user: User = Depends(get_cu
                 select(__import__("sqlalchemy").func.count()).select_from(ParentTask).where(ParentTask.status == "in_progress")
             ),
             "weekly_due": len([item for item in sub_tasks if item.status != "completed"]),
-            "risk_tasks": len(risk_tasks),
+            "risk_tasks": len(risk_items),
             "overdue_tasks": len(overdue),
         },
         "weekly_progress": {
@@ -2118,9 +2426,9 @@ def dashboard(db: Session = Depends(get_db), current_user: User = Depends(get_cu
             "missing": max(len([item for item in sub_tasks if item.status != "completed"]) - len(submitted), 0),
         },
         "risk_summary": {
-            "high": len([item for item in risk_tasks if item.risk_level == "high"]),
-            "medium": len([item for item in risk_tasks if item.risk_level == "medium"]),
-            "low": len([item for item in risk_tasks if item.risk_level == "low"]),
+            "high": len([item for item in risk_items if item.level == "high"]),
+            "medium": len([item for item in risk_items if item.level == "medium"]),
+            "low": len([item for item in risk_items if item.level == "low"]),
         },
     }
 

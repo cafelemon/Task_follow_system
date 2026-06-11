@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -21,10 +21,11 @@ class Department(Base):
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (Index("ix_users_email", "email", unique=True),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     open_id: Mapped[str | None] = mapped_column(String(120), unique=True)
-    email: Mapped[str | None] = mapped_column(String(180), unique=True)
+    email: Mapped[str | None] = mapped_column(String(180))
     username: Mapped[str | None] = mapped_column(String(120), unique=True)
     password_hash: Mapped[str | None] = mapped_column(String(260))
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -35,6 +36,9 @@ class User(Base):
     source: Mapped[str] = mapped_column(String(32), default="manual")
     open_id_bound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    onboarding_version: Mapped[str | None] = mapped_column(String(32))
+    onboarding_status: Mapped[str | None] = mapped_column(String(32))
+    onboarding_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     department: Mapped[Department | None] = relationship(foreign_keys=[department_id])
     roles: Mapped[list["Role"]] = relationship(secondary="user_roles", back_populates="users")
@@ -271,6 +275,37 @@ class RiskRecord(Base):
     sub_task: Mapped[SubTask] = relationship()
 
 
+class RiskItem(Base):
+    __tablename__ = "risk_items"
+    __table_args__ = (
+        Index("ix_risk_items_sub_task_id", "sub_task_id"),
+        Index("ix_risk_items_status_level", "status", "level"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(80), unique=True)
+    sub_task_id: Mapped[int] = mapped_column(ForeignKey("sub_tasks.id"))
+    source_weekly_update_id: Mapped[int | None] = mapped_column(ForeignKey("weekly_updates.id"))
+    title: Mapped[str] = mapped_column(String(240))
+    description: Mapped[str | None] = mapped_column(Text)
+    impact_score: Mapped[int] = mapped_column(Integer)
+    likelihood_score: Mapped[int] = mapped_column(Integer)
+    score: Mapped[int] = mapped_column(Integer)
+    level: Mapped[str] = mapped_column(String(32))
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    status: Mapped[str] = mapped_column(String(32), default="open")
+    due_date: Mapped[date | None] = mapped_column(Date)
+    resolution_note: Mapped[str | None] = mapped_column(Text)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    sub_task: Mapped[SubTask] = relationship()
+    source_weekly_update: Mapped[WeeklyUpdate | None] = relationship()
+    owner: Mapped[User] = relationship(foreign_keys=[owner_id])
+    created_by: Mapped[User | None] = relationship(foreign_keys=[created_by_id])
+
+
 class CoordinationItem(Base):
     __tablename__ = "coordination_items"
 
@@ -287,6 +322,7 @@ class CoordinationItem(Base):
 
 class NotificationRecord(Base):
     __tablename__ = "notification_records"
+    __table_args__ = (Index("ix_notification_records_dedupe_key", "dedupe_key", unique=True),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     target_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
@@ -297,7 +333,11 @@ class NotificationRecord(Base):
     web_url: Mapped[str | None] = mapped_column(String(500))
     send_status: Mapped[str] = mapped_column(String(32), default="mock_sent")
     clicked: Mapped[bool] = mapped_column(Boolean, default=False)
+    first_clicked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_clicked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    click_count: Mapped[int] = mapped_column(Integer, default=0)
     result: Mapped[str | None] = mapped_column(String(200))
+    dedupe_key: Mapped[str | None] = mapped_column(String(240))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     target_user: Mapped[User] = relationship()

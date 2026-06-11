@@ -14,6 +14,7 @@ from app.models.entities import (
     ParentTask,
     Permission,
     RiskRecord,
+    RiskItem,
     Role,
     StrategicGoal,
     SubTask,
@@ -26,7 +27,7 @@ from app.models.entities import (
 from app.services.auth import hash_password
 from app.services.permissions import PERMISSIONS, ROLE_DEFAULTS, refresh_role_permissions
 
-BASE_DEPARTMENTS = ["研发部", "数据部", "质量部", "信息中心"]
+BASE_DEPARTMENTS = ["研发中心", "数字与信息中心", "质量体系部", "信息中心"]
 
 ROLE_DEFINITIONS = [
     ("admin", "系统管理员", "系统全局配置与用户管理"),
@@ -54,6 +55,7 @@ def clear_business_data(db: Session, *, include_sync_runs: bool = True) -> None:
         Attachment,
         NotificationRecord,
         CoordinationItem,
+        RiskItem,
         RiskRecord,
         TaskEvent,
         WeeklyUpdateRevision,

@@ -37,8 +37,17 @@ class Settings:
             "TASK_FOLLOW_LARK_OAUTH_REDIRECT_URI",
             f"{self.web_base_url.rstrip('/')}/api/auth/lark-oauth/callback",
         )
+        self.lark_oauth_redirect_mode = os.getenv("TASK_FOLLOW_LARK_OAUTH_REDIRECT_MODE", "configured")
         self.lark_oauth_state_secret = os.getenv("TASK_FOLLOW_LARK_OAUTH_STATE_SECRET")
         self.lark_oauth_state_ttl_seconds = int(os.getenv("TASK_FOLLOW_LARK_OAUTH_STATE_TTL_SECONDS", "600"))
+        self.scheduler_enabled = os.getenv("TASK_FOLLOW_SCHEDULER_ENABLED", "true").lower() == "true"
+        self.scheduler_timezone = os.getenv("TASK_FOLLOW_SCHEDULER_TIMEZONE", "Asia/Shanghai")
+        self.notification_delivery_mode = os.getenv("TASK_FOLLOW_NOTIFICATION_DELIVERY_MODE", "all").lower()
+        self.notification_allowlist_emails = {
+            item.strip().lower()
+            for item in os.getenv("TASK_FOLLOW_NOTIFICATION_ALLOWLIST_EMAILS", "").split(",")
+            if item.strip()
+        }
 
 
 settings = Settings()

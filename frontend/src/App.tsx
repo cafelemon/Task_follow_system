@@ -19,10 +19,12 @@ import {
   Table,
   Tag,
   Tooltip,
+  Tour,
   Typography,
   Upload,
   message
 } from 'antd';
+import type { TourProps } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
   ApartmentOutlined,
@@ -34,6 +36,7 @@ import {
   HistoryOutlined,
   LockOutlined,
   NodeIndexOutlined,
+  QuestionCircleOutlined,
   SafetyOutlined,
   ScheduleOutlined,
   TeamOutlined,
@@ -335,13 +338,213 @@ function Login() {
   );
 }
 
+function RiskItemModal({
+  open,
+  subTask,
+  sourceWeeklyUpdateId,
+  initialDescription,
+  onClose,
+  onCreated
+}: {
+  open: boolean;
+  subTask?: AnyRecord | null;
+  sourceWeeklyUpdateId?: number;
+  initialDescription?: string;
+  onClose: () => void;
+  onCreated?: () => void;
+}) {
+  const [form] = Form.useForm();
+  const [saving, setSaving] = useState(false);
+  const impactScore = Form.useWatch('impact_score', form) || 3;
+  const likelihoodScore = Form.useWatch('likelihood_score', form) || 3;
+  const score = Number(impactScore) * Number(likelihoodScore);
+  const level = score >= 15 ? 'high' : score >= 8 ? 'medium' : 'low';
+  const scoreOptions = [1, 2, 3, 4, 5].map((value) => ({ value, label: `${value}` }));
+  const ownerOptions = subTask?.risk_owner_options || [];
+  const defaultOwner = ownerOptions.find((item: AnyRecord) => item.id === subTask?.default_risk_owner_id) || ownerOptions[0];
+
+  useEffect(() => {
+    if (!open) return;
+    form.setFieldsValue({
+      title: '',
+      description: initialDescription || '',
+      impact_score: 3,
+      likelihood_score: 3,
+      due_date: null
+    });
+  }, [open, subTask?.id, initialDescription]);
+
+  const submit = async () => {
+    if (!subTask?.id) {
+      message.warning('请选择子任务后登记风险');
+      return;
+    }
+    const values = await form.validateFields();
+    setSaving(true);
+    try {
+      await postJson('/risk-items', {
+        sub_task_id: subTask?.id,
+        source_weekly_update_id: sourceWeeklyUpdateId,
+        title: values.title,
+        description: values.description || null,
+        impact_score: values.impact_score,
+        likelihood_score: values.likelihood_score,
+        due_date: values.due_date ? values.due_date.format('YYYY-MM-DD') : null
+      });
+      message.success('风险项已登记');
+      onCreated?.();
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      title="新增风险项"
+      open={open}
+      onOk={submit}
+      confirmLoading={saving}
+      onCancel={onClose}
+      destroyOnClose
+    >
+      <Alert
+        type="info"
+        showIcon
+        className="mb16"
+        message={subTask ? `${subTask.code || '-'} ${subTask.title || ''}` : '请选择子任务后登记风险'}
+        description={defaultOwner ? `风险责任人默认设为子任务主负责人：${defaultOwner.name}` : '当前子任务没有可用负责人，无法登记风险。'}
+      />
+      <Form form={form} layout="vertical">
+        <Form.Item name="title" label="风险标题" rules={[{ required: true, message: '请填写风险标题' }]}>
+          <Input maxLength={120} placeholder="请概括风险事件或风险条件" />
+        </Form.Item>
+        <Form.Item name="description" label="风险说明">
+          <Input.TextArea rows={4} placeholder="请补充影响范围、触发条件或当前迹象" />
+        </Form.Item>
+        <Row gutter={12}>
+          <Col span={12}>
+            <Form.Item name="impact_score" label="影响分" rules={[{ required: true, message: '请选择影响分' }]}>
+              <Select options={scoreOptions} />
+            </Form.Item>
+          </Col>
+          <Col span={12}>
+            <Form.Item name="likelihood_score" label="可能性分" rules={[{ required: true, message: '请选择可能性分' }]}>
+              <Select options={scoreOptions} />
+            </Form.Item>
+          </Col>
+        </Row>
+        <Form.Item label="自动等级">
+          <Space>
+            <StatusTag value={level} />
+            <Typography.Text type="secondary">分值 {score}</Typography.Text>
+          </Space>
+        </Form.Item>
+        <Form.Item name="due_date" label="处理日期">
+          <DatePicker className="full-width" />
+        </Form.Item>
+      </Form>
+    </Modal>
+  );
+}
+
+function RiskManageModal({
+  risk,
+  onClose,
+  onSaved
+}: {
+  risk: AnyRecord | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [form] = Form.useForm();
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    if (!risk) return;
+    form.setFieldsValue({
+      owner_id: risk.owner_id,
+      status: risk.status,
+      due_date: risk.due_date ? dayjs(risk.due_date) : null,
+      resolution_note: risk.resolution_note || ''
+    });
+  }, [risk?.id]);
+  const save = async () => {
+    if (!risk) return;
+    const values = await form.validateFields();
+    setSaving(true);
+    try {
+      await putJson(`/risk-items/${risk.id}`, {
+        owner_id: values.owner_id,
+        status: values.status,
+        due_date: values.due_date ? values.due_date.format('YYYY-MM-DD') : null,
+        resolution_note: values.resolution_note || null
+      });
+      message.success('风险项已更新');
+      onSaved();
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Modal
+      title={risk ? `处理风险项 ${risk.code}` : '处理风险项'}
+      open={Boolean(risk)}
+      onOk={save}
+      confirmLoading={saving}
+      onCancel={onClose}
+      destroyOnClose
+    >
+      <Alert
+        type={risk?.level === 'high' ? 'error' : 'warning'}
+        showIcon
+        className="mb16"
+        message={risk?.title || '-'}
+        description={risk ? `风险分值 ${risk.score}，来源子任务 ${risk.sub_task_code || '-'} ${risk.sub_task || ''}` : undefined}
+      />
+      <Form form={form} layout="vertical">
+        <Form.Item name="owner_id" label="风险责任人" rules={[{ required: true, message: '请选择风险责任人' }]}>
+          <Select options={(risk?.owner_options || []).map((item: AnyRecord) => ({ value: item.id, label: item.name }))} />
+        </Form.Item>
+        <Form.Item name="status" label="处理状态" rules={[{ required: true, message: '请选择处理状态' }]}>
+          <Select options={[
+            { value: 'open', label: '开放' },
+            { value: 'in_progress', label: '处理中' },
+            { value: 'closed', label: '关闭' }
+          ]} />
+        </Form.Item>
+        <Form.Item name="due_date" label="处理日期">
+          <DatePicker className="full-width" />
+        </Form.Item>
+        <Form.Item name="resolution_note" label="处理或关闭说明">
+          <Input.TextArea rows={4} placeholder="填写处理进展、解决方案或关闭依据" />
+        </Form.Item>
+      </Form>
+    </Modal>
+  );
+}
+
 function AppLayout() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { data: auth, error, loading } = useApi<AnyRecord>('/auth/me', []);
+  const { data: auth, error, loading, reload: reloadAuth } = useApi<AnyRecord>('/auth/me', []);
   const compactLayout = useIsCompactLayout();
+  const brandRef = useRef<HTMLDivElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const headerMetaRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLElement | null>(null);
+  const guideButtonRef = useRef<HTMLButtonElement | null>(null);
+  const onboardingPresentedRef = useRef(false);
+  const onboardingSavingRef = useRef(false);
+  const [tourOpen, setTourOpen] = useState(false);
+  const [tourTracksOnboarding, setTourTracksOnboarding] = useState(false);
   const selectedKey = `/${location.pathname.split('/')[1] || 'meeting-board'}`;
   const isAdmin = Boolean(auth?.user?.is_admin || (auth?.permission_codes || []).includes('permission.manage'));
+  const roleCodes = new Set((auth?.user?.roles || []).map((role: AnyRecord) => role.code));
+  const ownerRoleCodes = ['general_manager', 'secretary', 'parent_owner', 'department_owner', 'task_owner'];
+  const isOwner = ownerRoleCodes.some((code) => roleCodes.has(code))
+    || (auth?.permission_codes || []).includes('task.edit_sub');
+  const guideProfile = isAdmin ? '管理员' : isOwner ? '负责人' : '执行人';
   const canViewParentTasks = Boolean(auth?.features?.can_view_parent_tasks || isAdmin);
   const visibleBaseMenuItems = baseMenuItems.filter((item) => item.key !== '/parent-tasks' || canViewParentTasks);
   const menuItems = isAdmin ? [...visibleBaseMenuItems, ...adminMenuItems] : visibleBaseMenuItems;
@@ -350,6 +553,69 @@ function AppLayout() {
     await postJson('/auth/logout', {});
     navigate('/login');
   };
+  useEffect(() => {
+    if (auth?.onboarding?.required && !onboardingPresentedRef.current) {
+      onboardingPresentedRef.current = true;
+      setTourTracksOnboarding(true);
+      setTourOpen(true);
+    }
+  }, [auth?.onboarding?.required]);
+
+  const saveOnboarding = async (action: 'completed' | 'skipped') => {
+    if (onboardingSavingRef.current || !auth?.onboarding?.version) return;
+    onboardingSavingRef.current = true;
+    setTourOpen(false);
+    try {
+      await postJson('/auth/onboarding', {
+        version: auth.onboarding.version,
+        action
+      });
+      await reloadAuth();
+    } catch {
+      message.error('使用指南状态保存失败，请稍后重试');
+    } finally {
+      onboardingSavingRef.current = false;
+    }
+  };
+  const closeTour = (action: 'completed' | 'skipped') => {
+    if (tourTracksOnboarding) {
+      saveOnboarding(action);
+      return;
+    }
+    setTourOpen(false);
+  };
+  const guideDescriptions: Record<string, string> = {
+    执行人: '从“子任务执行”进入自己的任务，填写本周进展、遗留事项，并在发现问题时登记风险。',
+    负责人: '从部门任务和子任务入口完成拆解、分派与进度跟踪，并持续处理开放风险。',
+    管理员: '通过会议看板掌握全局，并在人员权限、通知记录等入口维护系统运行。'
+  };
+  const tourSteps: TourProps['steps'] = [
+    {
+      title: `欢迎使用任务跟踪系统 · ${guideProfile}`,
+      description: '这份短引导只在首次进入时自动展示，之后可以随时从右上角重新打开。',
+      target: () => brandRef.current || document.body
+    },
+    {
+      title: '从导航开始工作',
+      description: guideDescriptions[guideProfile],
+      target: () => menuRef.current || document.body
+    },
+    {
+      title: '当前工作区',
+      description: '列表、看板和编辑窗口都会在这里呈现。系统不会在引导过程中替你切换页面。',
+      target: () => contentRef.current || document.body
+    },
+    {
+      title: '确认身份与周期',
+      description: '这里显示当前登录人员、所属部门、日期和系统周次，提交更新前可以先核对。',
+      target: () => headerMetaRef.current || document.body
+    },
+    {
+      title: '随时重看使用指南',
+      description: '完成或跳过后都不会再次自动打扰；需要时点击这个问号即可重新查看。',
+      target: () => guideButtonRef.current || document.body
+    }
+  ];
 
   if ((error as any)?.response?.status === 401) {
     return <Navigate to="/login" replace />;
@@ -358,14 +624,16 @@ function AppLayout() {
   return (
     <Layout className="app-layout">
       <Sider width={256} collapsedWidth={76} collapsed={compactLayout} className="app-sider">
-        <div className="brand">
+        <div className="brand" ref={brandRef}>
           <img className="brand-icon" src={taskFollowIcon} alt="任务跟踪系统" />
           <div className="brand-text">
             <strong>任务跟踪系统</strong>
             <span>闭环管理</span>
           </div>
         </div>
-        <Menu mode="inline" selectedKeys={[selectedKey]} items={menuItems} />
+        <div ref={menuRef} className="app-menu-guide-target">
+          <Menu mode="inline" selectedKeys={[selectedKey]} items={menuItems} />
+        </div>
         <div className="sider-footer">
           <img src={companyLogoCompact} alt="Fortune Microbot" />
           <div className="sider-user">
@@ -379,17 +647,28 @@ function AppLayout() {
           <Space size={20}>
             <Typography.Title level={4}>公司任务推进与周更新跟踪系统</Typography.Title>
           </Space>
-          <Space className="header-meta" split={<Divider type="vertical" />}>
+          <Space ref={headerMetaRef} className="header-meta" split={<Divider type="vertical" />}>
             <img className="header-company-logo" src={companyLogoCompact} alt="Fortune Microbot" />
             <span>{auth?.user?.name}</span>
             <span>{auth?.user?.department}</span>
             <Tag color="blue">{headerDate}</Tag>
           </Space>
           <Space>
+            <Tooltip title="使用指南">
+              <Button
+                ref={guideButtonRef}
+                aria-label="使用指南"
+                icon={<QuestionCircleOutlined />}
+                onClick={() => {
+                  setTourTracksOnboarding(false);
+                  setTourOpen(true);
+                }}
+              />
+            </Tooltip>
             <Button onClick={logout}>退出</Button>
           </Space>
         </Header>
-        <Content className="app-content">
+        <Content ref={contentRef} className="app-content">
           <Routes>
             <Route path="/" element={<Navigate to="/meeting-board/overview" />} />
             <Route path="/dashboard" element={<Navigate to="/meeting-board/overview" replace />} />
@@ -415,6 +694,12 @@ function AppLayout() {
           </Routes>
         </Content>
       </Layout>
+      <Tour
+        open={tourOpen}
+        steps={tourSteps}
+        onClose={() => closeTour('skipped')}
+        onFinish={() => closeTour('completed')}
+      />
     </Layout>
   );
 }
@@ -918,11 +1203,10 @@ function ParentTaskDetail() {
                   { title: '执行人', dataIndex: 'executors', width: 124, render: renderPeople },
                   { title: '本周完成内容', dataIndex: 'weekly_this_week', width: 190, render: renderBlankEllipsis },
                   { title: '遗留事项', dataIndex: 'weekly_risk', width: 190, render: renderBlankEllipsis },
-                  { title: '风险', dataIndex: 'risk_level', width: 88, render: (value) => <StatusTag value={value} /> },
                   { title: '截止日期', dataIndex: 'due_date', width: 104, responsive: ['lg'] }
                 ]}
                 tableLayout="fixed"
-                scroll={{ x: 1030 }}
+                scroll={{ x: 940 }}
               />
             ),
             rowExpandable: (row) => Boolean((row.sub_tasks || []).length)
@@ -1092,7 +1376,6 @@ function DepartmentTasks() {
                       { title: '执行人', dataIndex: 'executors', width: 124, render: renderPeople },
                       { title: '本周完成内容', dataIndex: 'weekly_this_week', width: 190, render: renderBlankEllipsis },
                       { title: '遗留事项', dataIndex: 'weekly_risk', width: 190, render: renderBlankEllipsis },
-                      { title: '风险', dataIndex: 'risk_level', width: 88, render: (value) => <StatusTag value={value} /> },
                       { title: '截止日期', dataIndex: 'due_date', width: 104, responsive: ['lg'] },
                       {
                         title: '操作',
@@ -1160,6 +1443,7 @@ function DepartmentTasks() {
 
 function SubTasks() {
   const { data } = useApi<AnyRecord[]>('/sub-tasks', []);
+  const [riskTarget, setRiskTarget] = useState<AnyRecord | null>(null);
   const tasks = data || [];
   const executionTasks = tasks.filter((task) => task.viewer_relation === 'executor' || task.viewer_relation === 'both');
   const ownerTasks = tasks.filter((task) => task.viewer_relation === 'owner');
@@ -1187,15 +1471,19 @@ function SubTasks() {
     },
     { title: '状态', dataIndex: 'status', width: 96, render: (value) => <StatusTag value={value} /> },
     { title: '本周状态', dataIndex: 'weekly_status', width: 96, render: (value) => <StatusTag value={value} /> },
-    { title: '风险', dataIndex: 'risk_level', width: 92, render: (value) => <StatusTag value={value} /> },
     { title: '截止日期', dataIndex: 'due_date', width: 108, responsive: ['lg'] },
     {
       title: '操作',
-      width: 100,
+      width: 150,
       render: (_, row) => (
-        row.can_update_weekly
-          ? <Link className="table-action-link" to={`/sub-tasks/${row.id}/update${row.current_assignee_id ? `?assigneeId=${row.current_assignee_id}` : ''}`}>更新</Link>
-          : <Typography.Text type="secondary">只读</Typography.Text>
+        <Space size={4}>
+          {row.can_update_weekly
+            ? <Link className="table-action-link" to={`/sub-tasks/${row.id}/update${row.current_assignee_id ? `?assigneeId=${row.current_assignee_id}` : ''}`}>更新</Link>
+            : <Typography.Text type="secondary">只读</Typography.Text>}
+          {row.can_create_risk && (
+            <Button size="small" type="link" icon={<SafetyOutlined />} onClick={() => setRiskTarget(row)}>风险</Button>
+          )}
+        </Space>
       )
     }
   ];
@@ -1221,6 +1509,11 @@ function SubTasks() {
         {renderGroup('管理查看', managementTasks, '全局查看人员的只读入口；管理员可兜底更新')}
         {!tasks.length && <Alert type="info" showIcon message="当前没有与你相关的子任务。" />}
       </Space>
+      <RiskItemModal
+        open={Boolean(riskTarget)}
+        subTask={riskTarget}
+        onClose={() => setRiskTarget(null)}
+      />
     </PageShell>
   );
 }
@@ -1238,6 +1531,7 @@ function SubTaskUpdate() {
   const subTask = subTaskApi.data;
   const update = updateApi.data;
   const [updateStatus, setUpdateStatus] = useState('empty');
+  const [riskModalOpen, setRiskModalOpen] = useState(false);
   const isCompleted = subTask?.status === 'completed';
   const isStarted = Boolean(subTask && subTask.status !== 'pending_update');
   const canUpdateWeekly = Boolean(subTask?.can_update_weekly);
@@ -1250,7 +1544,7 @@ function SubTaskUpdate() {
       this_week: update.this_week,
       next_week: update.next_week,
       risk: update.risk,
-      needs_coordination: update.needs_coordination || false
+      needs_coordination: false
     });
     setUpdateStatus(update.status || 'empty');
   }, [update?.id, update?.status, subTaskId]);
@@ -1265,7 +1559,7 @@ function SubTaskUpdate() {
       this_week: values.this_week || null,
       next_week: values.next_week || null,
       risk: values.risk || null,
-      needs_coordination: Boolean(values.needs_coordination),
+      needs_coordination: false,
       submit: submitUpdate
     });
     setUpdateStatus(submitUpdate ? 'submitted' : 'draft');
@@ -1370,7 +1664,11 @@ function SubTaskUpdate() {
           <Descriptions.Item label="负责人">{renderPeople(subTask?.owners || subTask?.owner)}</Descriptions.Item>
           <Descriptions.Item label="当前填报人">{update?.assignee || '-'}</Descriptions.Item>
           <Descriptions.Item label="状态"><StatusTag value={subTask?.status} /></Descriptions.Item>
-          <Descriptions.Item label="风险"><StatusTag value={subTask?.risk_level} /></Descriptions.Item>
+          <Descriptions.Item label="风险项">
+            {subTask?.can_create_risk
+              ? <Button size="small" icon={<SafetyOutlined />} onClick={() => setRiskModalOpen(true)}>登记风险</Button>
+              : <Typography.Text type="secondary">无登记权限</Typography.Text>}
+          </Descriptions.Item>
           <Descriptions.Item label="本周状态"><StatusTag value={subTask?.weekly_status} /></Descriptions.Item>
         </Descriptions>
         <Space className="mt16">
@@ -1383,18 +1681,25 @@ function SubTaskUpdate() {
       <Card title="本周更新">
         {!isStarted && <Alert type="info" showIcon className="mb16" message="该任务尚未开启。请先点击“开启任务”，再填写本周更新。" />}
         {isCompleted && <Alert type="success" showIcon className="mb16" message="该任务已完成，周更新表单已锁定。" />}
-        <Form form={form} layout="vertical" initialValues={{ needs_coordination: false }}>
+        <Form form={form} layout="vertical">
           <Form.Item name="this_week" label="本周完成内容">
             <Input.TextArea rows={5} disabled={!canEditUpdate} onBlur={autoSaveDraft} placeholder="请填写本周完成内容" />
           </Form.Item>
           <Form.Item name="next_week" label="下周计划">
             <Input.TextArea rows={4} disabled={!canEditUpdate} onBlur={autoSaveDraft} placeholder="请填写下周计划" />
           </Form.Item>
-          <Form.Item name="risk" label="遗留事项">
-            <Input.TextArea rows={4} disabled={!canEditUpdate} onBlur={autoSaveDraft} placeholder="请填写遗留事项、卡点或需要后续处理的问题" />
-          </Form.Item>
-          <Form.Item name="needs_coordination" valuePropName="checked">
-            <Checkbox disabled={!canEditUpdate} onBlur={autoSaveDraft}>需要协调，进入会议看板候选事项</Checkbox>
+          <Form.Item
+            name="risk"
+            label={
+              <Space>
+                <span>遗留事项</span>
+                {subTask?.can_create_risk && (
+                  <Button size="small" type="link" icon={<SafetyOutlined />} onClick={() => setRiskModalOpen(true)}>登记风险</Button>
+                )}
+              </Space>
+            }
+          >
+            <Input.TextArea rows={4} disabled={!canEditUpdate} onBlur={autoSaveDraft} placeholder="请填写距离完全完成仍遗留的事项、尾项或待确认内容" />
           </Form.Item>
           <Space>
             <Button disabled={!canEditUpdate} onClick={() => saveUpdate(false)}>保存草稿暂不提交</Button>
@@ -1402,6 +1707,17 @@ function SubTaskUpdate() {
           </Space>
         </Form>
       </Card>
+      <RiskItemModal
+        open={riskModalOpen}
+        subTask={subTask}
+        sourceWeeklyUpdateId={update?.id}
+        initialDescription={form.getFieldValue('risk')}
+        onClose={() => setRiskModalOpen(false)}
+        onCreated={() => {
+          updateApi.reload();
+          subTaskApi.reload();
+        }}
+      />
     </PageShell>
   );
 }
@@ -1424,8 +1740,9 @@ function MeetingBoardTabs() {
   );
 }
 
-function DashboardDetailModal({ detail, onClose }: { detail: AnyRecord | null; onClose: () => void }) {
+function DashboardDetailModal({ detail, onClose, onChanged }: { detail: AnyRecord | null; onClose: () => void; onChanged: () => void }) {
   const [keyword, setKeyword] = useState('');
+  const [editingRisk, setEditingRisk] = useState<AnyRecord | null>(null);
   useEffect(() => {
     setKeyword('');
   }, [detail?.title]);
@@ -1439,7 +1756,6 @@ function DashboardDetailModal({ detail, onClose }: { detail: AnyRecord | null; o
     { title: '负责人', dataIndex: 'owners', width: 126, render: renderPeople },
     { title: '状态', dataIndex: 'status', width: 88, render: (value) => <StatusTag value={value} /> },
     { title: '本周', dataIndex: 'weekly_status', width: 88, render: (value) => <StatusTag value={value} /> },
-    { title: '风险', dataIndex: 'risk_level', width: 86, render: (value) => <StatusTag value={value} /> },
     { title: '截止', dataIndex: 'due_date', width: 104 },
     { title: '本周完成内容', dataIndex: 'weekly_this_week', width: 210, render: renderBlankEllipsis },
     { title: '遗留事项', dataIndex: 'weekly_risk', width: 210, render: renderBlankEllipsis }
@@ -1452,39 +1768,71 @@ function DashboardDetailModal({ detail, onClose }: { detail: AnyRecord | null; o
     { title: '状态', dataIndex: 'status', width: 100, render: (value) => <StatusTag value={value} /> },
     { title: '截止日期', dataIndex: 'due_date', width: 120 }
   ];
+  const riskColumns: ColumnsType<AnyRecord> = [
+    { title: '风险编号', dataIndex: 'code', width: 116 },
+    { title: '风险项', dataIndex: 'title', width: 220, ellipsis: true, render: renderEllipsis },
+    { title: '等级', dataIndex: 'level', width: 88, render: (value) => <StatusTag value={value} /> },
+    { title: '分值', dataIndex: 'score', width: 72 },
+    { title: '影响', dataIndex: 'impact_score', width: 70 },
+    { title: '可能性', dataIndex: 'likelihood_score', width: 78 },
+    { title: '状态', dataIndex: 'status', width: 96, render: (value) => <StatusTag value={value} /> },
+    { title: '责任人', dataIndex: 'owner', width: 120, render: renderPeople },
+    { title: '来源子任务', width: 230, render: (_, row) => renderEllipsis(`${row.sub_task_code || '-'} ${row.sub_task || ''}`) },
+    { title: '部门任务', width: 190, render: (_, row) => renderEllipsis(`${row.department_task_code || '-'} ${row.department_task || ''}`) },
+    { title: '处理日期', dataIndex: 'due_date', width: 112 },
+    { title: '说明', dataIndex: 'description', width: 220, render: renderBlankEllipsis },
+    {
+      title: '操作',
+      width: 88,
+      fixed: 'right',
+      render: (_: unknown, row: AnyRecord) => row.can_manage
+        ? <Button size="small" type="link" onClick={() => setEditingRisk(row)}>处理</Button>
+        : <Typography.Text type="secondary">只读</Typography.Text>
+    }
+  ];
+  const columns = detail?.type === 'parent' ? parentColumns : detail?.type === 'risk' ? riskColumns : subTaskColumns;
+  const scrollX = detail?.type === 'parent' ? 920 : detail?.type === 'risk' ? 1690 : 1620;
   return (
-    <Modal
-      title={detail ? `${detail.title}（${visibleRows.length}/${rows.length}）` : '数据详情'}
-      open={Boolean(detail)}
-      onCancel={onClose}
-      footer={null}
-      width={1280}
-      className="dashboard-detail-modal"
-      destroyOnClose
-    >
-      <Input.Search
-        allowClear
-        placeholder="请输入关键词搜索"
-        value={keyword}
-        onChange={(event) => setKeyword(event.target.value)}
-        className="mb16"
+    <>
+      <Modal
+        title={detail ? `${detail.title}（${visibleRows.length}/${rows.length}）` : '数据详情'}
+        open={Boolean(detail)}
+        onCancel={onClose}
+        footer={null}
+        width={1280}
+        className="dashboard-detail-modal"
+        destroyOnClose
+      >
+        <Input.Search
+          allowClear
+          placeholder="请输入关键词搜索"
+          value={keyword}
+          onChange={(event) => setKeyword(event.target.value)}
+          className="mb16"
+        />
+        <Table
+          rowKey={(row) => `${detail?.type || 'detail'}-${row.id}`}
+          size="small"
+          dataSource={visibleRows}
+          columns={columns}
+          tableLayout="fixed"
+          scroll={{ x: scrollX, y: 520 }}
+          pagination={{ pageSize: 12, showSizeChanger: false }}
+        />
+      </Modal>
+      <RiskManageModal
+        risk={editingRisk}
+        onClose={() => setEditingRisk(null)}
+        onSaved={onChanged}
       />
-      <Table
-        rowKey={(row) => `${detail?.type || 'detail'}-${row.id}`}
-        size="small"
-        dataSource={visibleRows}
-        columns={detail?.type === 'parent' ? parentColumns : subTaskColumns}
-        tableLayout="fixed"
-        scroll={{ x: detail?.type === 'parent' ? 920 : 1620, y: 520 }}
-        pagination={{ pageSize: 12, showSizeChanger: false }}
-      />
-    </Modal>
+    </>
   );
 }
 
 function MeetingBoardOverview() {
-  const { data, loading } = useApi<AnyRecord>('/meeting-board/overview', []);
+  const { data, loading, reload } = useApi<AnyRecord>('/meeting-board/overview', []);
   const [detail, setDetail] = useState<AnyRecord | null>(null);
+  const [editingRisk, setEditingRisk] = useState<AnyRecord | null>(null);
   const cards = data?.cards || {};
   const weeklyBar = data?.weekly_bar || [];
   const riskPie = data?.risk_pie || [];
@@ -1495,7 +1843,8 @@ function MeetingBoardOverview() {
   const ganttMonths = Array.from(new Set(gantt.map((item: AnyRecord) => String(item.due_date || '').slice(0, 7) || '-'))).sort();
   const ganttCategories = gantt.map((item: AnyRecord) => item.code);
   const openSubTaskDetail = (title: string, detailKey: string) => {
-    setDetail({ title, type: 'sub_task', rows: detailRows[detailKey] || [] });
+    const type = detailKey === 'risk_tasks' || detailKey.startsWith('risk_') ? 'risk' : 'sub_task';
+    setDetail({ title, type, rows: detailRows[detailKey] || [] });
   };
   const openParentDetail = (title = '母任务截止日期明细', rows = parentDetails) => {
     setDetail({ title, type: 'parent', rows });
@@ -1619,21 +1968,41 @@ function MeetingBoardOverview() {
           dataSource={data?.risk_overdue || []}
           className="business-table"
           tableLayout="fixed"
-          scroll={{ x: 960 }}
+          scroll={{ x: 1050 }}
           title={() => renderTableHeader('风险与逾期汇总', data?.risk_overdue?.length || 0, '风险、逾期和负责人快速核对')}
           columns={[
-            { title: '类型', dataIndex: 'issue_type', width: 78, render: (value) => <Tag color={value === '逾期' ? 'red' : 'orange'}>{value}</Tag> },
+            { title: '类型', dataIndex: 'issue_type', width: 88, render: (value) => <Tag color={String(value).includes('逾期') ? 'red' : 'orange'}>{value}</Tag> },
             { title: '编号', dataIndex: 'code', width: 124 },
-            { title: '子任务', dataIndex: 'title', width: 230, ellipsis: true, render: renderEllipsis },
+            { title: '事项', dataIndex: 'title', width: 230, ellipsis: true, render: renderEllipsis },
+            { title: '来源子任务', width: 190, render: (_: unknown, row: AnyRecord) => renderEllipsis(row.sub_task_code ? `${row.sub_task_code} ${row.sub_task || ''}` : `${row.code || '-'} ${row.title || ''}`) },
             { title: '部门级任务', dataIndex: 'department_task', width: 190, ellipsis: true, render: renderEllipsis },
-            { title: '执行人', dataIndex: 'executors', width: 132, render: renderPeople },
-            { title: '负责人', dataIndex: 'owners', width: 132, render: renderPeople },
+            { title: '负责人', width: 132, render: (_: unknown, row: AnyRecord) => renderPeople(row.owners || row.owner) },
             { title: '风险', dataIndex: 'risk_level', width: 88, render: (value) => <StatusTag value={value} /> },
-            { title: '截止日期', dataIndex: 'due_date', width: 108, responsive: ['lg'] }
+            { title: '分值', dataIndex: 'score', width: 72 },
+            { title: '截止日期', dataIndex: 'due_date', width: 108, responsive: ['lg'] },
+            {
+              title: '操作',
+              width: 88,
+              render: (_: unknown, row: AnyRecord) => row.can_manage
+                ? <Button size="small" type="link" onClick={() => setEditingRisk(row)}>处理</Button>
+                : null
+            }
           ]}
         />
       </Card>
-      <DashboardDetailModal detail={detail} onClose={() => setDetail(null)} />
+      <DashboardDetailModal
+        detail={detail}
+        onClose={() => setDetail(null)}
+        onChanged={() => {
+          setDetail(null);
+          reload();
+        }}
+      />
+      <RiskManageModal
+        risk={editingRisk}
+        onClose={() => setEditingRisk(null)}
+        onSaved={reload}
+      />
     </PageShell>
   );
 }
@@ -1798,8 +2167,21 @@ function TimelinePage() {
 function Notifications() {
   const { data, reload } = useApi<AnyRecord[]>('/notifications', []);
   const { data: users } = useApi<AnyRecord[]>('/user-options', []);
+  const { data: scheduler, reload: reloadScheduler } = useApi<AnyRecord>('/notifications/scheduler-status', []);
   const [loading, setLoading] = useState(false);
   const [testTargetUserId, setTestTargetUserId] = useState<number | null>(null);
+  const [notificationType, setNotificationType] = useState<string | undefined>();
+  const notificationTypeLabels: Record<string, string> = {
+    weekly_update_digest: '周更新汇总提醒',
+    department_task_split_required: '部门任务拆解提醒',
+    department_task_due_soon: '部门任务临期提醒',
+    risk_item_alert: '风险项提醒',
+    lark_test_message: '测试卡片',
+    weekly_update_reminder: '周更新提醒',
+  };
+  const filteredNotifications = notificationType
+    ? (data || []).filter((item) => item.notification_type === notificationType)
+    : (data || []);
   const userOptions = (users || []).map((item) => ({
     value: item.id,
     label: `${item.name}${item.department ? ` / ${item.department}` : ''}`
@@ -1818,7 +2200,28 @@ function Notifications() {
     setLoading(true);
     try {
       const result = await postJson('/notifications/lark-weekly-reminders', { week_key: currentIsoWeekKey() });
-      message.success(`已生成 ${result.created || 0} 条飞书提醒，成功 ${result.sent || 0} 条`);
+      message.success(`周更新汇总：生成 ${result.created || 0} 条，成功 ${result.sent || 0} 条，抑制 ${result.suppressed || 0} 条，跳过 ${result.skipped || 0} 条`);
+      reload();
+    } finally {
+      setLoading(false);
+    }
+  };
+  const sendDepartmentDue = async () => {
+    setLoading(true);
+    try {
+      const result = await postJson('/notifications/department-task-due-reminders', {});
+      message.success(`部门任务临期提醒：任务 ${result.tasks || 0} 项，生成 ${result.created || 0} 条，成功 ${result.sent || 0} 条，抑制 ${result.suppressed || 0} 条`);
+      reload();
+      reloadScheduler();
+    } finally {
+      setLoading(false);
+    }
+  };
+  const sendRiskOverdue = async () => {
+    setLoading(true);
+    try {
+      const result = await postJson('/notifications/risk-overdue', {});
+      message.success(`风险逾期提醒：风险 ${result.risks || 0} 项，通知 ${result.created || 0} 条，成功 ${result.sent || 0} 条，抑制 ${result.suppressed || 0} 条，跳过 ${result.skipped || 0} 条`);
       reload();
     } finally {
       setLoading(false);
@@ -1861,7 +2264,7 @@ function Notifications() {
         throw new Error(await response.text());
       }
       const result = await response.json();
-      message.success(`已导入 ${result.imported || 0} 人邮箱，阻塞 ${result.blocked || 0} 人`);
+      message.success(`邮箱更新 ${result.imported || 0} 人，新增 ${result.created || 0} 人，跳过 ${result.skipped || 0} 条，阻塞 ${result.blocked || 0} 人`);
       reload();
     } catch (error) {
       message.error(`邮箱导入失败：${error instanceof Error ? error.message : '未知错误'}`);
@@ -1890,12 +2293,43 @@ function Notifications() {
       setLoading(false);
     }
   };
+  const sendPreviewSuite = async () => {
+    if (!testTargetUserId) {
+      message.warning('请选择验收接收人');
+      return;
+    }
+    setLoading(true);
+    try {
+      const result = await postJson('/notifications/lark-card-preview-suite', {
+        target_user_id: testTargetUserId
+      });
+      if (result.ok) {
+        message.success(`四类验收卡片已发送给 ${result.target_user}`);
+      } else {
+        message.warning(`验收卡片：成功 ${result.sent || 0}，失败 ${result.failed || 0}，阻塞 ${result.blocked || 0}，抑制 ${result.suppressed || 0}`);
+      }
+      reload();
+    } finally {
+      setLoading(false);
+    }
+  };
   const statusColor = (value: string) => {
     if (value === 'sent' || value === 'mock_sent') return 'green';
     if (value === 'pending') return 'blue';
     if (value === 'blocked') return 'orange';
+    if (value === 'suppressed') return 'default';
     return 'red';
   };
+  const scheduleText = (scheduler?.jobs || [])
+    .map((job: AnyRecord) => {
+      const labels: Record<string, string> = {
+        weekly_update_digest: '周更新',
+        department_task_due_scan: '部门任务临期',
+        risk_overdue_scan: '风险逾期'
+      };
+      return `${labels[job.id] || job.id}：${job.next_run_time ? dayjs(job.next_run_time).format('YYYY-MM-DD HH:mm') : '未安排'}`;
+    })
+    .join('；');
   return (
     <PageShell
       title="通知记录"
@@ -1910,6 +2344,14 @@ function Notifications() {
             </Upload>
             <Button onClick={resolveOpenIds} loading={loading}>邮箱解析 open_id</Button>
             <Button onClick={createMock} loading={loading}>生成模拟提醒</Button>
+            <Select
+              allowClear
+              placeholder="通知类型"
+              value={notificationType}
+              onChange={setNotificationType}
+              options={Object.entries(notificationTypeLabels).map(([value, label]) => ({ value, label }))}
+              style={{ minWidth: 180 }}
+            />
           </Space>
           <Space wrap className="admin-toolbar primary-toolbar">
             <Select
@@ -1923,18 +2365,27 @@ function Notifications() {
               className="toolbar-select"
             />
             <Button onClick={sendTest} loading={loading}>发送测试卡片</Button>
+            <Button type="primary" icon={<SafetyOutlined />} onClick={sendPreviewSuite} loading={loading}>发送四类验收卡片</Button>
             <Button type="primary" onClick={sendLark} loading={loading}>发送飞书提醒</Button>
+            <Button icon={<ScheduleOutlined />} onClick={sendDepartmentDue} loading={loading}>部门任务临期提醒</Button>
+            <Button danger icon={<SafetyOutlined />} onClick={sendRiskOverdue} loading={loading}>风险逾期提醒</Button>
           </Space>
+          <Alert
+            type={scheduler?.running ? 'success' : 'warning'}
+            showIcon
+            message={`通知调度：${scheduler?.running ? '运行中' : '未运行'} · ${scheduler?.timezone || 'Asia/Shanghai'} · ${scheduler?.delivery_mode === 'allowlist' ? '调试白名单' : '全员发送'}`}
+            description={scheduleText || '暂无调度任务'}
+          />
         </Space>
       </Card>
       <Card className="business-card">
         <Table
           rowKey="id"
-          dataSource={data || []}
+          dataSource={filteredNotifications}
           className="business-table"
           tableLayout="fixed"
-          scroll={{ x: 980 }}
-          title={() => renderTableHeader('通知记录', data?.length || 0, '记录飞书提醒、测试卡片和模拟提醒的发送结果')}
+          scroll={{ x: 1320 }}
+          title={() => renderTableHeader('通知记录', filteredNotifications.length, '记录飞书提醒、测试卡片和模拟提醒的发送结果')}
           columns={[
             {
               title: '通知时间',
@@ -1943,7 +2394,7 @@ function Notifications() {
               render: (value) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-'
             },
             { title: '通知对象', dataIndex: 'target_user', width: 120, ellipsis: true, render: renderEllipsis },
-            { title: '通知类型', dataIndex: 'notification_type', width: 160, ellipsis: true, render: renderEllipsis },
+            { title: '通知类型', dataIndex: 'notification_type', width: 160, ellipsis: true, render: (value) => renderEllipsis(notificationTypeLabels[value] || value) },
             { title: '关联对象', width: 130, render: (_, row) => renderEllipsis(`${row.related_type || '-'} ${row.related_id || ''}`) },
             {
               title: '发送状态',
@@ -1951,7 +2402,25 @@ function Notifications() {
               width: 104,
               render: (value) => <Tag color={statusColor(value)}>{value}</Tag>
             },
-            { title: '是否点击', dataIndex: 'clicked', width: 88, render: (value) => value ? <Tag color="green">已点击</Tag> : <Tag>未点击</Tag> },
+            {
+              title: <Tooltip title="表示飞书卡片中的签名链接已验证成功，不代表业务事项已处理">点击状态</Tooltip>,
+              dataIndex: 'clicked',
+              width: 96,
+              render: (value) => value ? <Tag color="green">已点击</Tag> : <Tag>未点击</Tag>
+            },
+            { title: '点击次数', dataIndex: 'click_count', width: 88, render: (value) => value || 0 },
+            {
+              title: '首次点击',
+              dataIndex: 'first_clicked_at',
+              width: 150,
+              render: (value) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-'
+            },
+            {
+              title: '最后点击',
+              dataIndex: 'last_clicked_at',
+              width: 150,
+              render: (value) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-'
+            },
             { title: '处理结果', dataIndex: 'result', width: 228, ellipsis: true, render: renderEllipsis }
           ]}
         />
@@ -1980,7 +2449,6 @@ function People() {
     editForm.setFieldsValue({
       name: person.name,
       department_id: person.department_id,
-      title: person.title,
       status: person.status,
       open_id: person.open_id,
       email: person.email,
@@ -1996,7 +2464,7 @@ function People() {
     reload();
   };
   return (
-    <PageShell title="人员" subtitle="预设员工姓名、部门和角色；实际登录后绑定 open_id">
+    <PageShell title="人员" subtitle="预设员工姓名、部门、角色和邮箱；实际登录后绑定 open_id">
       <Card title="新增预设人员" className="mb16 admin-form-card">
         <Form form={form} layout="vertical" onFinish={createPerson} initialValues={{ status: 'active', role_ids: [] }}>
           <Row gutter={16}>
@@ -2008,11 +2476,6 @@ function People() {
             <Col xs={24} md={6}>
               <Form.Item name="department_id" label="部门">
                 <Select allowClear options={departmentOptions} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={6}>
-              <Form.Item name="title" label="岗位">
-                <Input />
               </Form.Item>
             </Col>
             <Col xs={24} md={6}>
@@ -2045,12 +2508,11 @@ function People() {
           dataSource={data || []}
           className="business-table"
           tableLayout="fixed"
-          scroll={{ x: 1040 }}
+          scroll={{ x: 900 }}
           title={() => renderTableHeader('人员列表', data?.length || 0, '维护部门、角色、邮箱和飞书绑定状态')}
           columns={[
             { title: '姓名', dataIndex: 'name', width: 110, ellipsis: true, render: renderEllipsis },
             { title: '部门', dataIndex: 'department', width: 140, ellipsis: true, render: renderEllipsis },
-            { title: '岗位', dataIndex: 'title', width: 150, ellipsis: true, render: renderEllipsis },
             {
               title: '角色',
               dataIndex: 'roles',
@@ -2089,9 +2551,6 @@ function People() {
           </Form.Item>
           <Form.Item name="department_id" label="部门">
             <Select allowClear options={departmentOptions} />
-          </Form.Item>
-          <Form.Item name="title" label="岗位">
-            <Input />
           </Form.Item>
           <Form.Item name="open_id" label="飞书 open_id">
             <Input placeholder="清空后保存即可解绑 open_id" />

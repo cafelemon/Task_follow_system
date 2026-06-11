@@ -14,8 +14,11 @@ def ensure_runtime_schema() -> None:
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(180)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS open_id_bound_at TIMESTAMPTZ",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_version VARCHAR(32)",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_status VARCHAR(32)",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_completed_at TIMESTAMPTZ",
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email ON users(email)",
-        "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_username ON users(username)",
+        "DROP INDEX IF EXISTS ix_users_username",
         """
         CREATE TABLE IF NOT EXISTS auth_sessions (
             id SERIAL PRIMARY KEY,
@@ -44,6 +47,40 @@ def ensure_runtime_schema() -> None:
         "ALTER TABLE sub_tasks ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ",
         "ALTER TABLE weekly_updates ADD COLUMN IF NOT EXISTS assignee_id INTEGER REFERENCES users(id)",
         "ALTER TABLE weekly_updates ADD COLUMN IF NOT EXISTS risk_level VARCHAR(32)",
+        """
+        CREATE TABLE IF NOT EXISTS risk_items (
+            id SERIAL PRIMARY KEY,
+            code VARCHAR(80) UNIQUE NOT NULL,
+            sub_task_id INTEGER NOT NULL REFERENCES sub_tasks(id),
+            source_weekly_update_id INTEGER REFERENCES weekly_updates(id),
+            title VARCHAR(240) NOT NULL,
+            description TEXT,
+            impact_score INTEGER NOT NULL,
+            likelihood_score INTEGER NOT NULL,
+            score INTEGER NOT NULL,
+            level VARCHAR(32) NOT NULL,
+            owner_id INTEGER NOT NULL REFERENCES users(id),
+            status VARCHAR(32) DEFAULT 'open' NOT NULL,
+            due_date DATE,
+            resolution_note TEXT,
+            created_by_id INTEGER REFERENCES users(id),
+            updated_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ DEFAULT now()
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_risk_items_sub_task_id ON risk_items(sub_task_id)",
+        "CREATE INDEX IF NOT EXISTS ix_risk_items_status_level ON risk_items(status, level)",
+        "DELETE FROM risk_records",
+        "DELETE FROM coordination_items",
+        "UPDATE sub_tasks SET risk_level = 'none' WHERE risk_level IS DISTINCT FROM 'none'",
+        "UPDATE weekly_updates SET risk_level = NULL WHERE risk_level IS NOT NULL",
+        "ALTER TABLE notification_records ADD COLUMN IF NOT EXISTS dedupe_key VARCHAR(240)",
+        "ALTER TABLE notification_records ADD COLUMN IF NOT EXISTS first_clicked_at TIMESTAMPTZ",
+        "ALTER TABLE notification_records ADD COLUMN IF NOT EXISTS last_clicked_at TIMESTAMPTZ",
+        "ALTER TABLE notification_records ADD COLUMN IF NOT EXISTS click_count INTEGER DEFAULT 0",
+        "UPDATE notification_records SET click_count = 0 WHERE click_count IS NULL",
+        "ALTER TABLE notification_records ALTER COLUMN click_count SET NOT NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_notification_records_dedupe_key ON notification_records(dedupe_key)",
         """
         UPDATE weekly_updates
         SET assignee_id = sub_tasks.executor_id

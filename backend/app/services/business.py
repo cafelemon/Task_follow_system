@@ -1,15 +1,16 @@
-from datetime import date, datetime, timezone
+from collections import defaultdict
+from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.entities import (
-    CoordinationItem,
     DepartmentTask,
     NotificationRecord,
     ParentTask,
-    RiskRecord,
+    RiskItem,
     StrategicGoal,
     SubTask,
     TaskEvent,
@@ -21,6 +22,20 @@ from app.services.auth import create_lark_login_url
 from app.services.lark_client import lark_client
 
 RISK_ORDER = {"none": 0, "low": 1, "medium": 2, "high": 3}
+ACTIVE_RISK_STATUSES = {"open", "in_progress"}
+
+
+def risk_level_from_score(score: int) -> str:
+    if score >= 15:
+        return "high"
+    if score >= 8:
+        return "medium"
+    return "low"
+
+
+def risk_score(impact_score: int, likelihood_score: int) -> tuple[int, str]:
+    score = impact_score * likelihood_score
+    return score, risk_level_from_score(score)
 
 
 def current_week_key(today: date | None = None) -> str:
@@ -261,6 +276,38 @@ def serialize_weekly_update(update: WeeklyUpdate) -> dict:
     }
 
 
+def serialize_risk_item(item: RiskItem) -> dict:
+    sub_task = item.sub_task
+    department_task = sub_task.department_task if sub_task else None
+    parent_task = department_task.parent_task if department_task else None
+    return {
+        "id": item.id,
+        "code": item.code,
+        "sub_task_id": item.sub_task_id,
+        "sub_task_code": sub_task.code if sub_task else None,
+        "sub_task": sub_task.title if sub_task else None,
+        "department_task": department_task.title if department_task else None,
+        "department_task_code": department_task.code if department_task else None,
+        "parent_task": parent_task.title if parent_task else None,
+        "parent_task_code": parent_task.code if parent_task else None,
+        "source_weekly_update_id": item.source_weekly_update_id,
+        "title": item.title,
+        "description": item.description,
+        "impact_score": item.impact_score,
+        "likelihood_score": item.likelihood_score,
+        "score": item.score,
+        "level": item.level,
+        "owner_id": item.owner_id,
+        "owner": item.owner.name if item.owner else None,
+        "status": item.status,
+        "due_date": item.due_date.isoformat() if item.due_date else None,
+        "resolution_note": item.resolution_note,
+        "created_by": item.created_by.name if item.created_by else None,
+        "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+    }
+
+
 def upsert_weekly_update(
     db: Session,
     *,
@@ -311,35 +358,6 @@ def upsert_weekly_update(
     db.flush()
     if submit:
         recalculate_sub_task_from_week(db, sub_task, week_key)
-    if submit and risk and risk_level in {"high", "medium", "low"}:
-        exists = db.scalar(
-            select(RiskRecord).where(RiskRecord.sub_task_id == sub_task.id, RiskRecord.status == "open")
-        )
-        if not exists:
-            db.add(
-                RiskRecord(
-                    code=generate_code(db, RiskRecord, "R"),
-                    sub_task_id=sub_task.id,
-                    level=risk_level,
-                    description=risk,
-                    created_by_id=user.id,
-                )
-            )
-    if submit and needs_coordination:
-        exists = db.scalar(
-            select(CoordinationItem).where(
-                CoordinationItem.sub_task_id == sub_task.id, CoordinationItem.status == "open"
-            )
-        )
-        if not exists:
-            db.add(
-                CoordinationItem(
-                    sub_task_id=sub_task.id,
-                    title=f"{sub_task.title} 需要协调",
-                    description=risk or "周更新中标记为需要协调。",
-                    owner_id=sub_task.owner_id,
-                )
-            )
     if submit:
         add_event(
             db,
@@ -367,7 +385,13 @@ def missing_update_assignments(db: Session, week_key: str) -> list[tuple[SubTask
     sub_tasks = list(db.scalars(select(SubTask)).all())
     missing: list[tuple[SubTask, User]] = []
     for task in sub_tasks:
-        if task.status == "completed":
+        if (
+            task.status in {"completed", "archived"}
+            or not task.department_task
+            or task.department_task.status == "archived"
+            or not task.department_task.parent_task
+            or task.department_task.parent_task.status == "archived"
+        ):
             continue
         for assignee in executor_people(task):
             if (task.id, assignee.id) not in submitted_pairs:
@@ -387,33 +411,28 @@ def missing_update_sub_tasks(db: Session, week_key: str) -> list[SubTask]:
 
 def build_meeting_board(db: Session, week_key: str) -> dict:
     sub_tasks = list(db.scalars(select(SubTask)).all())
-    risks = list(db.scalars(select(RiskRecord).where(RiskRecord.status == "open")).all())
-    coordination = list(
-        db.scalars(select(CoordinationItem).where(CoordinationItem.status == "open")).all()
+    risks = list(
+        db.scalars(
+            select(RiskItem).where(
+                RiskItem.status.in_(ACTIVE_RISK_STATUSES),
+                RiskItem.level == "high",
+            )
+        ).all()
     )
     completed = [task for task in sub_tasks if task.status == "completed"]
     missing = missing_update_assignments(db, week_key)
 
     return {
         "week_key": week_key,
-        "decision_items": [
-            {
-                "title": item.title,
-                "owner": (people_payload(owner_people(item.sub_task))[2] if item.sub_task else None),
-                "problem": item.description,
-                "suggestion": "请在会议中明确责任边界与下一步时间点。",
-            }
-            for item in coordination
-        ],
+        "decision_items": [],
         "high_risks": [
             {
-                "title": risk.sub_task.title,
-                "owner": people_payload(owner_people(risk.sub_task))[2],
-                "problem": risk.description,
+                "title": risk.title,
+                "owner": risk.owner.name if risk.owner else people_payload(owner_people(risk.sub_task))[2],
+                "problem": risk.description or (risk.sub_task.title if risk.sub_task else None),
                 "suggestion": "建议升级协调并确认处理时限。",
             }
             for risk in risks
-            if risk.level == "high"
         ],
         "missing_updates": [
             {
@@ -452,11 +471,65 @@ def create_mock_notifications(db: Session, week_key: str) -> int:
     return created
 
 
+def _card_title(title: str, *, preview: bool = False) -> str:
+    return f"[验收示例] {title}" if preview else title
+
+
+def _card_field(label: str, value: str) -> dict:
+    return {
+        "is_short": True,
+        "text": {"tag": "lark_md", "content": f"**{label}**\n{value or '-'}"},
+    }
+
+
+def _business_card(
+    *,
+    template: str,
+    title: str,
+    summary: str,
+    fields: list[tuple[str, str]],
+    note: str,
+    action_text: str,
+    web_url: str,
+    preview: bool = False,
+) -> dict:
+    elements: list[dict] = [
+        {"tag": "div", "text": {"tag": "lark_md", "content": summary}},
+        {"tag": "hr"},
+    ]
+    if fields:
+        elements.append({"tag": "div", "fields": [_card_field(label, value) for label, value in fields]})
+    elements.extend(
+        [
+            {"tag": "note", "elements": [{"tag": "plain_text", "content": note}]},
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": action_text},
+                        "url": web_url,
+                        "type": "primary",
+                    }
+                ],
+            },
+        ]
+    )
+    return {
+        "config": {"wide_screen_mode": True, "enable_forward": False},
+        "header": {
+            "template": template,
+            "title": {"tag": "plain_text", "content": _card_title(title, preview=preview)},
+        },
+        "elements": elements,
+    }
+
+
 def build_weekly_update_lark_card(task: SubTask, week_key: str, web_url: str) -> dict:
     department_task = task.department_task
     parent_task = department_task.parent_task if department_task else None
     return {
-        "config": {"wide_screen_mode": True},
+        "config": {"wide_screen_mode": True, "enable_forward": False},
         "header": {
             "template": "orange",
             "title": {"tag": "plain_text", "content": f"{week_key} 周更新提醒"},
@@ -503,12 +576,102 @@ def build_weekly_update_lark_card(task: SubTask, week_key: str, web_url: str) ->
     }
 
 
+def build_weekly_update_digest_card(
+    tasks: list[SubTask],
+    week_key: str,
+    web_url: str,
+    *,
+    preview: bool = False,
+) -> dict:
+    visible = tasks[:8]
+    lines = [f"{index}. **{task.code}** {task.title}" for index, task in enumerate(visible, start=1)]
+    if len(tasks) > len(visible):
+        lines.append(f"...另有 **{len(tasks) - len(visible)}** 项，请进入系统查看")
+    return _business_card(
+        template="orange",
+        title=f"{week_key} 周更新待提交",
+        summary=f"本周还有 **{len(tasks)}** 个子任务未提交更新：\n\n" + "\n".join(lines),
+        fields=[("统计周期", week_key), ("待提交数量", f"{len(tasks)} 项")],
+        note="请补充本周完成内容、遗留事项和下一步计划。",
+        action_text="填写本周更新",
+        web_url=web_url,
+        preview=preview,
+    )
+
+
+def build_department_task_split_card(task: DepartmentTask, web_url: str, *, preview: bool = False) -> dict:
+    parent = task.parent_task
+    return _business_card(
+        template="blue",
+        title="部门任务待拆解",
+        summary=f"新的部门任务已分配给你，请明确子任务、负责人和执行人。\n\n**{task.code} {task.title}**",
+        fields=[
+            ("所属母任务", f"{parent.code} {parent.title}" if parent else "-"),
+            ("截止日期", task.due_date.isoformat() if task.due_date else "待确定"),
+        ],
+        note="拆解后请确认每个子任务均有明确执行人和截止时间。",
+        action_text="前往拆解子任务",
+        web_url=web_url,
+        preview=preview,
+    )
+
+
+def build_department_task_due_card(
+    task: DepartmentTask,
+    days_left: int,
+    web_url: str,
+    *,
+    preview: bool = False,
+) -> dict:
+    deadline_text = "今天截止" if days_left == 0 else f"距离截止还有 **{days_left} 天**"
+    parent = task.parent_task
+    return _business_card(
+        template="red" if days_left <= 1 else "orange",
+        title="部门任务临近截止",
+        summary=f"{deadline_text}，请检查子任务推进情况并安排收尾。\n\n**{task.code} {task.title}**",
+        fields=[
+            ("所属母任务", f"{parent.code} {parent.title}" if parent else "-"),
+            ("当前进度", f"{task.progress}%"),
+            ("截止日期", task.due_date.isoformat() if task.due_date else "-"),
+            ("剩余时间", "今天" if days_left == 0 else f"T-{days_left}"),
+        ],
+        note="如存在阻塞或交付风险，请及时登记风险项并推动处理。",
+        action_text="查看部门任务",
+        web_url=web_url,
+        preview=preview,
+    )
+
+
+def build_risk_item_card(risk: RiskItem, trigger: str, web_url: str, *, preview: bool = False) -> dict:
+    sub_task = risk.sub_task
+    department_task = sub_task.department_task if sub_task else None
+    owner_name = risk.owner.name if risk.owner else "-"
+    due_date = risk.due_date.isoformat() if risk.due_date else "未设置"
+    return _business_card(
+        template="red",
+        title=f"风险提醒：{trigger}",
+        summary=f"检测到需要优先处理的风险项：\n\n**{risk.code} {risk.title}**\n{risk.description or '暂无补充说明'}",
+        fields=[
+            ("风险评分", f"{risk.impact_score} × {risk.likelihood_score} = **{risk.score}**"),
+            ("风险等级", "高风险" if risk.level == "high" else risk.level),
+            ("风险责任人", owner_name),
+            ("处理日期", due_date),
+            ("来源子任务", f"{sub_task.code} {sub_task.title}" if sub_task else "-"),
+            ("部门任务", f"{department_task.code} {department_task.title}" if department_task else "-"),
+        ],
+        note="请由风险责任人牵头处理，并在系统中持续更新状态和关闭说明。",
+        action_text="查看并处理风险",
+        web_url=web_url,
+        preview=preview,
+    )
+
+
 def build_lark_test_card(web_url: str) -> dict:
     return {
-        "config": {"wide_screen_mode": True},
+        "config": {"wide_screen_mode": True, "enable_forward": False},
         "header": {
             "template": "blue",
-            "title": {"tag": "plain_text", "content": "2.0.9 飞书测试卡片"},
+            "title": {"tag": "plain_text", "content": "2.3.1 飞书测试卡片"},
         },
         "elements": [
             {
@@ -533,14 +696,272 @@ def build_lark_test_card(web_url: str) -> dict:
     }
 
 
-def lark_entry_url(user: User, next_path: str) -> str:
+def lark_entry_url(
+    user: User,
+    next_path: str,
+    *,
+    notification_id: int | None = None,
+) -> str:
     fallback = f"{settings.web_base_url}{next_path}"
     if not user.open_id:
         return fallback
     try:
-        return create_lark_login_url(user, next_path)
+        return create_lark_login_url(user, next_path, notification_id=notification_id)
     except RuntimeError:
         return fallback
+
+
+def prepare_notification_link(
+    db: Session,
+    record: NotificationRecord,
+    target: User,
+    next_path: str,
+) -> str:
+    db.add(record)
+    db.flush()
+    record.web_url = lark_entry_url(target, next_path, notification_id=record.id)
+    return record.web_url
+
+
+def notification_delivery_block(target: User) -> tuple[str, str] | None:
+    if target.status == "disabled":
+        return "blocked", "目标用户已停用"
+    if not target.open_id:
+        return "blocked", "目标用户未绑定飞书 open_id"
+    if settings.notification_delivery_mode == "allowlist":
+        email = (target.email or "").strip().lower()
+        if email not in settings.notification_allowlist_emails:
+            return "suppressed", "调试白名单模式：未向该用户真实发送"
+    return None
+
+
+async def deliver_notification(
+    target: User,
+    *,
+    card: dict | None = None,
+    text: str | None = None,
+) -> tuple[bool, str, str]:
+    blocked = notification_delivery_block(target)
+    if blocked:
+        return False, blocked[0], blocked[1]
+    if card is not None:
+        result = await lark_client.send_interactive_card(target.open_id or "", card)
+    else:
+        result = await lark_client.send_text(target.open_id or "", text or "")
+    return result.ok, result.status, result.message
+
+
+def notification_exists(db: Session, dedupe_key: str) -> bool:
+    return db.scalar(select(NotificationRecord.id).where(NotificationRecord.dedupe_key == dedupe_key)) is not None
+
+
+def risk_notification_targets(risk: RiskItem) -> list[User]:
+    people: list[User] = []
+    if risk.owner:
+        people.append(risk.owner)
+    if risk.sub_task:
+        people.extend(owner_people(risk.sub_task))
+        if risk.sub_task.department_task:
+            people.extend(owner_people(risk.sub_task.department_task))
+    deduped: dict[int, User] = {}
+    for user in people:
+        if user and user.status != "disabled":
+            deduped[user.id] = user
+    return list(deduped.values())
+
+
+async def send_risk_item_notifications(db: Session, risk: RiskItem, trigger: str) -> dict:
+    created = 0
+    sent = 0
+    failed = 0
+    blocked = 0
+    suppressed = 0
+    skipped = 0
+    results = []
+    for target in risk_notification_targets(risk):
+        trigger_key = {
+            "新增高风险": "created_high",
+            "升级为高风险": "escalated_high",
+            "风险逾期": f"overdue:{risk.due_date.isoformat() if risk.due_date else 'none'}",
+        }.get(trigger, trigger)
+        dedupe_key = f"risk_item_alert:{risk.id}:{trigger_key}:{target.id}"
+        if notification_exists(db, dedupe_key):
+            skipped += 1
+            continue
+        next_path = f"/sub-tasks/{risk.sub_task_id}/update"
+        record = NotificationRecord(
+            target_user_id=target.id,
+            notification_type="risk_item_alert",
+            related_type="risk_item",
+            related_id=risk.id,
+            title=f"高风险提醒：{risk.title}",
+            send_status="pending",
+            dedupe_key=dedupe_key,
+        )
+        web_url = prepare_notification_link(db, record, target, next_path)
+        created += 1
+        ok, delivery_status, message = await deliver_notification(
+            target,
+            card=build_risk_item_card(risk, trigger, web_url),
+        )
+        record.send_status = delivery_status
+        record.result = message[:200]
+        sent += 1 if ok else 0
+        failed += 1 if delivery_status == "failed" else 0
+        blocked += 1 if delivery_status == "blocked" else 0
+        suppressed += 1 if delivery_status == "suppressed" else 0
+        results.append(
+            {
+                "record_id": record.id,
+                "target_user": target.name,
+                "send_status": record.send_status,
+                "result": record.result,
+            }
+        )
+    db.commit()
+    return {
+        "created": created,
+        "sent": sent,
+        "failed": failed,
+        "blocked": blocked,
+        "suppressed": suppressed,
+        "skipped": skipped,
+        "results": results,
+    }
+
+
+async def send_risk_overdue_reminders(db: Session, *, today: date | None = None) -> dict:
+    today = today or date.today()
+    risks = list(
+        db.scalars(
+            select(RiskItem).where(
+                RiskItem.status.in_(ACTIVE_RISK_STATUSES),
+                RiskItem.due_date < today,
+            )
+        ).all()
+    )
+    totals = {
+        "risks": len(risks),
+        "created": 0,
+        "sent": 0,
+        "failed": 0,
+        "blocked": 0,
+        "suppressed": 0,
+        "skipped": 0,
+    }
+    results = []
+    for risk in risks:
+        result = await send_risk_item_notifications(db, risk, "风险逾期")
+        for key in ("created", "sent", "failed", "blocked", "suppressed", "skipped"):
+            totals[key] += result[key]
+        results.append({"risk_id": risk.id, "risk": risk.title, "result": result})
+    return {**totals, "results": results}
+
+
+async def send_lark_card_preview_suite(db: Session, target_user_id: int) -> dict:
+    target = db.get(User, target_user_id)
+    if not target:
+        return {"ok": False, "send_status": "blocked", "message": "目标用户不存在"}
+
+    parent = SimpleNamespace(code="PT-2026-001", title="年度重点产品交付")
+    department_task = SimpleNamespace(
+        id=0,
+        code="DT-2026-001",
+        title="完成核心模块联调与交付准备",
+        parent_task=parent,
+        due_date=date.today() + timedelta(days=3),
+        progress=72,
+    )
+    sub_tasks = [
+        SimpleNamespace(code=f"ST-2026-{index:03d}", title=title, department_task=department_task)
+        for index, title in enumerate(
+            ["接口联调与异常场景验证", "用户验收问题收敛", "上线材料与操作手册完善"],
+            start=1,
+        )
+    ]
+    risk_owner = SimpleNamespace(name=target.name)
+    risk = SimpleNamespace(
+        id=0,
+        code="RI-2026-001",
+        title="关键接口稳定性尚未达到交付标准",
+        description="高并发场景仍存在偶发超时，需要在验收前完成定位和复测。",
+        impact_score=4,
+        likelihood_score=4,
+        score=16,
+        level="high",
+        owner=risk_owner,
+        due_date=date.today() + timedelta(days=2),
+        sub_task=sub_tasks[0],
+    )
+    preview_specs = [
+        (
+            "weekly_update_digest",
+            "周更新汇总提醒（验收示例）",
+            "/weekly-updates",
+            lambda url: build_weekly_update_digest_card(
+                sub_tasks,
+                current_week_key(),
+                url,
+                preview=True,
+            ),
+        ),
+        (
+            "department_task_split_required",
+            "部门任务拆解提醒（验收示例）",
+            "/department-tasks",
+            lambda url: build_department_task_split_card(department_task, url, preview=True),
+        ),
+        (
+            "department_task_due_soon",
+            "部门任务临期提醒（验收示例）",
+            "/department-tasks",
+            lambda url: build_department_task_due_card(department_task, 3, url, preview=True),
+        ),
+        (
+            "risk_item_alert",
+            "风险项提醒（验收示例）",
+            "/sub-tasks",
+            lambda url: build_risk_item_card(risk, "新增高风险", url, preview=True),
+        ),
+    ]
+    sent = failed = blocked = suppressed = 0
+    results = []
+    for notification_type, title, next_path, card_builder in preview_specs:
+        record = NotificationRecord(
+            target_user_id=target.id,
+            notification_type=notification_type,
+            related_type="card_preview",
+            related_id=None,
+            title=title,
+            send_status="pending",
+        )
+        web_url = prepare_notification_link(db, record, target, next_path)
+        ok, delivery_status, message = await deliver_notification(target, card=card_builder(web_url))
+        record.send_status = delivery_status
+        record.result = message[:200]
+        sent += 1 if ok else 0
+        failed += 1 if delivery_status == "failed" else 0
+        blocked += 1 if delivery_status == "blocked" else 0
+        suppressed += 1 if delivery_status == "suppressed" else 0
+        results.append(
+            {
+                "record_id": record.id,
+                "notification_type": notification_type,
+                "send_status": delivery_status,
+                "result": record.result,
+            }
+        )
+    db.commit()
+    return {
+        "ok": sent == len(preview_specs),
+        "target_user": target.name,
+        "created": len(preview_specs),
+        "sent": sent,
+        "failed": failed,
+        "blocked": blocked,
+        "suppressed": suppressed,
+        "results": results,
+    }
 
 
 async def send_lark_test_message(db: Session, target_user_id: int) -> dict:
@@ -548,29 +969,22 @@ async def send_lark_test_message(db: Session, target_user_id: int) -> dict:
     if not target:
         return {"ok": False, "send_status": "blocked", "message": "目标用户不存在"}
 
-    web_url = lark_entry_url(target, "/meeting-board/overview")
     record = NotificationRecord(
         target_user_id=target.id,
         notification_type="lark_test_message",
         related_type="user",
         related_id=target.id,
-        title="2.0.9 飞书测试卡片",
-        web_url=web_url,
+        title="2.3.1 飞书测试卡片",
         send_status="pending",
     )
-    db.add(record)
-    db.flush()
+    web_url = prepare_notification_link(db, record, target, "/meeting-board/overview")
 
-    if not target.open_id:
-        record.send_status = "blocked"
-        record.result = "目标用户未绑定飞书 open_id"
-    else:
-        result = await lark_client.send_interactive_card(
-            target.open_id,
-            build_lark_test_card(web_url),
-        )
-        record.send_status = result.status
-        record.result = result.message[:200]
+    _ok, delivery_status, message = await deliver_notification(
+        target,
+        card=build_lark_test_card(web_url),
+    )
+    record.send_status = delivery_status
+    record.result = message[:200]
 
     db.commit()
     db.refresh(record)
@@ -589,39 +1003,50 @@ async def send_weekly_update_reminders(db: Session, week_key: str) -> dict:
     failed = 0
     blocked = 0
     results = []
+    suppressed = 0
+    skipped = 0
+    grouped: dict[int, tuple[User, list[SubTask]]] = {}
+    task_groups: dict[int, list[SubTask]] = defaultdict(list)
+    targets: dict[int, User] = {}
     for task, target in missing_update_assignments(db, week_key):
-        next_path = f"/weekly-updates?subTaskId={task.id}&assigneeId={target.id}"
-        web_url = lark_entry_url(target, next_path) if target else f"{settings.web_base_url}{next_path}"
+        task_groups[target.id].append(task)
+        targets[target.id] = target
+    for target_id, tasks in task_groups.items():
+        grouped[target_id] = (targets[target_id], sorted(tasks, key=lambda item: item.code))
+
+    for target, tasks in grouped.values():
+        dedupe_key = f"weekly_update_digest:{week_key}:{target.id}"
+        if notification_exists(db, dedupe_key):
+            skipped += 1
+            continue
+        next_path = "/weekly-updates"
         record = NotificationRecord(
             target_user_id=target.id,
-            notification_type="weekly_update_reminder",
-            related_type="sub_task",
-            related_id=task.id,
-            title=f"{week_key} 周更新提醒",
-            web_url=web_url,
+            notification_type="weekly_update_digest",
+            related_type="weekly_update",
+            related_id=None,
+            title=f"{week_key} 周更新汇总提醒（{len(tasks)} 项）",
             send_status="pending",
+            dedupe_key=dedupe_key,
         )
-        db.add(record)
-        db.flush()
+        web_url = prepare_notification_link(db, record, target, next_path)
         created += 1
 
-        if not target.open_id:
-            record.send_status = "blocked"
-            record.result = "目标用户未绑定飞书 open_id"
-            blocked += 1
-        else:
-            card = build_weekly_update_lark_card(task, week_key, web_url)
-            result = await lark_client.send_interactive_card(target.open_id, card)
-            record.send_status = result.status
-            record.result = result.message[:200]
-            sent += 1 if result.ok else 0
-            failed += 1 if result.status == "failed" else 0
-            blocked += 1 if result.status == "blocked" else 0
+        ok, delivery_status, message = await deliver_notification(
+            target,
+            card=build_weekly_update_digest_card(tasks, week_key, web_url),
+        )
+        record.send_status = delivery_status
+        record.result = message[:200]
+        sent += 1 if ok else 0
+        failed += 1 if delivery_status == "failed" else 0
+        blocked += 1 if delivery_status == "blocked" else 0
+        suppressed += 1 if delivery_status == "suppressed" else 0
         results.append(
             {
                 "record_id": record.id,
-                "target_user": target.name if target else None,
-                "sub_task_id": task.id,
+                "target_user": target.name,
+                "sub_task_count": len(tasks),
                 "send_status": record.send_status,
                 "result": record.result,
             }
@@ -632,5 +1057,132 @@ async def send_weekly_update_reminders(db: Session, week_key: str) -> dict:
         "sent": sent,
         "failed": failed,
         "blocked": blocked,
+        "suppressed": suppressed,
+        "skipped": skipped,
+        "results": results,
+    }
+
+
+async def send_department_task_split_notifications(
+    db: Session,
+    task: DepartmentTask,
+    targets: list[User],
+    *,
+    event: str,
+) -> dict:
+    created = sent = failed = blocked = suppressed = skipped = 0
+    results = []
+    for target in targets:
+        dedupe_key = f"department_task_split_required:{task.id}:{target.id}:{event}"
+        if notification_exists(db, dedupe_key):
+            skipped += 1
+            continue
+        record = NotificationRecord(
+            target_user_id=target.id,
+            notification_type="department_task_split_required",
+            related_type="department_task",
+            related_id=task.id,
+            title=f"部门任务待拆解：{task.title}",
+            send_status="pending",
+            dedupe_key=dedupe_key,
+        )
+        web_url = prepare_notification_link(db, record, target, "/department-tasks")
+        created += 1
+        ok, delivery_status, message = await deliver_notification(
+            target,
+            card=build_department_task_split_card(task, web_url),
+        )
+        record.send_status = delivery_status
+        record.result = message[:200]
+        sent += 1 if ok else 0
+        failed += 1 if delivery_status == "failed" else 0
+        blocked += 1 if delivery_status == "blocked" else 0
+        suppressed += 1 if delivery_status == "suppressed" else 0
+        results.append(
+            {
+                "record_id": record.id,
+                "target_user": target.name,
+                "send_status": delivery_status,
+                "result": record.result,
+            }
+        )
+    db.commit()
+    return {
+        "created": created,
+        "sent": sent,
+        "failed": failed,
+        "blocked": blocked,
+        "suppressed": suppressed,
+        "skipped": skipped,
+        "results": results,
+    }
+
+
+async def send_department_task_due_reminders(db: Session, *, today: date | None = None) -> dict:
+    today = today or date.today()
+    window_end = today + timedelta(days=7)
+    tasks = list(
+        db.scalars(
+            select(DepartmentTask)
+            .where(
+                DepartmentTask.due_date.is_not(None),
+                DepartmentTask.due_date >= today,
+                DepartmentTask.due_date <= window_end,
+                DepartmentTask.status.not_in(["completed", "archived"]),
+            )
+            .order_by(DepartmentTask.due_date, DepartmentTask.id)
+        ).all()
+    )
+    created = sent = failed = blocked = suppressed = skipped = 0
+    results = []
+    for task in tasks:
+        if not task.parent_task or task.parent_task.status == "archived" or not task.due_date:
+            continue
+        days_left = (task.due_date - today).days
+        for target in owner_people(task):
+            dedupe_key = f"department_task_due_soon:{task.id}:{task.due_date.isoformat()}:{target.id}"
+            if notification_exists(db, dedupe_key):
+                skipped += 1
+                continue
+            record = NotificationRecord(
+                target_user_id=target.id,
+                notification_type="department_task_due_soon",
+                related_type="department_task",
+                related_id=task.id,
+                title=f"部门任务临近截止：{task.title}",
+                send_status="pending",
+                dedupe_key=dedupe_key,
+            )
+            web_url = prepare_notification_link(db, record, target, "/department-tasks")
+            created += 1
+            ok, delivery_status, message = await deliver_notification(
+                target,
+                card=build_department_task_due_card(task, days_left, web_url),
+            )
+            record.send_status = delivery_status
+            record.result = message[:200]
+            sent += 1 if ok else 0
+            failed += 1 if delivery_status == "failed" else 0
+            blocked += 1 if delivery_status == "blocked" else 0
+            suppressed += 1 if delivery_status == "suppressed" else 0
+            results.append(
+                {
+                    "record_id": record.id,
+                    "department_task_id": task.id,
+                    "target_user": target.name,
+                    "days_left": days_left,
+                    "send_status": delivery_status,
+                    "result": record.result,
+                }
+            )
+    db.commit()
+    return {
+        "tasks": len(tasks),
+        "created": created,
+        "sent": sent,
+        "failed": failed,
+        "blocked": blocked,
+        "suppressed": suppressed,
+        "skipped": skipped,
         "results": results,
     }

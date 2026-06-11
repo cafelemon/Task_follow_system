@@ -3,8 +3,12 @@ FROM python:3.11-slim
 WORKDIR /app
 
 COPY pyproject.toml ./
+RUN mkdir -p app \
+    && touch app/__init__.py \
+    && pip install --no-cache-dir -e . \
+    && rm -rf app
+
 COPY app ./app
-RUN pip install --no-cache-dir -e .
 
 COPY alembic ./alembic
 COPY alembic.ini ./

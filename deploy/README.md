@@ -13,6 +13,14 @@ docker compose -f deploy/docker-compose.yml up --build
 - `backend`：FastAPI 服务
 - `postgres`：PostgreSQL 16
 
+局域网飞书联调优先使用：
+
+```bash
+bash scripts/start_lan_dev.sh
+```
+
+该脚本会先把 `.env` 中的 Web 地址和飞书 OAuth callback 同步到当前 `en0` 局域网 IP，再启动 Docker Compose。
+
 附件目录默认挂载到：
 
 ```text

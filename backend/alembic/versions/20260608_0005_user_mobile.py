@@ -4,8 +4,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "20260608_0005_user_mobile"
-down_revision = "20260605_0004_sub_task_started_at"
+revision = "20260608_0005"
+down_revision = "20260605_0004"
 branch_labels = None
 depends_on = None
 

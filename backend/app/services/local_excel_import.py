@@ -11,11 +11,9 @@ from sqlalchemy.orm import Session
 from app.db.session import SessionLocal
 from app.models.entities import (
     BaseSyncRun,
-    CoordinationItem,
     Department,
     DepartmentTask,
     ParentTask,
-    RiskRecord,
     Role,
     StrategicGoal,
     SubTask,
@@ -283,7 +281,7 @@ def import_excel_2026(db: Session, path: Path = DEFAULT_EXCEL_PATH, actor_id: in
             owners=owners,
             status=parse_status(row.get("状态")),
             progress=parse_progress(row.get("本周进度") or row.get("上周任务进度")),
-            risk_level=parse_risk_level(row.get("遗留事项")),
+            risk_level="none",
             due_date=parse_date(row.get("截止时间")),
         )
         db.add(sub_task)
@@ -297,7 +295,6 @@ def import_excel_2026(db: Session, path: Path = DEFAULT_EXCEL_PATH, actor_id: in
             task.pending_split_count = len(codes)
             task.pending_split_codes = codes
 
-    risk_counter = 0
     for row in weekly_rows:
         original_sub_code = text(row.get("子任务编号"))
         task_label = text(row.get("任务项"))
@@ -319,35 +316,13 @@ def import_excel_2026(db: Session, path: Path = DEFAULT_EXCEL_PATH, actor_id: in
             this_week=text(row.get("本周完成内容")),
             next_week=text(row.get("下周工作计划")),
             risk=risk_text,
-            needs_coordination=bool(risk_text),
+            needs_coordination=False,
             submitter=submitter,
             submitted_at=datetime.now(timezone.utc),
         )
         db.add(update)
         sub_task.status = parse_status(row.get("状态"))
         sub_task.progress = max(sub_task.progress, update.progress)
-        if risk_text:
-            sub_task.risk_level = parse_risk_level(risk_text)
-            risk_counter += 1
-            db.add(
-                RiskRecord(
-                    code=f"R-2026-{risk_counter:03d}",
-                    sub_task=sub_task,
-                    level=sub_task.risk_level if sub_task.risk_level != "none" else "low",
-                    description=risk_text,
-                    status="open",
-                    created_by_id=submitter.id,
-                )
-            )
-            db.add(
-                CoordinationItem(
-                    sub_task=sub_task,
-                    title=f"{sub_task.code} 遗留事项",
-                    description=risk_text,
-                    status="open",
-                    owner_id=sub_task.owner_id,
-                )
-            )
         imported_weekly += 1
 
     for task in department_tasks.values():
@@ -356,7 +331,7 @@ def import_excel_2026(db: Session, path: Path = DEFAULT_EXCEL_PATH, actor_id: in
             task.progress = round(sum(item.progress for item in sub_tasks) / len(sub_tasks))
             if all(item.status == "completed" for item in sub_tasks):
                 task.status = "completed"
-            elif any(item.status == "risk" or item.risk_level != "none" for item in sub_tasks):
+            elif any(item.status == "risk" for item in sub_tasks):
                 task.status = "risk"
             elif any(item.status == "in_progress" for item in sub_tasks):
                 task.status = "in_progress"
@@ -384,7 +359,7 @@ def import_excel_2026(db: Session, path: Path = DEFAULT_EXCEL_PATH, actor_id: in
         "pending_split_rows": sum(len(items) for items in pending_by_task.values()),
         "weekly_updates": imported_weekly,
         "skipped_weekly_updates": skipped_weekly,
-        "risks": risk_counter,
+        "risks": 0,
     }
     db.add(
         BaseSyncRun(
