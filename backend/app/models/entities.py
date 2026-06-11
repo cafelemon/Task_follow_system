@@ -44,6 +44,22 @@ class User(Base):
     roles: Mapped[list["Role"]] = relationship(secondary="user_roles", back_populates="users")
 
 
+class UserGuideProgress(Base):
+    __tablename__ = "user_guide_progress"
+    __table_args__ = (
+        UniqueConstraint("user_id", "guide_key", "version", name="uq_user_guide_progress"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    guide_key: Mapped[str] = mapped_column(String(120))
+    version: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(32))
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    user: Mapped[User] = relationship()
+
+
 class Role(Base):
     __tablename__ = "roles"
 

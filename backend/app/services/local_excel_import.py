@@ -223,7 +223,7 @@ def import_excel_2026(db: Session, path: Path = DEFAULT_EXCEL_PATH, actor_id: in
         owners = [ensure_user(db, name, departments[0]) for name in owner_names] or [default_owner]
         owner = owners[0]
         for item in owners:
-            add_roles(db, item, ["department_owner", "task_owner"])
+            add_roles(db, item, ["task_owner"])
         task = DepartmentTask(
             code=code,
             title=strip_code_prefix(row.get("任务项"), code),
@@ -261,14 +261,11 @@ def import_excel_2026(db: Session, path: Path = DEFAULT_EXCEL_PATH, actor_id: in
         sub_sequence[task_code] += 1
         code = f"{task_code}-{sub_sequence[task_code]:02d}"
         department = department_task.department
-        owner_names = split_people(row.get("任务负责人（负责拆解任务到执行者）"))
         executor_names = split_people(row.get("执行责任人 (人员 )"))
-        owners = [ensure_user(db, name, department) for name in owner_names] or list(department_task.owners or [department_task.owner])
+        owners = list(department_task.owners or [department_task.owner])
         executors = [ensure_user(db, name, department) for name in executor_names] or [owners[0]]
         owner = owners[0]
         executor = executors[0]
-        for item in owners:
-            add_roles(db, item, ["task_owner"])
         for item in executors:
             add_roles(db, item, ["executor"])
         sub_task = SubTask(

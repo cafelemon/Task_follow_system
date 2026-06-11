@@ -50,7 +50,6 @@ ROLE_DEFAULTS: dict[str, list[str]] = {
     ],
     "parent_owner": [
         "task.split_department",
-        "task.edit_sub",
         "weekly_update.submit",
         "dashboard.view_department",
         "risk.mark",
@@ -58,7 +57,7 @@ ROLE_DEFAULTS: dict[str, list[str]] = {
         "timeline.view",
     ],
     "department_owner": [
-        "task.edit_sub",
+        "task.split_department",
         "weekly_update.submit",
         "dashboard.view_department",
         "notification.nudge",
@@ -98,6 +97,29 @@ def sub_task_executor_ids(task: SubTask) -> set[int]:
     return _related_user_ids(task.executors, task.executor_id)
 
 
+def is_department_owner(user: User) -> bool:
+    return bool(user.department_id and "department_owner" in user_role_codes(user))
+
+
+def department_task_department_ids(task: DepartmentTask) -> set[int]:
+    ids = {department.id for department in task.departments or []}
+    if task.department_id:
+        ids.add(task.department_id)
+    return ids
+
+
+def department_owner_leads_parent(user: User, task: ParentTask) -> bool:
+    return bool(is_department_owner(user) and user.department_id == task.department_id)
+
+
+def department_owner_manages_task(user: User, task: DepartmentTask) -> bool:
+    if not is_department_owner(user):
+        return False
+    if user.department_id in department_task_department_ids(task):
+        return True
+    return bool(task.parent_task and user.department_id == task.parent_task.department_id)
+
+
 def can_view_department_directory(user: User) -> bool:
     roles = user_role_codes(user)
     return user.is_admin or "permission.manage" in user_permission_codes(user) or "general_manager" in roles
@@ -126,7 +148,7 @@ def can_access_parent_task(user: User, task: ParentTask) -> bool:
         return False
     if has_full_parent_task_access(user):
         return True
-    return user.id in task_owner_ids(task)
+    return user.id in task_owner_ids(task) or department_owner_leads_parent(user, task)
 
 
 def can_edit_parent_task(user: User, task: ParentTask) -> bool:
@@ -140,7 +162,11 @@ def can_edit_parent_task(user: User, task: ParentTask) -> bool:
 def can_create_department_task(user: User, parent_task: ParentTask) -> bool:
     if parent_task.status == "archived":
         return False
-    return can_manage_parent_tasks(user) or user.id in task_owner_ids(parent_task)
+    return (
+        can_manage_parent_tasks(user)
+        or user.id in task_owner_ids(parent_task)
+        or department_owner_leads_parent(user, parent_task)
+    )
 
 
 def can_edit_department_task(db: Session, user: User, task: DepartmentTask) -> bool:
@@ -149,20 +175,27 @@ def can_edit_department_task(db: Session, user: User, task: DepartmentTask) -> b
     parent_task = db.get(ParentTask, task.parent_task_id)
     if not parent_task or parent_task.status == "archived":
         return False
-    return can_manage_parent_tasks(user) or user.id in task_owner_ids(parent_task)
+    return (
+        can_manage_parent_tasks(user)
+        or user.id in task_owner_ids(parent_task)
+        or department_owner_manages_task(user, task)
+    )
 
 
 def can_split_sub_task(db: Session, user: User, task: DepartmentTask) -> bool:
-    if can_edit_department_task(db, user, task) or user.id in task_owner_ids(task):
-        return True
-    return "task.edit_sub" in user_permission_codes(user) and can_access_department_task(db, user, task)
+    if task.status == "archived":
+        return False
+    parent_task = db.get(ParentTask, task.parent_task_id)
+    if not parent_task or parent_task.status == "archived":
+        return False
+    return user.id in task_owner_ids(task)
 
 
 def can_view_parent_task_page(db: Session, user: User) -> bool:
     if has_full_parent_task_access(user):
         return True
     return any(
-        user.id in task_owner_ids(task)
+        user.id in task_owner_ids(task) or department_owner_leads_parent(user, task)
         for task in db.scalars(select(ParentTask).where(ParentTask.status != "archived")).all()
     )
 
@@ -197,10 +230,8 @@ def can_access_sub_task(db: Session, user: User, sub_task: SubTask) -> bool:
         parent_task = db.get(ParentTask, department_task.parent_task_id)
         if parent_task and user.id in task_owner_ids(parent_task):
             return True
-    if user.department_id and department_task:
-        department_ids = {department.id for department in department_task.departments}
-        department_ids.add(department_task.department_id)
-        return user.department_id in department_ids
+        if department_owner_manages_task(user, department_task):
+            return True
     return False
 
 
@@ -245,11 +276,7 @@ def can_access_department_task(db: Session, user: User, task: DepartmentTask) ->
     parent_task = db.get(ParentTask, task.parent_task_id)
     if parent_task and user.id in task_owner_ids(parent_task):
         return True
-    if user.department_id:
-        department_ids = {department.id for department in task.departments}
-        department_ids.add(task.department_id)
-        return user.department_id in department_ids
-    return False
+    return department_owner_manages_task(user, task)
 
 
 def refresh_role_permissions(db: Session, role: Role, permission_codes: list[str]) -> Role:

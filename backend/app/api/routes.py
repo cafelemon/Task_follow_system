@@ -32,12 +32,14 @@ from app.models.entities import (
     SubTaskOwner,
     TaskEvent,
     User,
+    UserGuideProgress,
     WeeklyUpdate,
 )
 from app.schemas.dto import (
     DepartmentTaskCreate,
     DepartmentTaskUpdate,
     GoalCreate,
+    GuideProgressUpdate,
     LarkCardPreviewRequest,
     LarkTestMessageRequest,
     LoginRequest,
@@ -102,6 +104,7 @@ from app.services.permissions import (
     sub_task_execution_relation,
     task_owner_ids,
     user_permission_codes,
+    user_role_codes,
 )
 from app.services.auth import (
     SESSION_COOKIE,
@@ -121,6 +124,8 @@ from app.services.scheduler import scheduler_status
 router = APIRouter(prefix="/api")
 logger = logging.getLogger(__name__)
 CURRENT_ONBOARDING_VERSION = "1"
+EXECUTIVE_FRAMEWORK_GUIDE = ("executive_framework", "1")
+EXECUTIVE_MEETING_GUIDE = ("executive_meeting_board", "1")
 
 
 def feature_payload(db: Session, user: User) -> dict:
@@ -143,6 +148,83 @@ def onboarding_payload(user: User) -> dict:
             user.onboarding_completed_at.isoformat() if user.onboarding_completed_at else None
         ),
     }
+
+
+def guide_profile(db: Session, user: User) -> str | None:
+    roles = user_role_codes(user)
+    if roles & {"general_manager", "secretary"}:
+        return "executive_office"
+    if "department_owner" in roles and user.department_id:
+        return "department_owner"
+    owns_department_task = db.scalar(
+        select(DepartmentTaskOwner.user_id)
+        .join(DepartmentTask, DepartmentTask.id == DepartmentTaskOwner.department_task_id)
+        .join(ParentTask, ParentTask.id == DepartmentTask.parent_task_id)
+        .where(
+            DepartmentTaskOwner.user_id == user.id,
+            DepartmentTask.status != "archived",
+            ParentTask.status != "archived",
+        )
+        .limit(1)
+    )
+    if "task_owner" in roles or owns_department_task:
+        return "task_owner"
+    executes_sub_task = db.scalar(
+        select(SubTaskExecutor.user_id)
+        .join(SubTask, SubTask.id == SubTaskExecutor.sub_task_id)
+        .join(DepartmentTask, DepartmentTask.id == SubTask.department_task_id)
+        .join(ParentTask, ParentTask.id == DepartmentTask.parent_task_id)
+        .where(
+            SubTaskExecutor.user_id == user.id,
+            SubTask.status != "archived",
+            DepartmentTask.status != "archived",
+            ParentTask.status != "archived",
+        )
+        .limit(1)
+    )
+    if "executor" in roles or executes_sub_task:
+        return "executor"
+    if "observer" in roles:
+        return "observer"
+    return None
+
+
+def guide_state(db: Session, user: User, guide_key: str, version: str) -> dict:
+    progress = db.scalar(
+        select(UserGuideProgress).where(
+            UserGuideProgress.user_id == user.id,
+            UserGuideProgress.guide_key == guide_key,
+            UserGuideProgress.version == version,
+        )
+    )
+    return {
+        "guide_key": guide_key,
+        "version": version,
+        "required": progress is None,
+        "status": progress.status if progress else None,
+        "completed_at": progress.completed_at.isoformat() if progress else None,
+    }
+
+
+def guides_payload(db: Session, user: User) -> dict:
+    profile = guide_profile(db, user)
+    if profile != "executive_office":
+        return {"profile": profile, "system": None, "modules": {}}
+    framework_key, framework_version = EXECUTIVE_FRAMEWORK_GUIDE
+    meeting_key, meeting_version = EXECUTIVE_MEETING_GUIDE
+    return {
+        "profile": profile,
+        "system": guide_state(db, user, framework_key, framework_version),
+        "modules": {
+            "meeting_board": guide_state(db, user, meeting_key, meeting_version),
+        },
+    }
+
+
+def allowed_guides(db: Session, user: User) -> set[tuple[str, str]]:
+    if guide_profile(db, user) != "executive_office":
+        return set()
+    return {EXECUTIVE_FRAMEWORK_GUIDE, EXECUTIVE_MEETING_GUIDE}
 
 
 def normalize_open_id(value: str | None) -> str | None:
@@ -216,6 +298,25 @@ def sync_task_owners(db: Session, task: ParentTask | DepartmentTask | SubTask, u
         db.add_all(SubTaskOwner(sub_task_id=task.id, user_id=user.id) for user in users)
 
 
+def sync_department_sub_task_owners(db: Session, task: DepartmentTask, users: list[User]) -> None:
+    for sub_task in task.sub_tasks:
+        if sub_task.status != "archived":
+            sync_task_owners(db, sub_task, users)
+
+
+def validate_inherited_sub_task_owners(payload: SubTaskCreate | SubTaskUpdate, owners: list[User]) -> None:
+    requested_ids: list[int] | None = None
+    if payload.owner_ids is not None:
+        requested_ids = list(dict.fromkeys(payload.owner_ids))
+    elif payload.owner_id is not None:
+        requested_ids = [payload.owner_id]
+    if requested_ids is not None and requested_ids != [owner.id for owner in owners]:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="子任务负责人必须与所属部门任务负责人一致",
+        )
+
+
 def sync_sub_task_executors(db: Session, task: SubTask, users: list[User]) -> None:
     task.executor_id = users[0].id
     db.flush()
@@ -286,6 +387,14 @@ def serialize_department_task_for_user(db: Session, user: User, task: Department
         "can_edit": can_edit_department_task(db, user, task),
         "can_delete": can_edit_department_task(db, user, task),
         "can_split": can_split_sub_task(db, user, task),
+    }
+
+
+def serialize_parent_task_for_user(db: Session, user: User, task: ParentTask) -> dict:
+    return {
+        **serialize_parent_task(task),
+        "can_edit": can_edit_parent_task(user, task),
+        "can_create_department_task": can_create_department_task(user, task),
     }
 
 
@@ -837,12 +946,18 @@ def health() -> dict:
 
 @router.get("/auth/me")
 def me(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)) -> dict:
+    guides = guides_payload(db, current_user)
     return {
         "user": serialize_user(current_user),
         "permission_codes": sorted(user_permission_codes(current_user)),
         "week_key": current_week_key(),
         "features": feature_payload(db, current_user),
         "onboarding": onboarding_payload(current_user),
+        "guide_profile": guides["profile"],
+        "guides": {
+            "system": guides["system"],
+            "modules": guides["modules"],
+        },
     }
 
 
@@ -857,11 +972,46 @@ def update_onboarding(
     if payload.action not in {"completed", "skipped"}:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="无效的使用指南状态")
     current_user.onboarding_version = CURRENT_ONBOARDING_VERSION
-    current_user.onboarding_status = payload.action
+    if current_user.onboarding_status != "completed" or payload.action == "completed":
+        current_user.onboarding_status = payload.action
     current_user.onboarding_completed_at = datetime.now(timezone.utc)
     db.add(current_user)
     db.commit()
     return onboarding_payload(current_user)
+
+
+@router.post("/auth/guides")
+def update_guide_progress(
+    payload: GuideProgressUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    if payload.action not in {"completed", "skipped"}:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="无效的使用指南状态")
+    if (payload.guide_key, payload.version) not in allowed_guides(db, current_user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="当前用户不可更新该使用指南")
+    progress = db.scalar(
+        select(UserGuideProgress).where(
+            UserGuideProgress.user_id == current_user.id,
+            UserGuideProgress.guide_key == payload.guide_key,
+            UserGuideProgress.version == payload.version,
+        )
+    )
+    if progress:
+        if progress.status != "completed" or payload.action == "completed":
+            progress.status = payload.action
+        progress.completed_at = datetime.now(timezone.utc)
+    else:
+        progress = UserGuideProgress(
+            user_id=current_user.id,
+            guide_key=payload.guide_key,
+            version=payload.version,
+            status=payload.action,
+            completed_at=datetime.now(timezone.utc),
+        )
+        db.add(progress)
+    db.commit()
+    return guides_payload(db, current_user)
 
 
 @router.post("/auth/login")
@@ -1291,7 +1441,7 @@ def list_goal_parent_tasks(
         .order_by(ParentTask.code)
     ).all()
     return [
-        {**serialize_parent_task(task), "can_edit": can_edit_parent_task(current_user, task)}
+        serialize_parent_task_for_user(db, current_user, task)
         for task in tasks
         if can_access_parent_task(current_user, task)
     ]
@@ -1332,7 +1482,7 @@ def list_parent_tasks(db: Session = Depends(get_db), current_user: User = Depend
     if not can_view_parent_task_page(db, current_user):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to parent task management")
     return [
-        {**serialize_parent_task(task), "can_edit": can_edit_parent_task(current_user, task)}
+        serialize_parent_task_for_user(db, current_user, task)
         for task in db.scalars(
             select(ParentTask).where(ParentTask.status != "archived").order_by(ParentTask.id)
         ).all()
@@ -1376,7 +1526,7 @@ def get_parent_task(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Parent task not found")
     if not can_access_parent_task(current_user, parent_task):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to this parent task")
-    return {**serialize_parent_task(parent_task), "can_edit": can_edit_parent_task(current_user, parent_task)}
+    return serialize_parent_task_for_user(db, current_user, parent_task)
 
 
 @router.post("/parent-tasks", status_code=201)
@@ -1407,7 +1557,7 @@ def create_parent_task(
     db.commit()
     db.refresh(task)
     expire_task_people(db, task)
-    return {**serialize_parent_task(task), "can_edit": can_edit_parent_task(current_user, task)}
+    return serialize_parent_task_for_user(db, current_user, task)
 
 
 @router.put("/parent-tasks/{parent_task_id}")
@@ -1442,7 +1592,7 @@ def update_parent_task(
     db.commit()
     db.refresh(task)
     expire_task_people(db, task)
-    return {**serialize_parent_task(task), "can_edit": can_edit_parent_task(current_user, task)}
+    return serialize_parent_task_for_user(db, current_user, task)
 
 
 @router.delete("/parent-tasks/{parent_task_id}")
@@ -1620,8 +1770,11 @@ async def update_department_task(
         primary_department_id, departments = resolve_departments(db, data.get("department_id"), department_ids)
         data["department_id"] = primary_department_id
         sync_department_task_departments(db, task, departments)
+    updated_owners: list[User] | None = None
     if owner_ids is not None or owner_id is not None:
-        sync_task_owners(db, task, resolve_users(db, owner_ids, owner_id, "负责人"))
+        updated_owners = resolve_users(db, owner_ids, owner_id, "负责人")
+        sync_task_owners(db, task, updated_owners)
+        sync_department_sub_task_owners(db, task, updated_owners)
     for key, value in data.items():
         setattr(task, key, value)
     db.add(
@@ -1637,7 +1790,9 @@ async def update_department_task(
     db.commit()
     db.refresh(task)
     expire_task_people(db, task)
-    added_owners = [user for user in owner_people(task) if user.id not in previous_owner_ids]
+    added_owners = [
+        user for user in (updated_owners or owner_people(task)) if user.id not in previous_owner_ids
+    ]
     if added_owners:
         try:
             await send_department_task_split_notifications(db, task, added_owners, event="owner_added")
@@ -1729,14 +1884,12 @@ def create_sub_task(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Department task not found")
     if not can_split_sub_task(db, current_user, department_task):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No split access to this department task")
-    owners = resolve_users(
-        db,
-        payload.owner_ids,
-        payload.owner_id or (owner_people(department_task)[0].id if owner_people(department_task) else department_task.owner_id),
-        "子任务负责人",
-    )
+    owners = owner_people(department_task)
+    if not owners:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="部门任务负责人不能为空")
+    validate_inherited_sub_task_owners(payload, owners)
     executors = resolve_users(db, payload.executor_ids, payload.executor_id, "执行人")
-    data = payload.model_dump(exclude={"owner_ids", "executor_ids"})
+    data = payload.model_dump(exclude={"owner_id", "owner_ids", "executor_id", "executor_ids"})
     data["owner_id"] = owners[0].id
     data["executor_id"] = executors[0].id
     task = SubTask(code=generate_sub_task_code(db, department_task), **data)
@@ -1787,8 +1940,13 @@ def update_sub_task(
     owner_id = data.pop("owner_id", None)
     executor_ids = data.pop("executor_ids", None)
     executor_id = data.pop("executor_id", None)
+    inherited_owners = owner_people(task.department_task)
+    if not inherited_owners:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="部门任务负责人不能为空")
     if owner_ids is not None or owner_id is not None:
-        sync_task_owners(db, task, resolve_users(db, owner_ids, owner_id, "子任务负责人"))
+        requested_payload = SubTaskUpdate(owner_ids=owner_ids, owner_id=owner_id)
+        validate_inherited_sub_task_owners(requested_payload, inherited_owners)
+    sync_task_owners(db, task, inherited_owners)
     if executor_ids is not None or executor_id is not None:
         sync_sub_task_executors(db, task, resolve_users(db, executor_ids, executor_id, "执行人"))
     for key, value in data.items():

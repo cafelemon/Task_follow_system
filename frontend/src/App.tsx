@@ -109,7 +109,7 @@ function useApi<T = any>(url: string, deps: any[] = []) {
   return { data, error, loading, reload };
 }
 
-function ChartCard({ title, option, height = 300, className, onChartClick }: { title: string; option: any; height?: number; className?: string; onChartClick?: (params: any) => void }) {
+function ChartCard({ id, title, option, height = 300, className, onChartClick }: { id?: string; title: string; option: any; height?: number; className?: string; onChartClick?: (params: any) => void }) {
   const ref = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!ref.current) return;
@@ -129,7 +129,7 @@ function ChartCard({ title, option, height = 300, className, onChartClick }: { t
     };
   }, [option, onChartClick]);
   return (
-    <Card title={title} className={className}>
+    <Card id={id} title={title} className={className}>
       <div ref={ref} style={{ height }} />
     </Card>
   );
@@ -536,15 +536,20 @@ function AppLayout() {
   const guideButtonRef = useRef<HTMLButtonElement | null>(null);
   const onboardingPresentedRef = useRef(false);
   const onboardingSavingRef = useRef(false);
+  const tourCloseTimerRef = useRef<number | null>(null);
   const [tourOpen, setTourOpen] = useState(false);
-  const [tourTracksOnboarding, setTourTracksOnboarding] = useState(false);
+  const [tourKind, setTourKind] = useState<'legacy' | 'executive_system' | 'executive_meeting' | null>(null);
+  const [tourTracksProgress, setTourTracksProgress] = useState(false);
   const selectedKey = `/${location.pathname.split('/')[1] || 'meeting-board'}`;
   const isAdmin = Boolean(auth?.user?.is_admin || (auth?.permission_codes || []).includes('permission.manage'));
-  const roleCodes = new Set((auth?.user?.roles || []).map((role: AnyRecord) => role.code));
-  const ownerRoleCodes = ['general_manager', 'secretary', 'parent_owner', 'department_owner', 'task_owner'];
-  const isOwner = ownerRoleCodes.some((code) => roleCodes.has(code))
-    || (auth?.permission_codes || []).includes('task.edit_sub');
-  const guideProfile = isAdmin ? '管理员' : isOwner ? '负责人' : '执行人';
+  const guideProfile = auth?.guide_profile as string | null | undefined;
+  const guideProfileLabels: Record<string, string> = {
+    executive_office: '总经办会议相关',
+    department_owner: '部门负责人',
+    task_owner: '任务负责人',
+    executor: '子任务执行者',
+    observer: '观察者'
+  };
   const canViewParentTasks = Boolean(auth?.features?.can_view_parent_tasks || isAdmin);
   const visibleBaseMenuItems = baseMenuItems.filter((item) => item.key !== '/parent-tasks' || canViewParentTasks);
   const menuItems = isAdmin ? [...visibleBaseMenuItems, ...adminMenuItems] : visibleBaseMenuItems;
@@ -554,22 +559,39 @@ function AppLayout() {
     navigate('/login');
   };
   useEffect(() => {
-    if (auth?.onboarding?.required && !onboardingPresentedRef.current) {
+    if (onboardingPresentedRef.current) return;
+    if (guideProfile === 'executive_office' && auth?.guides?.system?.required) {
       onboardingPresentedRef.current = true;
-      setTourTracksOnboarding(true);
+      setTourKind('executive_system');
+      setTourTracksProgress(true);
+      setTourOpen(true);
+      return;
+    }
+    if (guideProfile && guideProfile !== 'executive_office' && auth?.onboarding?.required) {
+      onboardingPresentedRef.current = true;
+      setTourKind('legacy');
+      setTourTracksProgress(true);
       setTourOpen(true);
     }
-  }, [auth?.onboarding?.required]);
+  }, [auth?.guides?.system?.required, auth?.onboarding?.required, guideProfile]);
 
-  const saveOnboarding = async (action: 'completed' | 'skipped') => {
-    if (onboardingSavingRef.current || !auth?.onboarding?.version) return;
+  const saveGuideProgress = async (action: 'completed' | 'skipped') => {
+    if (onboardingSavingRef.current || !tourKind) return;
     onboardingSavingRef.current = true;
     setTourOpen(false);
     try {
-      await postJson('/auth/onboarding', {
-        version: auth.onboarding.version,
-        action
-      });
+      if (tourKind === 'legacy') {
+        await postJson('/auth/onboarding', { version: auth?.onboarding?.version, action });
+      } else {
+        const guide = tourKind === 'executive_system'
+          ? auth?.guides?.system
+          : auth?.guides?.modules?.meeting_board;
+        await postJson('/auth/guides', {
+          guide_key: guide?.guide_key,
+          version: guide?.version,
+          action
+        });
+      }
       await reloadAuth();
     } catch {
       message.error('使用指南状态保存失败，请稍后重试');
@@ -578,26 +600,41 @@ function AppLayout() {
     }
   };
   const closeTour = (action: 'completed' | 'skipped') => {
-    if (tourTracksOnboarding) {
-      saveOnboarding(action);
-      return;
+    if (tourTracksProgress) {
+      saveGuideProgress(action);
+    } else {
+      setTourOpen(false);
     }
-    setTourOpen(false);
+  };
+  const handleTourClose = () => {
+    if (tourCloseTimerRef.current) window.clearTimeout(tourCloseTimerRef.current);
+    tourCloseTimerRef.current = window.setTimeout(() => {
+      tourCloseTimerRef.current = null;
+      closeTour('skipped');
+    }, 80);
+  };
+  const handleTourFinish = () => {
+    if (tourCloseTimerRef.current) {
+      window.clearTimeout(tourCloseTimerRef.current);
+      tourCloseTimerRef.current = null;
+    }
+    closeTour('completed');
   };
   const guideDescriptions: Record<string, string> = {
-    执行人: '从“子任务执行”进入自己的任务，填写本周进展、遗留事项，并在发现问题时登记风险。',
-    负责人: '从部门任务和子任务入口完成拆解、分派与进度跟踪，并持续处理开放风险。',
-    管理员: '通过会议看板掌握全局，并在人员权限、通知记录等入口维护系统运行。'
+    department_owner: '从“母任务管理”查看本部门牵头的母任务，并将任务拆分到相关部门；部门任务中可跟踪本部门负责事项。',
+    task_owner: '从“部门任务”进入自己负责的任务，拆解到具体执行人并持续跟踪进展与风险。',
+    executor: '从“子任务执行”进入本人任务，填写本周进展、遗留事项和下一步计划，发现问题时登记风险。',
+    observer: '从会议看板和历史时间线查看任务推进情况，观察者不承担任务拆解和填报操作。'
   };
-  const tourSteps: TourProps['steps'] = [
+  const legacyTourSteps: TourProps['steps'] = [
     {
-      title: `欢迎使用任务跟踪系统 · ${guideProfile}`,
+      title: `欢迎使用任务跟踪系统 · ${guideProfile ? guideProfileLabels[guideProfile] : ''}`,
       description: '这份短引导只在首次进入时自动展示，之后可以随时从右上角重新打开。',
       target: () => brandRef.current || document.body
     },
     {
       title: '从导航开始工作',
-      description: guideDescriptions[guideProfile],
+      description: guideDescriptions[guideProfile || ''] || '请从左侧导航进入与本人职责相关的工作板块。',
       target: () => menuRef.current || document.body
     },
     {
@@ -616,6 +653,95 @@ function AppLayout() {
       target: () => guideButtonRef.current || document.body
     }
   ];
+  const executiveSystemSteps: TourProps['steps'] = [
+    {
+      title: '公司任务推进与会议决策支持',
+      description: '系统用于统一呈现公司重点任务的责任分解、周度进展、风险与逾期情况，为经营会议审阅和决策提供依据。',
+      target: () => brandRef.current || document.body
+    },
+    {
+      title: '四级任务框架',
+      description: '战略目标明确方向，母任务承接公司重点事项，部门任务落实部门责任，子任务记录具体执行与周度进展。',
+      target: () => contentRef.current || document.body
+    },
+    {
+      title: '以会议看板为主要入口',
+      description: '会议看板用于集中审阅全局状态；战略目标、母任务、部门任务和历史时间线用于进一步追溯任务来源与执行过程。',
+      target: () => menuRef.current || document.body
+    },
+    {
+      title: '确认身份与会议周期',
+      description: '顶部显示当前登录人员、所属部门和系统周次。会议审阅前建议先确认当前周期，避免混用不同周次的数据。',
+      target: () => headerMetaRef.current || document.body
+    },
+    {
+      title: '板块内还有专项说明',
+      description: '首次主动点击左侧板块时，系统会提供该板块的专项引导。需要回顾时，可通过右上角使用指南再次查看。',
+      target: () => guideButtonRef.current || document.body
+    }
+  ];
+  const executiveMeetingSteps: TourProps['steps'] = [
+    {
+      title: '三种会议视角',
+      description: '“总览”用于快速识别异常，“母任务看板”用于检查公司级事项，“部门看板”用于横向比较各部门承接与推进情况。',
+      target: () => document.querySelector('#meeting-guide-tabs') as HTMLElement || document.body
+    },
+    {
+      title: '先看六项核心指标',
+      description: '建议先关注本周待更新、风险任务和逾期任务。点击任一指标可打开对应明细，直接核对任务、责任人和当前状态。',
+      target: () => document.querySelector('#meeting-guide-metrics') as HTMLElement || document.body
+    },
+    {
+      title: '判断本周信息完整度',
+      description: '本周更新状态用于判断填报完整度，近周提交趋势用于观察执行节奏是否稳定，并识别持续未更新的事项。',
+      target: () => document.querySelector('#meeting-guide-weekly') as HTMLElement || document.body
+    },
+    {
+      title: '集中审阅风险与逾期',
+      description: '风险与逾期汇总用于确认高风险事项、处理责任人和截止日期。具备处理权限时，可直接进入风险处置。',
+      target: () => document.querySelector('#risk-overdue') as HTMLElement || document.body
+    },
+    {
+      title: '检查时间节点与部门差异',
+      description: '母任务截止日期帮助识别临近节点；需要部门横向比较时，可切换到“部门看板”查看任务量、待更新、风险和逾期分布。',
+      target: () => document.querySelector('#meeting-guide-deadline') as HTMLElement || document.body
+    },
+    {
+      title: '建议的会议审阅顺序',
+      description: '先从总览识别异常，再下钻任务明细，现场确认责任人与处理要求，最后形成会后跟进事项。',
+      target: () => contentRef.current || document.body
+    }
+  ];
+  const tourSteps = tourKind === 'executive_system'
+    ? executiveSystemSteps
+    : tourKind === 'executive_meeting'
+      ? executiveMeetingSteps
+      : legacyTourSteps;
+
+  const openManualGuide = () => {
+    if (guideProfile === 'executive_office') {
+      setTourKind(location.pathname.startsWith('/meeting-board') ? 'executive_meeting' : 'executive_system');
+    } else {
+      setTourKind('legacy');
+    }
+    setTourTracksProgress(false);
+    setTourOpen(true);
+  };
+
+  const handleMenuClick = ({ key }: { key: string }) => {
+    if (
+      key === '/meeting-board'
+      && guideProfile === 'executive_office'
+      && auth?.guides?.modules?.meeting_board?.required
+      && !tourOpen
+    ) {
+      window.setTimeout(() => {
+        setTourKind('executive_meeting');
+        setTourTracksProgress(true);
+        setTourOpen(true);
+      }, 180);
+    }
+  };
 
   if ((error as any)?.response?.status === 401) {
     return <Navigate to="/login" replace />;
@@ -632,7 +758,7 @@ function AppLayout() {
           </div>
         </div>
         <div ref={menuRef} className="app-menu-guide-target">
-          <Menu mode="inline" selectedKeys={[selectedKey]} items={menuItems} />
+          <Menu mode="inline" selectedKeys={[selectedKey]} items={menuItems} onClick={handleMenuClick} />
         </div>
         <div className="sider-footer">
           <img src={companyLogoCompact} alt="Fortune Microbot" />
@@ -654,17 +780,14 @@ function AppLayout() {
             <Tag color="blue">{headerDate}</Tag>
           </Space>
           <Space>
-            <Tooltip title="使用指南">
+            {guideProfile ? <Tooltip title="使用指南">
               <Button
                 ref={guideButtonRef}
                 aria-label="使用指南"
                 icon={<QuestionCircleOutlined />}
-                onClick={() => {
-                  setTourTracksOnboarding(false);
-                  setTourOpen(true);
-                }}
+                onClick={openManualGuide}
               />
-            </Tooltip>
+            </Tooltip> : null}
             <Button onClick={logout}>退出</Button>
           </Space>
         </Header>
@@ -697,8 +820,8 @@ function AppLayout() {
       <Tour
         open={tourOpen}
         steps={tourSteps}
-        onClose={() => closeTour('skipped')}
-        onFinish={() => closeTour('completed')}
+        onClose={handleTourClose}
+        onFinish={handleTourFinish}
       />
     </Layout>
   );
@@ -981,7 +1104,7 @@ function DepartmentTaskForm({ form, parentTask, departmentOptions, peopleOptions
           </Form.Item>
         </Col>
         <Col xs={24} md={12}>
-          <Form.Item name="owner_ids" label="负责人" rules={[{ required: true, message: '请选择负责人' }]}>
+          <Form.Item name="owner_ids" label="任务负责人" rules={[{ required: true, message: '请选择任务负责人' }]}>
             <PeopleSelect options={peopleOptions} />
           </Form.Item>
         </Col>
@@ -1005,17 +1128,14 @@ function SplitSubTaskForm({ form, task, peopleOptions }: {
           <Descriptions.Item label="所属母任务">{task.parent_task || '-'}</Descriptions.Item>
           <Descriptions.Item label="部门级任务">{task.code} {task.title}</Descriptions.Item>
           <Descriptions.Item label="负责部门">{renderDepartments(task.departments)}</Descriptions.Item>
+          <Descriptions.Item label="任务负责人">{renderPeople(task.owners || task.owner)}</Descriptions.Item>
         </Descriptions>
       )}
       <Form.Item name="title" label="具体任务" rules={[{ required: true, message: '请输入具体任务' }]}>
         <Input.TextArea rows={4} />
       </Form.Item>
+      <Alert type="info" showIcon className="mb16" message="子任务负责人自动继承所属部门任务的任务负责人，无需重复选择。" />
       <Row gutter={16}>
-        <Col xs={24} md={12}>
-          <Form.Item name="owner_ids" label="负责人" rules={[{ required: true, message: '请选择负责人' }]}>
-            <PeopleSelect options={peopleOptions} />
-          </Form.Item>
-        </Col>
         <Col xs={24} md={12}>
           <Form.Item name="executor_ids" label="执行人" rules={[{ required: true, message: '请选择执行人' }]}>
             <PeopleSelect options={peopleOptions} />
@@ -1051,12 +1171,11 @@ function SubTaskEditForm({ form, task, peopleOptions }: {
       <Form.Item name="title" label="具体任务" rules={[{ required: true, message: '请输入具体任务' }]}>
         <Input.TextArea rows={4} />
       </Form.Item>
+      <Descriptions column={1} size="small" className="mb16" bordered>
+        <Descriptions.Item label="任务负责人">{renderPeople(task?.owners || task?.owner)}</Descriptions.Item>
+      </Descriptions>
+      <Alert type="info" showIcon className="mb16" message="任务负责人由所属部门任务统一维护；此处仅调整执行人和任务内容。" />
       <Row gutter={16}>
-        <Col xs={24} md={12}>
-          <Form.Item name="owner_ids" label="负责人" rules={[{ required: true, message: '请选择负责人' }]}>
-            <PeopleSelect options={peopleOptions} />
-          </Form.Item>
-        </Col>
         <Col xs={24} md={12}>
           <Form.Item name="executor_ids" label="执行人" rules={[{ required: true, message: '请选择执行人' }]}>
             <PeopleSelect options={peopleOptions} />
@@ -1085,7 +1204,8 @@ function ParentTaskDetail() {
   const [deleteForm] = Form.useForm();
   const departmentOptions = (departments || []).map((item) => ({ value: item.id, label: item.name }));
   const peopleOptions = personOptions(people);
-  const canManageDepartmentTasks = Boolean(task?.can_edit);
+  const canCreateDepartmentTasks = Boolean(task?.can_create_department_task);
+  const canDeleteDepartmentTasks = Boolean((departmentTasks || []).some((item) => item.can_delete));
 
   useEffect(() => {
     if (!editing) return;
@@ -1145,7 +1265,7 @@ function ParentTaskDetail() {
     { title: '任务编号', dataIndex: 'code', width: 110 },
     { title: '部门级任务', dataIndex: 'title', width: 230, ellipsis: true, render: renderEllipsis },
     { title: '负责部门', dataIndex: 'departments', width: 160, responsive: ['lg'], render: renderDepartments },
-    { title: '负责人', dataIndex: 'owners', width: 140, render: renderPeople },
+    { title: '任务负责人', dataIndex: 'owners', width: 140, render: renderPeople },
     { title: '状态', dataIndex: 'status', width: 96, render: (value) => <StatusTag value={value} /> },
     {
       title: '编辑',
@@ -1175,10 +1295,10 @@ function ParentTaskDetail() {
       <Card
         className="business-card"
         title="部门级任务"
-        extra={canManageDepartmentTasks ? (
+        extra={canCreateDepartmentTasks || canDeleteDepartmentTasks ? (
           <Space>
-            <Button type="primary" onClick={() => setCreateOpen(true)}>新增</Button>
-            <Button danger onClick={() => setDeleteOpen(true)}>删除</Button>
+            {canCreateDepartmentTasks ? <Button type="primary" onClick={() => setCreateOpen(true)}>新增</Button> : null}
+            {canDeleteDepartmentTasks ? <Button danger onClick={() => setDeleteOpen(true)}>删除</Button> : null}
           </Space>
         ) : null}
       >
@@ -1265,7 +1385,6 @@ function DepartmentTasks() {
     splitForm.resetFields();
     splitForm.setFieldsValue({
       title: undefined,
-      owner_ids: selectedPersonIds(splitting, 'owners', 'owner_ids', 'owner_id'),
       executor_ids: undefined,
       due_date: splitting.due_date ? dayjs(splitting.due_date) : null
     });
@@ -1276,7 +1395,6 @@ function DepartmentTasks() {
     subTaskEditForm.resetFields();
     subTaskEditForm.setFieldsValue({
       title: editingSubTask.title,
-      owner_ids: selectedPersonIds(editingSubTask, 'owners', 'owner_ids', 'owner_id'),
       executor_ids: selectedPersonIds(editingSubTask, 'executors', 'executor_ids', 'executor_id'),
       due_date: editingSubTask.due_date ? dayjs(editingSubTask.due_date) : null
     });
@@ -1294,7 +1412,6 @@ function DepartmentTasks() {
     await postJson('/sub-tasks', {
       department_task_id: splitting.id,
       title: values.title,
-      owner_ids: values.owner_ids,
       executor_ids: values.executor_ids,
       due_date: values.due_date ? values.due_date.format('YYYY-MM-DD') : null
     });
@@ -1308,7 +1425,6 @@ function DepartmentTasks() {
     if (!editingSubTask) return;
     await putJson(`/sub-tasks/${editingSubTask.id}`, {
       title: values.title,
-      owner_ids: values.owner_ids,
       executor_ids: values.executor_ids,
       due_date: values.due_date ? values.due_date.format('YYYY-MM-DD') : null
     });
@@ -1322,7 +1438,7 @@ function DepartmentTasks() {
     { title: '部门任务', dataIndex: 'title', width: 220, ellipsis: true, render: renderEllipsis },
     { title: '所属母任务', dataIndex: 'parent_task', width: 190, ellipsis: true, render: renderEllipsis },
     { title: '负责部门', dataIndex: 'departments', width: 160, responsive: ['lg'], render: renderDepartments },
-    { title: '负责人', dataIndex: 'owners', width: 138, render: renderPeople },
+    { title: '任务负责人', dataIndex: 'owners', width: 138, render: renderPeople },
     { title: '状态', dataIndex: 'status', width: 96, render: (value) => <StatusTag value={value} /> },
     {
       title: '拆解',
@@ -1406,7 +1522,6 @@ function DepartmentTasks() {
           if (open && splitting) {
             splitForm.setFieldsValue({
               title: undefined,
-              owner_ids: selectedPersonIds(splitting, 'owners', 'owner_ids', 'owner_id'),
               executor_ids: undefined,
               due_date: splitting.due_date ? dayjs(splitting.due_date) : null
             });
@@ -1426,7 +1541,6 @@ function DepartmentTasks() {
           if (open && editingSubTask) {
             subTaskEditForm.setFieldsValue({
               title: editingSubTask.title,
-              owner_ids: selectedPersonIds(editingSubTask, 'owners', 'owner_ids', 'owner_id'),
               executor_ids: selectedPersonIds(editingSubTask, 'executors', 'executor_ids', 'executor_id'),
               due_date: editingSubTask.due_date ? dayjs(editingSubTask.due_date) : null
             });
@@ -1730,7 +1844,7 @@ function MeetingBoardTabs() {
     { path: '/meeting-board/department', label: '部门看板' }
   ];
   return (
-    <Space className="mb16 meeting-tabs" wrap>
+    <Space id="meeting-guide-tabs" className="mb16 meeting-tabs" wrap>
       {items.map((item) => (
         <Button key={item.path} type={location.pathname === item.path ? 'primary' : 'default'}>
           <Link to={item.path}>{item.label}</Link>
@@ -1852,7 +1966,7 @@ function MeetingBoardOverview() {
   return (
     <PageShell title="会议看板" subtitle={`当前周期 ${data?.week_key || '-'}，汇总周更新、风险、逾期和任务节奏`}>
       <MeetingBoardTabs />
-      <Row gutter={[16, 16]} className="meeting-metric-row">
+      <Row id="meeting-guide-metrics" gutter={[16, 16]} className="meeting-metric-row">
         {[
           ['进行中子任务', cards.active_sub_tasks, '#2457d6', 'active_sub_tasks'],
           ['本周已更新', cards.updated_this_week, '#5f9f25', 'updated_this_week'],
@@ -1871,6 +1985,7 @@ function MeetingBoardOverview() {
       <Row gutter={[16, 16]} className="section-row">
         <Col xs={24} xl={12}>
           <ChartCard
+            id="meeting-guide-weekly"
             title="本周更新状态"
             className="meeting-chart-card"
             onChartClick={(params) => {
@@ -1888,6 +2003,7 @@ function MeetingBoardOverview() {
         </Col>
         <Col xs={24} xl={12}>
           <ChartCard
+            id="meeting-guide-risk"
             title="风险占比"
             className="meeting-chart-card"
             onChartClick={(params) => {
@@ -1903,6 +2019,7 @@ function MeetingBoardOverview() {
         </Col>
         <Col xs={24} xl={12}>
           <ChartCard
+            id="meeting-guide-trend"
             title="近周提交趋势"
             className="meeting-chart-card"
             option={{
@@ -1920,6 +2037,7 @@ function MeetingBoardOverview() {
         </Col>
         <Col xs={24} xl={12}>
           <ChartCard
+            id="meeting-guide-deadline"
             title="母任务截止日期管理"
             height={340}
             className="meeting-chart-card"

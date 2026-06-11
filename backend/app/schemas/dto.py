@@ -126,6 +126,12 @@ class OnboardingUpdate(BaseModel):
     action: str
 
 
+class GuideProgressUpdate(BaseModel):
+    guide_key: str
+    version: str
+    action: str
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str

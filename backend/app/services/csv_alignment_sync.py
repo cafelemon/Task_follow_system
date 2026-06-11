@@ -177,6 +177,14 @@ def sync_sub_task_owners(db: Session, task: SubTask, users: list[User]) -> bool:
     return True
 
 
+def sync_inherited_sub_task_owners(db: Session, task: DepartmentTask, users: list[User]) -> int:
+    changed = 0
+    for sub_task in task.sub_tasks:
+        if sub_task.status != "archived" and sync_sub_task_owners(db, sub_task, users):
+            changed += 1
+    return changed
+
+
 def sync_sub_task_executors(db: Session, task: SubTask, users: list[User]) -> bool:
     current = {user.id for user in executor_people(task)}
     desired = [user.id for user in users]
@@ -366,7 +374,7 @@ def source_sub_tasks(sub_task_rows: list[dict[str, str]], weekly_rows: list[dict
         if not source_sub_code or not title:
             continue
         owners = split_people(row.get("任务负责人（负责拆解任务到执行者）"))
-        executors = split_people(row.get("执行责任人 (人员 )")) or owners[:1]
+        executors = split_people(row.get("执行责任人 (人员 )"))
         prev_week = meaningful_text(row.get("上周任务进度"))
         prev_week = prev_week or weekly_prev.get((task_code, source_sub_code, normalize_title(title)), "")
         result.append(
@@ -454,9 +462,10 @@ def sync_alignment(
             continue
         owners = resolve_people(db, owner_names, department_task, summary)
         for user in owners:
-            add_roles(db, user, ["department_owner", "task_owner"])
+            add_roles(db, user, ["task_owner"])
         if sync_department_task_owners(db, department_task, owners):
             summary["department_owner_updates"] += 1
+            sync_inherited_sub_task_owners(db, department_task, owners)
             if actor:
                 add_event(
                     db,
@@ -474,21 +483,12 @@ def sync_alignment(
         if not department_task:
             summary["blocking_errors"].append(f"03 表部门任务不存在：{item.task_code}")
             continue
-        if not item.owners:
-            summary["blocking_errors"].append(f"03 表子任务缺少负责人：{item.task_code} {item.source_sub_code}")
-            continue
-        if not item.executors:
-            summary["blocking_errors"].append(f"03 表子任务缺少执行人且负责人兜底失败：{item.task_code} {item.source_sub_code}")
-            continue
-
         matches = existing_by_key.get((item.task_code, normalize_title(item.title)), [])
         if len(matches) > 1:
             summary["blocking_errors"].append(f"子任务匹配多条：{item.task_code} {item.title}")
             continue
-        owners = resolve_people(db, item.owners, department_task, summary)
-        executors = resolve_people(db, item.executors, department_task, summary)
-        for user in owners:
-            add_roles(db, user, ["task_owner"])
+        owners = list(department_task.owners or [department_task.owner])
+        executors = resolve_people(db, item.executors, department_task, summary) if item.executors else owners[:1]
         for user in executors:
             add_roles(db, user, ["executor"])
 

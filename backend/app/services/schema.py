@@ -17,6 +17,17 @@ def ensure_runtime_schema() -> None:
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_version VARCHAR(32)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_status VARCHAR(32)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_completed_at TIMESTAMPTZ",
+        """
+        CREATE TABLE IF NOT EXISTS user_guide_progress (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            guide_key VARCHAR(120) NOT NULL,
+            version VARCHAR(32) NOT NULL,
+            status VARCHAR(32) NOT NULL,
+            completed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            CONSTRAINT uq_user_guide_progress UNIQUE (user_id, guide_key, version)
+        )
+        """,
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email ON users(email)",
         "DROP INDEX IF EXISTS ix_users_username",
         """
@@ -161,6 +172,29 @@ def ensure_runtime_schema() -> None:
         """
         INSERT INTO sub_task_executors (sub_task_id, user_id)
         SELECT id, executor_id FROM sub_tasks
+        ON CONFLICT DO NOTHING
+        """,
+        """
+        UPDATE sub_tasks
+        SET owner_id = department_tasks.owner_id
+        FROM department_tasks
+        WHERE sub_tasks.department_task_id = department_tasks.id
+          AND sub_tasks.status != 'archived'
+          AND sub_tasks.owner_id IS DISTINCT FROM department_tasks.owner_id
+        """,
+        """
+        DELETE FROM sub_task_owners
+        USING sub_tasks
+        WHERE sub_task_owners.sub_task_id = sub_tasks.id
+          AND sub_tasks.status != 'archived'
+        """,
+        """
+        INSERT INTO sub_task_owners (sub_task_id, user_id)
+        SELECT sub_tasks.id, department_task_owners.user_id
+        FROM sub_tasks
+        JOIN department_task_owners
+          ON department_task_owners.department_task_id = sub_tasks.department_task_id
+        WHERE sub_tasks.status != 'archived'
         ON CONFLICT DO NOTHING
         """,
     ]
