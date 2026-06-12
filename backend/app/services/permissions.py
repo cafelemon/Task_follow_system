@@ -4,12 +4,14 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.models.entities import (
+    Attachment,
     DepartmentTask,
     ParentTask,
     Permission,
     Role,
     SubTask,
     User,
+    WeeklyUpdate,
 )
 from app.services.auth import current_user_from_cookie
 
@@ -239,6 +241,10 @@ def can_manage_sub_task_updates(user: User) -> bool:
     return user.is_admin or "permission.manage" in user_permission_codes(user)
 
 
+def can_reopen_sub_task(user: User, sub_task: SubTask) -> bool:
+    return can_manage_sub_task_updates(user) or user.id in task_owner_ids(sub_task)
+
+
 def sub_task_execution_relation(user: User, sub_task: SubTask) -> str | None:
     is_executor = user.id in sub_task_executor_ids(sub_task)
     is_owner = user.id in task_owner_ids(sub_task)
@@ -263,6 +269,28 @@ def can_update_sub_task_weekly(user: User, sub_task: SubTask, assignee_id: int |
         return True
     target_id = assignee_id or user.id
     return target_id == user.id and user.id in sub_task_executor_ids(sub_task)
+
+
+def can_upload_weekly_update_attachment(user: User, update: WeeklyUpdate) -> bool:
+    sub_task = update.sub_task
+    if not sub_task or sub_task.status == "completed":
+        return False
+    return can_update_sub_task_weekly(user, sub_task, update.assignee_id)
+
+
+def can_access_attachment(db: Session, user: User, attachment: Attachment) -> bool:
+    if attachment.uploader_id == user.id:
+        return True
+    if attachment.related_type != "weekly_update":
+        return False
+    update = db.get(WeeklyUpdate, attachment.related_id)
+    if not update or not update.sub_task:
+        return False
+    return can_access_sub_task(db, user, update.sub_task)
+
+
+def can_delete_attachment(user: User, attachment: Attachment) -> bool:
+    return can_manage_sub_task_updates(user) or attachment.uploader_id == user.id
 
 
 def can_access_department_task(db: Session, user: User, task: DepartmentTask) -> bool:

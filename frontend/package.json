@@ -1,6 +1,6 @@
 {
   "name": "task-follow-system-frontend",
-  "version": "2.3.5",
+  "version": "4.0.0",
   "private": true,
   "type": "module",
   "scripts": {

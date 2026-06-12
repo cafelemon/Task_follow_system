@@ -1,6 +1,10 @@
 import os
 
 
+def parse_csv_env(value: str | None) -> list[str]:
+    return [item.strip() for item in (value or "").split(",") if item.strip()]
+
+
 class Settings:
     app_name: str
     app_version: str
@@ -18,7 +22,9 @@ class Settings:
         )
         self.attachment_root = os.getenv("TASK_FOLLOW_ATTACHMENT_ROOT", "../data/attachments")
         self.web_base_url = os.getenv("TASK_FOLLOW_WEB_BASE_URL", "http://localhost:8080")
-        self.seed_demo_data = os.getenv("TASK_FOLLOW_SEED_DEMO_DATA", "true").lower() == "true"
+        self.seed_demo_data = os.getenv("TASK_FOLLOW_SEED_DEMO_DATA", "false").lower() == "true"
+        self.cors_origins = parse_csv_env(os.getenv("TASK_FOLLOW_CORS_ORIGINS", "http://localhost:8080"))
+        self.cookie_secure = os.getenv("TASK_FOLLOW_COOKIE_SECURE", "false").lower() == "true"
         self.admin_username = os.getenv("TASK_FOLLOW_ADMIN_USERNAME", "jiafei0108")
         self.admin_name = os.getenv("TASK_FOLLOW_ADMIN_NAME", "贾飞")
         self.admin_password = os.getenv("TASK_FOLLOW_ADMIN_PASSWORD")

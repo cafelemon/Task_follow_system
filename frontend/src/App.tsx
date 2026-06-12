@@ -7,6 +7,7 @@ import {
   DatePicker,
   Descriptions,
   Divider,
+  Drawer,
   Form,
   Input,
   Layout,
@@ -35,6 +36,7 @@ import {
   FolderOutlined,
   HistoryOutlined,
   LockOutlined,
+  MenuOutlined,
   NodeIndexOutlined,
   QuestionCircleOutlined,
   SafetyOutlined,
@@ -57,7 +59,7 @@ import {
 } from 'react-router-dom';
 import * as echarts from 'echarts';
 import dayjs from 'dayjs';
-import { deleteJson, getJson, postJson, putJson } from './api/client';
+import { api, deleteJson, getJson, postJson, putJson } from './api/client';
 import type { AnyRecord } from './api/client';
 import { PageShell } from './components/PageShell';
 import { StatusTag } from './components/StatusTag';
@@ -76,6 +78,16 @@ function useIsCompactLayout() {
     return () => window.removeEventListener('resize', onResize);
   }, []);
   return compact;
+}
+
+function useIsMobileLayout() {
+  const [mobile, setMobile] = useState(() => window.innerWidth < 900);
+  useEffect(() => {
+    const onResize = () => setMobile(window.innerWidth < 900);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  return mobile;
 }
 
 function currentIsoWeekKey() {
@@ -257,6 +269,21 @@ function renderTimelineText(value?: unknown, emptyText = '-') {
   );
 }
 
+function renderAttachmentLinks(attachments: AnyRecord[]) {
+  if (!attachments.length) {
+    return <span className="muted-cell timeline-cell-text">暂无附件</span>;
+  }
+  return (
+    <span className="attachment-link-list">
+      {attachments.map((item) => (
+        <a key={item.id} href={`/api/attachments/${item.id}/download`} target="_blank" rel="noreferrer">
+          {item.filename}
+        </a>
+      ))}
+    </span>
+  );
+}
+
 function renderBindingStatus(value?: string | null, labels = { bound: '已绑定', empty: '未绑定' }) {
   return value ? <Tag color="green">{labels.bound}</Tag> : <Tag>{labels.empty}</Tag>;
 }
@@ -353,6 +380,7 @@ function RiskItemModal({
   onClose: () => void;
   onCreated?: () => void;
 }) {
+  const mobileLayout = useIsMobileLayout();
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
   const impactScore = Form.useWatch('impact_score', form) || 3;
@@ -401,6 +429,7 @@ function RiskItemModal({
 
   return (
     <Modal
+      className={mobileLayout ? 'mobile-form-modal' : undefined}
       title="新增风险项"
       open={open}
       onOk={submit}
@@ -457,6 +486,7 @@ function RiskManageModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const mobileLayout = useIsMobileLayout();
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
   useEffect(() => {
@@ -488,6 +518,7 @@ function RiskManageModal({
   };
   return (
     <Modal
+      className={mobileLayout ? 'mobile-form-modal' : undefined}
       title={risk ? `处理风险项 ${risk.code}` : '处理风险项'}
       open={Boolean(risk)}
       onOk={save}
@@ -529,6 +560,7 @@ function AppLayout() {
   const navigate = useNavigate();
   const { data: auth, error, loading, reload: reloadAuth } = useApi<AnyRecord>('/auth/me', []);
   const compactLayout = useIsCompactLayout();
+  const mobileLayout = useIsMobileLayout();
   const brandRef = useRef<HTMLDivElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const headerMetaRef = useRef<HTMLDivElement | null>(null);
@@ -540,6 +572,7 @@ function AppLayout() {
   const [tourOpen, setTourOpen] = useState(false);
   const [activeGuideKey, setActiveGuideKey] = useState<string | null>(null);
   const [tourTracksProgress, setTourTracksProgress] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const selectedKey = `/${location.pathname.split('/')[1] || 'meeting-board'}`;
   const isAdmin = Boolean(auth?.user?.is_admin || (auth?.permission_codes || []).includes('permission.manage'));
   const guideProfile = auth?.guide_profile as string | null | undefined;
@@ -560,20 +593,20 @@ function AppLayout() {
   };
   useEffect(() => {
     if (onboardingPresentedRef.current) return;
-    if ((guideProfile === 'executive_office' || guideProfile === 'department_owner') && auth?.guides?.system?.required) {
+    if (auth?.guides?.system?.required) {
       onboardingPresentedRef.current = true;
       setActiveGuideKey(auth.guides.system.guide_key);
       setTourTracksProgress(true);
       setTourOpen(true);
       return;
     }
-    if (guideProfile && !['executive_office', 'department_owner'].includes(guideProfile) && auth?.onboarding?.required) {
+    if (guideProfile && !auth?.guides?.system && auth?.onboarding?.required) {
       onboardingPresentedRef.current = true;
       setActiveGuideKey('legacy');
       setTourTracksProgress(true);
       setTourOpen(true);
     }
-  }, [auth?.guides?.system?.required, auth?.onboarding?.required, guideProfile]);
+  }, [auth?.guides?.system, auth?.guides?.system?.required, auth?.onboarding?.required, guideProfile]);
 
   const saveGuideProgress = async (action: 'completed' | 'skipped') => {
     if (onboardingSavingRef.current || !activeGuideKey) return;
@@ -809,12 +842,12 @@ function AppLayout() {
     {
       title: '先区分你在子任务中的身份',
       description: '“我执行”表示需要你填写周更新；“我负责”表示跟进责任；“管理查看”是只读查看，不代执行人填写。',
-      target: () => document.querySelector('#department-owner-sub-task-groups') as HTMLElement || contentRef.current || document.body
+      target: () => document.querySelector('#sub-task-guide-groups') as HTMLElement || contentRef.current || document.body
     },
     {
       title: '从执行任务进入更新页',
       description: '在“我执行”或“负责+执行”的子任务中点击“更新”，进入本周填报页面。',
-      target: () => document.querySelector('#department-owner-sub-task-execution') as HTMLElement || contentRef.current || document.body
+      target: () => document.querySelector('#sub-task-guide-execution') as HTMLElement || contentRef.current || document.body
     },
     {
       title: '未开启任务先开启',
@@ -837,6 +870,318 @@ function AppLayout() {
       target: () => contentRef.current || document.body
     }
   ];
+  const taskOwnerFrameworkSteps: TourProps['steps'] = [
+    {
+      title: '承接部门任务并拆解执行',
+      description: '任务负责人负责承接本人名下的部门任务，并把任务拆解成可执行、可跟踪、可按周更新的子任务。',
+      target: () => brandRef.current || document.body
+    },
+    {
+      title: '只处理自己负责的部门任务',
+      description: '任务负责人不承担母任务拆分职责，也不会因为任务负责人身份进入母任务管理；你的主入口是部门任务。',
+      target: () => menuRef.current || document.body
+    },
+    {
+      title: '从部门任务进入拆解',
+      description: '在部门任务页找到本人负责的任务，点击“拆解”创建子任务，明确具体任务、执行人和截止日期。',
+      target: () => contentRef.current || document.body
+    },
+    {
+      title: '持续跟踪执行闭环',
+      description: '拆解后需要关注待拆解数量、执行人周更新、遗留事项、风险和完成状态，确保任务进入真实推进。',
+      target: () => contentRef.current || document.body
+    },
+    {
+      title: '兼任执行人时要提交更新',
+      description: '如果你同时是某个子任务的执行人，需要按执行人身份进入子任务执行页填写并提交本周进展。',
+      target: () => headerMetaRef.current || document.body
+    },
+    {
+      title: '板块首次进入会继续提示',
+      description: '首次主动点击部门任务或子任务执行板块时，会出现专项说明；需要回顾时，可从右上角重新打开。',
+      target: () => guideButtonRef.current || document.body
+    }
+  ];
+  const taskOwnerDepartmentSteps: TourProps['steps'] = [
+    {
+      title: '集中查看本人负责的部门任务',
+      description: '这里是任务负责人日常工作的主入口，用于查看本人负责的部门任务及其拆解情况。',
+      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '先判断是否需要拆解',
+      description: '建议优先查看任务负责人、状态、待拆解数量和截止日期，确认哪些任务还没有落到具体执行人。',
+      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '点击拆解创建子任务',
+      description: '点击“拆解”后填写具体任务、执行人和截止日期。子任务应足够具体，便于执行人按周提交进展。',
+      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '负责人自动继承',
+      description: '子任务负责人自动继承部门任务负责人，不在拆解窗口单独选择，避免部门任务责任和子任务责任分叉。',
+      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '展开检查执行情况',
+      description: '展开部门任务后，可以检查子任务执行人、本周进展、遗留事项和截止日期，及时发现未更新或推进异常。',
+      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '编辑只维护执行层信息',
+      description: '编辑子任务时只维护任务内容、执行人和截止日期；部门任务负责人变化会自动同步到子任务负责人。',
+      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
+    }
+  ];
+  const taskOwnerSubTaskSteps: TourProps['steps'] = [
+    {
+      title: '先看你在子任务中的身份',
+      description: '“我负责”用于跟踪推进，“我执行”需要填写周更新，“负责+执行”则两类责任都要关注。',
+      target: () => document.querySelector('#sub-task-guide-groups') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '负责不等于代填',
+      description: '在“我负责”任务中，你需要跟进执行人进展和风险，但不代替执行人填写周更新。',
+      target: () => document.querySelector('#sub-task-guide-groups') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '执行任务进入更新页',
+      description: '在“我执行”或“负责+执行”的子任务中点击“更新”，进入本周填报页面。',
+      target: () => document.querySelector('#sub-task-guide-execution') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '区分草稿和正式提交',
+      description: '保存草稿便于临时记录；只有点击“提交保存”，系统才认为本周更新已经正式提交。',
+      target: () => contentRef.current || document.body
+    },
+    {
+      title: '遗留事项不是风险',
+      description: '遗留事项用于记录距离完成还剩什么；确有影响和可能性的问题，请单独登记风险项。',
+      target: () => contentRef.current || document.body
+    },
+    {
+      title: '完成后更新入口会收口',
+      description: '任务完成后周更新表单会锁定，后续主要通过历史记录查看提交内容。',
+      target: () => contentRef.current || document.body
+    }
+  ];
+  const executorFrameworkSteps: TourProps['steps'] = [
+    {
+      title: '按计划推进本人子任务',
+      description: '子任务执行者负责推进本人名下的具体任务，并按周提交真实、可追溯的执行进展。',
+      target: () => brandRef.current || document.body
+    },
+    {
+      title: '主要入口是子任务执行',
+      description: '你的主要工作入口是“子任务执行”。执行人不承担母任务拆分或部门任务拆解职责。',
+      target: () => menuRef.current || document.body
+    },
+    {
+      title: '先确认任务状态',
+      description: '任务可能处于待开启、进行中或已完成。待开启任务需要先开启，再填写本周进展。',
+      target: () => contentRef.current || document.body
+    },
+    {
+      title: '周更新要按周维护',
+      description: '本周完成内容、下周计划和遗留事项分别记录已完成工作、下一步安排和距离完全完成仍需处理的事项。',
+      target: () => contentRef.current || document.body
+    },
+    {
+      title: '风险需要单独登记',
+      description: '遗留事项不等于风险；确有影响和可能性的问题，请使用风险入口单独登记。',
+      target: () => contentRef.current || document.body
+    },
+    {
+      title: '正式提交影响提醒',
+      description: '周五提醒以正式提交为准。保存草稿便于临时记录，但不会视为本周已提交。',
+      target: () => guideButtonRef.current || document.body
+    }
+  ];
+  const executorSubTaskSteps: TourProps['steps'] = [
+    {
+      title: '我执行是主要工作区',
+      description: '“我执行”展示本人需要推进和更新的子任务，是执行人最常用的工作区。',
+      target: () => document.querySelector('#sub-task-guide-execution') as HTMLElement || document.querySelector('#sub-task-guide-groups') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '先核对任务关键信息',
+      description: '更新前建议核对任务编号、任务名称、所属部门任务、负责人、状态和截止日期。',
+      target: () => document.querySelector('#sub-task-guide-execution') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '点击更新进入填报',
+      description: '点击“更新”进入本周填报页面。待开启任务进入后先点击“开启任务”，再填写进展。',
+      target: () => document.querySelector('#sub-task-guide-execution') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '填写三类周更新内容',
+      description: '本周完成内容写已经推进的工作，下周计划写下一步安排，遗留事项写距离完成仍需处理的尾项。',
+      target: () => contentRef.current || document.body
+    },
+    {
+      title: '草稿和提交要区分',
+      description: '保存草稿不会停止周提醒；只有“提交保存”才代表本周更新正式完成。',
+      target: () => contentRef.current || document.body
+    },
+    {
+      title: '风险和完成状态单独处理',
+      description: '发现真实风险时点击“风险”登记；任务完成后标记完成，后续更新入口会锁定。',
+      target: () => contentRef.current || document.body
+    }
+  ];
+  const observerFrameworkSteps: TourProps['steps'] = [
+    {
+      title: '全局只读审阅与任务追溯',
+      description: '观察者用于公司级任务推进的只读审阅，重点关注任务推进质量、风险、逾期和历史过程。',
+      target: () => brandRef.current || document.body
+    },
+    {
+      title: '会议看板看全局',
+      description: '会议看板是主要审阅入口，用于快速查看核心指标、风险逾期、更新完整度和部门差异。',
+      target: () => menuRef.current || document.body
+    },
+    {
+      title: '按任务层级理解责任拆解',
+      description: '任务从母任务、部门任务到子任务逐级拆解。观察者可沿层级下钻，查看责任边界和执行进展。',
+      target: () => contentRef.current || document.body
+    },
+    {
+      title: '观察者保持只读边界',
+      description: '观察者不负责新增、拆分、编辑或代填任务，主要用于审阅、追溯和会前准备。',
+      target: () => contentRef.current || document.body
+    },
+    {
+      title: '多重身份分开处理',
+      description: '如果你同时也是任务负责人或执行人，对应任务仍按该身份跟进；观察者身份本身不增加写入职责。',
+      target: () => headerMetaRef.current || document.body
+    },
+    {
+      title: '板块首次进入会有专项说明',
+      description: '首次主动点击左侧板块时，系统会补充该板块的审阅方法；右上角可随时重看当前页面指南。',
+      target: () => guideButtonRef.current || document.body
+    }
+  ];
+  const observerMeetingSteps: TourProps['steps'] = [
+    {
+      title: '先看核心指标',
+      description: '会议看板先用于判断总体推进是否健康，再决定是否下钻风险、逾期、未更新和部门差异。',
+      target: () => document.querySelector('#meeting-guide-metrics') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '切换会议视角',
+      description: '总览、母任务看板和部门看板分别对应不同审阅口径，可用于会前准备和会议中快速定位问题。',
+      target: () => document.querySelector('#meeting-guide-tabs') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '关注更新完整度',
+      description: '本周更新情况和待更新人员帮助判断进展数据是否充分，避免会议只基于不完整信息讨论。',
+      target: () => document.querySelector('#meeting-guide-weekly') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '风险和逾期优先下钻',
+      description: '风险、逾期和高风险事项是审阅重点，可点击明细查看来源任务、责任人和处理状态。',
+      target: () => document.querySelector('#meeting-guide-risk') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '看趋势和部门差异',
+      description: '趋势和部门横向对比用于识别连续未更新、推进滞后或压力集中的方向。',
+      target: () => document.querySelector('#meeting-guide-trend') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '建议会议顺序',
+      description: '建议按“总览异常、下钻明细、确认责任人、形成会后跟进”的顺序审阅。',
+      target: () => document.querySelector('#meeting-guide-deadline') as HTMLElement || contentRef.current || document.body
+    }
+  ];
+  const observerParentSteps: TourProps['steps'] = [
+    {
+      title: '查看公司级母任务',
+      description: '母任务管理用于只读查看公司级任务、牵头部门、负责人、截止日期和当前状态。',
+      target: () => document.querySelector('#department-owner-parent-list') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '从任务卡进入详情',
+      description: '进入详情后可查看该母任务下的部门任务拆解、子任务推进和周更新脉络。',
+      target: () => document.querySelector('#department-owner-parent-cards') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '沿层级追溯责任',
+      description: '重点关注牵头部门、任务负责人、负责部门和截止日期是否清晰，便于会议追问到具体责任层级。',
+      target: () => contentRef.current || document.body
+    },
+    {
+      title: '保持只读审阅',
+      description: '观察者不在这里新增、拆分或编辑任务；如本人另有部门负责人职责，请按对应身份处理。',
+      target: () => contentRef.current || document.body
+    }
+  ];
+  const observerDepartmentSteps: TourProps['steps'] = [
+    {
+      title: '查看部门承接情况',
+      description: '部门任务用于查看各部门承接、任务负责人、截止日期、状态和待拆解情况。',
+      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '展开查看子任务推进',
+      description: '展开部门任务后，可查看子任务执行人、本周进展、遗留事项、风险和截止节点。',
+      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '兼任任务负责人时要跟进',
+      description: '如果本人也是某个部门任务的任务负责人，需要额外关注待拆解、执行人更新和风险处理。',
+      target: () => contentRef.current || document.body
+    },
+    {
+      title: '观察者不代替维护',
+      description: '观察者身份只做审阅和追溯，不代替负责人新增子任务、调整执行人或填写周更新。',
+      target: () => contentRef.current || document.body
+    }
+  ];
+  const observerTimelineSteps: TourProps['steps'] = [
+    {
+      title: '按周追溯任务过程',
+      description: '历史时间线按任务层级和周次展开，适合回看完成内容、遗留事项、附件和历史提交。',
+      target: () => document.querySelector('#timeline-guide-card') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '横向比较周次变化',
+      description: '同一任务可以横向查看不同周次的更新，帮助判断问题是偶发、连续还是已经改善。',
+      target: () => document.querySelector('#timeline-guide-matrix') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '纵向追溯任务层级',
+      description: '从母任务到部门任务再到子任务逐层展开，可定位进展内容来自哪个责任层级。',
+      target: () => document.querySelector('#timeline-guide-matrix') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '作为审阅证据来源',
+      description: '时间线用于会前准备、会后复盘和过程追溯，不在这里直接修改历史提交。',
+      target: () => contentRef.current || document.body
+    }
+  ];
+  const observerSubTaskSteps: TourProps['steps'] = [
+    {
+      title: '仅在兼任执行人时出现',
+      description: '观察者身份本身不承担填报责任；这里出现，说明你当前也有需要执行和更新的子任务。',
+      target: () => document.querySelector('#sub-task-guide-execution') as HTMLElement || document.querySelector('#sub-task-guide-groups') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '按执行人身份更新',
+      description: '属于本人执行的子任务，需要进入更新页填写本周完成内容、下周计划和遗留事项。',
+      target: () => document.querySelector('#sub-task-guide-execution') as HTMLElement || contentRef.current || document.body
+    },
+    {
+      title: '草稿不等于提交',
+      description: '保存草稿只用于临时记录；只有正式提交后，系统才认为本周更新完成。',
+      target: () => contentRef.current || document.body
+    },
+    {
+      title: '风险仍需单独登记',
+      description: '遗留事项用于说明剩余工作；影响和可能性明确的问题，应单独登记风险项。',
+      target: () => contentRef.current || document.body
+    }
+  ];
   const guideStepsByKey: Record<string, TourProps['steps']> = {
     legacy: legacyTourSteps,
     executive_framework: executiveSystemSteps,
@@ -844,7 +1189,18 @@ function AppLayout() {
     department_owner_framework: departmentOwnerFrameworkSteps,
     department_owner_parent_tasks: departmentOwnerParentSteps,
     department_owner_department_tasks: departmentOwnerDepartmentSteps,
-    department_owner_sub_tasks: departmentOwnerSubTaskSteps
+    department_owner_sub_tasks: departmentOwnerSubTaskSteps,
+    task_owner_framework: taskOwnerFrameworkSteps,
+    task_owner_department_tasks: taskOwnerDepartmentSteps,
+    task_owner_sub_tasks: taskOwnerSubTaskSteps,
+    executor_framework: executorFrameworkSteps,
+    executor_sub_tasks: executorSubTaskSteps,
+    observer_framework: observerFrameworkSteps,
+    observer_meeting_board: observerMeetingSteps,
+    observer_parent_tasks: observerParentSteps,
+    observer_department_tasks: observerDepartmentSteps,
+    observer_timeline: observerTimelineSteps,
+    observer_sub_tasks: observerSubTaskSteps
   };
   const tourSteps = guideStepsByKey[activeGuideKey || 'legacy'] || legacyTourSteps;
 
@@ -857,6 +1213,23 @@ function AppLayout() {
     if (guideProfile === 'department_owner') {
       if (location.pathname.startsWith('/parent-tasks')) return auth?.guides?.modules?.parent_tasks?.guide_key;
       if (location.pathname.startsWith('/department-tasks')) return auth?.guides?.modules?.department_tasks?.guide_key;
+      if (location.pathname.startsWith('/sub-tasks')) return auth?.guides?.modules?.sub_tasks?.guide_key;
+      return auth?.guides?.system?.guide_key;
+    }
+    if (guideProfile === 'task_owner') {
+      if (location.pathname.startsWith('/department-tasks')) return auth?.guides?.modules?.department_tasks?.guide_key;
+      if (location.pathname.startsWith('/sub-tasks')) return auth?.guides?.modules?.sub_tasks?.guide_key;
+      return auth?.guides?.system?.guide_key;
+    }
+    if (guideProfile === 'executor') {
+      if (location.pathname.startsWith('/sub-tasks')) return auth?.guides?.modules?.sub_tasks?.guide_key;
+      return auth?.guides?.system?.guide_key;
+    }
+    if (guideProfile === 'observer') {
+      if (location.pathname.startsWith('/meeting-board')) return auth?.guides?.modules?.meeting_board?.guide_key;
+      if (location.pathname.startsWith('/parent-tasks')) return auth?.guides?.modules?.parent_tasks?.guide_key;
+      if (location.pathname.startsWith('/department-tasks')) return auth?.guides?.modules?.department_tasks?.guide_key;
+      if (location.pathname.startsWith('/timeline')) return auth?.guides?.modules?.timeline?.guide_key;
       if (location.pathname.startsWith('/sub-tasks')) return auth?.guides?.modules?.sub_tasks?.guide_key;
       return auth?.guides?.system?.guide_key;
     }
@@ -878,7 +1251,9 @@ function AppLayout() {
           ? auth?.guides?.modules?.department_tasks
           : key === '/sub-tasks'
             ? auth?.guides?.modules?.sub_tasks
-            : null
+            : key === '/timeline'
+              ? auth?.guides?.modules?.timeline
+              : null
   );
   const triggerModuleGuide = (key: string) => {
     const moduleGuide = guideForMenuPath(key);
@@ -891,6 +1266,7 @@ function AppLayout() {
     }
   };
   const handleMenuClick = ({ key }: { key: string }) => {
+    if (mobileLayout) setMobileNavOpen(false);
     triggerModuleGuide(key);
   };
   const handleMenuLinkCapture = (event: React.MouseEvent<HTMLDivElement>) => {
@@ -903,39 +1279,62 @@ function AppLayout() {
     return <Navigate to="/login" replace />;
   }
 
+  const brandNode = (
+    <div className="brand" ref={mobileLayout ? undefined : brandRef}>
+      <img className="brand-icon" src={taskFollowIcon} alt="任务跟踪系统" />
+      <div className="brand-text">
+        <strong>任务跟踪系统</strong>
+        <span>闭环管理</span>
+      </div>
+    </div>
+  );
+  const siderFooterNode = (
+    <div className="sider-footer">
+      <img src={companyLogoCompact} alt="Fortune Microbot" />
+      <div className="sider-user">
+        <TeamOutlined />
+        <span>{loading ? '加载中' : auth?.user?.name || '-'}</span>
+      </div>
+    </div>
+  );
+  const menuNode = (
+    <Menu mode="inline" selectedKeys={[selectedKey]} items={menuItems} onClick={handleMenuClick} />
+  );
+
   return (
     <Layout className="app-layout">
-      <Sider width={256} collapsedWidth={76} collapsed={compactLayout} className="app-sider">
-        <div className="brand" ref={brandRef}>
-          <img className="brand-icon" src={taskFollowIcon} alt="任务跟踪系统" />
-          <div className="brand-text">
-            <strong>任务跟踪系统</strong>
-            <span>闭环管理</span>
+      {!mobileLayout ? (
+        <Sider width={256} collapsedWidth={76} collapsed={compactLayout} className="app-sider">
+          {brandNode}
+          <div ref={menuRef} className="app-menu-guide-target" onClickCapture={handleMenuLinkCapture}>
+            {menuNode}
           </div>
-        </div>
-        <div ref={menuRef} className="app-menu-guide-target" onClickCapture={handleMenuLinkCapture}>
-          <Menu mode="inline" selectedKeys={[selectedKey]} items={menuItems} onClick={handleMenuClick} />
-        </div>
-        <div className="sider-footer">
-          <img src={companyLogoCompact} alt="Fortune Microbot" />
-          <div className="sider-user">
-            <TeamOutlined />
-            <span>{loading ? '加载中' : auth?.user?.name || '-'}</span>
-          </div>
-        </div>
-      </Sider>
+          {siderFooterNode}
+        </Sider>
+      ) : null}
       <Layout>
         <Header className="app-header">
-          <Space size={20}>
-            <Typography.Title level={4}>公司任务推进与周更新跟踪系统</Typography.Title>
+          <Space size={mobileLayout ? 10 : 20} className="header-title-group">
+            {mobileLayout ? (
+              <div ref={menuRef}>
+                <Button
+                  aria-label="打开导航"
+                  icon={<MenuOutlined />}
+                  onClick={() => setMobileNavOpen(true)}
+                />
+              </div>
+            ) : null}
+            <div ref={mobileLayout ? brandRef : undefined} className="mobile-header-brand">
+              <Typography.Title level={4}>{mobileLayout ? '任务跟踪系统' : '公司任务推进与周更新跟踪系统'}</Typography.Title>
+            </div>
           </Space>
           <Space ref={headerMetaRef} className="header-meta" split={<Divider type="vertical" />}>
-            <img className="header-company-logo" src={companyLogoCompact} alt="Fortune Microbot" />
+            {!mobileLayout ? <img className="header-company-logo" src={companyLogoCompact} alt="Fortune Microbot" /> : null}
             <span>{auth?.user?.name}</span>
-            <span>{auth?.user?.department}</span>
+            {!mobileLayout ? <span>{auth?.user?.department}</span> : null}
             <Tag color="blue">{headerDate}</Tag>
           </Space>
-          <Space>
+          <Space className="header-actions">
             {guideProfile ? <Tooltip title="使用指南">
               <Button
                 ref={guideButtonRef}
@@ -947,6 +1346,22 @@ function AppLayout() {
             <Button onClick={logout}>退出</Button>
           </Space>
         </Header>
+        {mobileLayout ? (
+          <Drawer
+            className="mobile-nav-drawer"
+            width={300}
+            placement="left"
+            open={mobileNavOpen}
+            onClose={() => setMobileNavOpen(false)}
+            closable={false}
+          >
+            {brandNode}
+            <div className="app-menu-guide-target" onClickCapture={handleMenuLinkCapture}>
+              {menuNode}
+            </div>
+            {siderFooterNode}
+          </Drawer>
+        ) : null}
         <Content ref={contentRef} className="app-content">
           <Routes>
             <Route path="/" element={<Navigate to="/meeting-board/overview" />} />
@@ -1044,6 +1459,7 @@ function GoalDetail() {
 
 function ParentTasks() {
   const navigate = useNavigate();
+  const mobileLayout = useIsMobileLayout();
   const { data: auth } = useApi<AnyRecord>('/auth/me', []);
   const { data, loading, reload } = useApi<AnyRecord[]>('/parent-tasks', []);
   const { data: goals } = useApi<AnyRecord[]>('/goals', []);
@@ -1111,21 +1527,31 @@ function ParentTasks() {
       title="母任务管理"
       subtitle="集中管理公司级核心任务和责任归属"
       extra={canManageParentTasks ? (
-        <Space>
+        <Space wrap className={mobileLayout ? 'mobile-page-actions' : undefined}>
           <Button type="primary" onClick={() => setCreateOpen(true)}>新增母任务</Button>
           <Button danger onClick={() => setDeleteOpen(true)}>删除母任务</Button>
         </Space>
       ) : null}
     >
+      {mobileLayout ? (
+        <Select
+          showSearch
+          optionFilterProp="label"
+          placeholder="选择母任务并进入详情"
+          className="mobile-section-selector mb16"
+          options={(data || []).map((task) => ({ value: task.id, label: `${task.code} ${task.title}` }))}
+          onChange={(value) => navigate(`/parent-tasks/${value}`)}
+        />
+      ) : null}
       <div id="department-owner-parent-list" className="parent-task-layout">
-        <aside className="page-directory">
+        {!mobileLayout ? <aside className="page-directory">
           <Typography.Text type="secondary">母任务目录</Typography.Text>
           <Menu
             mode="inline"
             items={(data || []).map((task) => ({ key: String(task.id), label: `${task.code} ${task.title}` }))}
             onClick={({ key }) => navigate(`/parent-tasks/${key}`)}
           />
-        </aside>
+        </aside> : null}
         <Row id="department-owner-parent-cards" gutter={[16, 16]} className="full-width">
           {(data || []).map((task) => (
             <Col xs={24} lg={12} xl={8} key={task.id}>
@@ -1155,10 +1581,11 @@ function ParentTasks() {
           ))}
         </Row>
       </div>
-      <Modal title="新增母任务" open={createOpen} onOk={createParentTask} onCancel={() => setCreateOpen(false)} destroyOnClose>
+      <Modal className={mobileLayout ? 'mobile-form-modal' : undefined} title="新增母任务" open={createOpen} onOk={createParentTask} onCancel={() => setCreateOpen(false)} destroyOnClose>
         <ParentTaskForm form={createForm} goalOptions={goalOptions} departmentOptions={departmentOptions} peopleOptions={peopleOptions} />
       </Modal>
       <Modal
+        className={mobileLayout ? 'mobile-form-modal' : undefined}
         title="编辑母任务"
         open={Boolean(editing)}
         onOk={saveEdit}
@@ -1180,7 +1607,7 @@ function ParentTasks() {
       >
         <ParentTaskForm form={editForm} goalOptions={goalOptions} departmentOptions={departmentOptions} peopleOptions={peopleOptions} />
       </Modal>
-      <Modal title="删除母任务" open={deleteOpen} onOk={archiveParentTask} onCancel={() => setDeleteOpen(false)} okText="归档隐藏" okButtonProps={{ danger: true }} destroyOnClose>
+      <Modal className={mobileLayout ? 'mobile-form-modal' : undefined} title="删除母任务" open={deleteOpen} onOk={archiveParentTask} onCancel={() => setDeleteOpen(false)} okText="归档隐藏" okButtonProps={{ danger: true }} destroyOnClose>
         <Alert type="warning" showIcon className="mb16" message="删除会按归档处理，隐藏该母任务默认入口，不会物理删除部门任务、子任务和历史记录。" />
         <Form form={deleteForm} layout="vertical">
           <Form.Item name="parent_task_id" label="选择母任务" rules={[{ required: true, message: '请选择要归档的母任务' }]}>
@@ -1347,6 +1774,7 @@ function SubTaskEditForm({ form, task, peopleOptions }: {
 
 function ParentTaskDetail() {
   const navigate = useNavigate();
+  const mobileLayout = useIsMobileLayout();
   const { parentTaskId } = useParams();
   const { data: task, reload: reloadParentTask } = useApi<AnyRecord>(`/parent-tasks/${parentTaskId}`, [parentTaskId]);
   const { data: departmentTasks, reload } = useApi<AnyRecord[]>(`/parent-tasks/${parentTaskId}/department-tasks`, [parentTaskId]);
@@ -1355,6 +1783,7 @@ function ParentTaskDetail() {
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [editing, setEditing] = useState<AnyRecord | null>(null);
+  const [expandedDepartmentTaskIds, setExpandedDepartmentTaskIds] = useState<number[]>([]);
   const [createForm] = Form.useForm();
   const [editForm] = Form.useForm();
   const [deleteForm] = Form.useForm();
@@ -1433,6 +1862,59 @@ function ParentTaskDetail() {
       )
     }
   ];
+  const toggleDepartmentTask = (taskId: number) => {
+    setExpandedDepartmentTaskIds((current) => current.includes(taskId)
+      ? current.filter((item) => item !== taskId)
+      : [...current, taskId]);
+  };
+  const renderMobileDepartmentTask = (row: AnyRecord) => {
+    const expanded = expandedDepartmentTaskIds.includes(row.id);
+    return (
+      <Card key={row.id} className="mobile-department-task-card">
+        <Space direction="vertical" size={10} className="full-width">
+          <div className="mobile-subtask-card-head">
+            <div>
+              <Typography.Text className="task-code">{row.code || '-'}</Typography.Text>
+              <Typography.Title level={5}>{row.title || '-'}</Typography.Title>
+            </div>
+            <StatusTag value={row.status} />
+          </div>
+          <div className="mobile-task-meta">
+            <span>负责部门</span><div>{renderDepartments(row.departments || row.department)}</div>
+            <span>任务负责人</span><div>{renderPeople(row.owners || row.owner)}</div>
+            <span>子任务</span><Typography.Text>{(row.sub_tasks || []).length} 项</Typography.Text>
+          </div>
+          <Space wrap className="mobile-card-actions">
+            {row.can_edit ? <Button onClick={() => openDepartmentTaskEdit(row)}>编辑部门任务</Button> : null}
+            {(row.sub_tasks || []).length ? (
+              <Button onClick={() => toggleDepartmentTask(row.id)}>
+                {expanded ? '收起子任务' : `查看子任务（${row.sub_tasks.length}）`}
+              </Button>
+            ) : <Typography.Text type="secondary">暂无子任务</Typography.Text>}
+          </Space>
+          {expanded ? (
+            <div className="mobile-department-subtask-list">
+              {(row.sub_tasks || []).map((subTask: AnyRecord) => (
+                <div className="mobile-department-subtask" key={subTask.id}>
+                  <div className="mobile-department-subtask-head">
+                    <Typography.Text className="task-code">{subTask.code || '-'}</Typography.Text>
+                    <StatusTag value={subTask.status} />
+                  </div>
+                  <Typography.Text strong>{subTask.title || '-'}</Typography.Text>
+                  <div className="mobile-task-meta compact">
+                    <span>执行人</span><div>{renderPeople(subTask.executors || subTask.executor)}</div>
+                    <span>本周完成</span><Typography.Text>{subTask.weekly_this_week || '-'}</Typography.Text>
+                    <span>遗留事项</span><Typography.Text>{subTask.weekly_risk || '-'}</Typography.Text>
+                    <span>截止</span><Typography.Text>{subTask.due_date || '-'}</Typography.Text>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </Space>
+      </Card>
+    );
+  };
   return (
     <PageShell
       title={task ? `${task.code} ${task.title}` : '母任务详情'}
@@ -1453,13 +1935,17 @@ function ParentTaskDetail() {
         className="business-card"
         title="部门级任务"
         extra={canCreateDepartmentTasks || canDeleteDepartmentTasks ? (
-          <Space>
+          <Space wrap className={mobileLayout ? 'mobile-page-actions' : undefined}>
             {canCreateDepartmentTasks ? <Button type="primary" onClick={() => setCreateOpen(true)}>新增</Button> : null}
             {canDeleteDepartmentTasks ? <Button danger onClick={() => setDeleteOpen(true)}>删除</Button> : null}
           </Space>
         ) : null}
       >
-        <Table
+        {mobileLayout ? (
+          <div className="mobile-card-list">
+            {(departmentTasks || []).map(renderMobileDepartmentTask)}
+          </div>
+        ) : <Table
           rowKey="id"
           dataSource={departmentTasks || []}
           columns={columns}
@@ -1488,12 +1974,13 @@ function ParentTaskDetail() {
             ),
             rowExpandable: (row) => Boolean((row.sub_tasks || []).length)
           }}
-        />
+        />}
       </Card>
-      <Modal title="新增部门级任务" open={createOpen} onOk={createDepartmentTask} onCancel={() => setCreateOpen(false)} destroyOnClose>
+      <Modal className={mobileLayout ? 'mobile-form-modal' : undefined} title="新增部门级任务" open={createOpen} onOk={createDepartmentTask} onCancel={() => setCreateOpen(false)} destroyOnClose>
         <DepartmentTaskForm form={createForm} parentTask={task} departmentOptions={departmentOptions} peopleOptions={peopleOptions} />
       </Modal>
       <Modal
+        className={mobileLayout ? 'mobile-form-modal' : undefined}
         title="编辑部门级任务"
         open={Boolean(editing)}
         onOk={saveDepartmentTaskEdit}
@@ -1513,7 +2000,7 @@ function ParentTaskDetail() {
       >
         <DepartmentTaskForm form={editForm} parentTask={task} departmentOptions={departmentOptions} peopleOptions={peopleOptions} />
       </Modal>
-      <Modal title="删除部门级任务" open={deleteOpen} onOk={archiveDepartmentTask} onCancel={() => setDeleteOpen(false)} okText="归档隐藏" okButtonProps={{ danger: true }} destroyOnClose>
+      <Modal className={mobileLayout ? 'mobile-form-modal' : undefined} title="删除部门级任务" open={deleteOpen} onOk={archiveDepartmentTask} onCancel={() => setDeleteOpen(false)} okText="归档隐藏" okButtonProps={{ danger: true }} destroyOnClose>
         <Alert type="warning" showIcon className="mb16" message="删除会按归档处理，隐藏该部门级任务默认入口，不会物理删除子任务和历史记录。" />
         <Form form={deleteForm} layout="vertical">
           <Form.Item name="department_task_id" label="选择部门级任务" rules={[{ required: true, message: '请选择要归档的部门级任务' }]}>
@@ -1526,12 +2013,14 @@ function ParentTaskDetail() {
 }
 
 function DepartmentTasks() {
+  const mobileLayout = useIsMobileLayout();
   const [selectedDepartmentId, setSelectedDepartmentId] = useState<number | null>(null);
   const query = selectedDepartmentId ? `/department-tasks/overview?department_id=${selectedDepartmentId}` : '/department-tasks/overview';
   const { data, reload } = useApi<AnyRecord>(query, [selectedDepartmentId]);
   const { data: people } = useApi<AnyRecord[]>('/user-options', []);
   const [splitting, setSplitting] = useState<AnyRecord | null>(null);
   const [editingSubTask, setEditingSubTask] = useState<AnyRecord | null>(null);
+  const [expandedTaskIds, setExpandedTaskIds] = useState<number[]>([]);
   const [splitForm] = Form.useForm();
   const [subTaskEditForm] = Form.useForm();
   const departmentTasks: AnyRecord[] = data?.department_tasks || [];
@@ -1608,10 +2097,86 @@ function DepartmentTasks() {
       )
     }
   ];
+  const toggleDepartmentTask = (taskId: number) => {
+    setExpandedTaskIds((current) => current.includes(taskId)
+      ? current.filter((item) => item !== taskId)
+      : [...current, taskId]);
+  };
+  const renderMobileSubTask = (subTask: AnyRecord, departmentTask: AnyRecord) => (
+    <div className="mobile-department-subtask" key={subTask.id}>
+      <div className="mobile-department-subtask-head">
+        <Typography.Text className="task-code">{subTask.code || '-'}</Typography.Text>
+        <StatusTag value={subTask.status} />
+      </div>
+      <Typography.Text strong>{subTask.title || '-'}</Typography.Text>
+      <div className="mobile-task-meta compact">
+        <span>执行人</span>
+        <div>{renderPeople(subTask.executors || subTask.executor)}</div>
+        <span>本周完成</span>
+        <Typography.Text>{subTask.weekly_this_week || '-'}</Typography.Text>
+        <span>遗留事项</span>
+        <Typography.Text>{subTask.weekly_risk || '-'}</Typography.Text>
+        <span>截止</span>
+        <Typography.Text>{subTask.due_date || '-'}</Typography.Text>
+      </div>
+      {departmentTask.can_split ? (
+        <Button size="small" onClick={() => openSubTaskEdit(subTask)}>编辑子任务</Button>
+      ) : null}
+    </div>
+  );
+  const renderMobileDepartmentTask = (row: AnyRecord) => {
+    const expanded = expandedTaskIds.includes(row.id);
+    const subTasks = row.sub_tasks || [];
+    return (
+      <Card key={row.id} className="mobile-department-task-card">
+        <Space direction="vertical" size={10} className="full-width">
+          <div className="mobile-subtask-card-head">
+            <div>
+              <Typography.Text className="task-code">{row.code || '-'}</Typography.Text>
+              <Typography.Title level={5}>{row.title || '-'}</Typography.Title>
+            </div>
+            <StatusTag value={row.status} />
+          </div>
+          <div className="mobile-task-meta">
+            <span>母任务</span>
+            <Typography.Text>{row.parent_task || '-'}</Typography.Text>
+            <span>负责部门</span>
+            <div>{renderDepartments(row.departments || row.department)}</div>
+            <span>负责人</span>
+            <div>{renderPeople(row.owners || row.owner)}</div>
+            <span>待拆解</span>
+            <div>{row.pending_split_count ? <Tag color="orange">{row.pending_split_count} 个</Tag> : <Tag>无</Tag>}</div>
+          </div>
+          <Space wrap className="mobile-card-actions">
+            <Button type="primary" disabled={!row.can_split} onClick={() => openSplit(row)}>拆解子任务</Button>
+            {subTasks.length ? (
+              <Button onClick={() => toggleDepartmentTask(row.id)}>{expanded ? '收起子任务' : `查看子任务（${subTasks.length}）`}</Button>
+            ) : <Tag>暂无子任务</Tag>}
+          </Space>
+          {expanded ? (
+            <Space direction="vertical" size={10} className="full-width mobile-department-subtask-list">
+              {subTasks.map((subTask: AnyRecord) => renderMobileSubTask(subTask, row))}
+            </Space>
+          ) : null}
+        </Space>
+      </Card>
+    );
+  };
   return (
     <PageShell title="部门任务总览" subtitle="按部门直接查看部门级任务，展开后查看有效子任务">
       <div className={data?.can_switch_department ? 'department-task-layout' : 'department-task-layout no-sidebar'}>
-        {data?.can_switch_department && (
+        {data?.can_switch_department && mobileLayout && (
+          <Select
+            className="mobile-department-selector"
+            value={data?.selected_department_id || selectedDepartmentId || 'all'}
+            options={[
+              { value: 'all', label: '全部部门' },
+              ...((data?.departments || []).map((item: AnyRecord) => ({ value: item.id, label: item.name })))
+            ]}
+            onChange={(value) => setSelectedDepartmentId(value === 'all' ? null : Number(value))}
+          />
+        )}
+        {data?.can_switch_department && !mobileLayout && (
           <aside className="department-directory">
             <Typography.Text type="secondary">部门目录</Typography.Text>
             <Menu
@@ -1626,7 +2191,17 @@ function DepartmentTasks() {
           </aside>
         )}
         <Space direction="vertical" size={16} className="full-width">
-          <Card id="department-owner-department-task-table" className="business-card">
+          {mobileLayout ? (
+            <section id="department-owner-department-task-table" className="mobile-department-task-list">
+              <div className="mobile-subtask-section-title">
+                {renderTableHeader('部门级任务', departmentTasks.length, '按负责部门和母任务快速扫描')}
+              </div>
+              <Space direction="vertical" size={12} className="full-width">
+                {departmentTasks.map(renderMobileDepartmentTask)}
+              </Space>
+              {!departmentTasks.length ? <Alert type="info" showIcon message="当前没有可查看的部门任务。" /> : null}
+            </section>
+          ) : <Card id="department-owner-department-task-table" className="business-card">
             <Table
               rowKey="id"
               dataSource={departmentTasks}
@@ -1667,10 +2242,11 @@ function DepartmentTasks() {
                 rowExpandable: (row) => Boolean((row.sub_tasks || []).length)
               }}
             />
-          </Card>
+          </Card>}
         </Space>
       </div>
       <Modal
+        className="mobile-form-modal"
         title="拆解子任务"
         open={Boolean(splitting)}
         onOk={createSubTask}
@@ -1690,6 +2266,7 @@ function DepartmentTasks() {
         <SplitSubTaskForm form={splitForm} task={splitting} peopleOptions={peopleOptions} />
       </Modal>
       <Modal
+        className="mobile-form-modal"
         title="编辑子任务"
         open={Boolean(editingSubTask)}
         onOk={saveSubTaskEdit}
@@ -1715,6 +2292,7 @@ function DepartmentTasks() {
 function SubTasks() {
   const { data } = useApi<AnyRecord[]>('/sub-tasks', []);
   const [riskTarget, setRiskTarget] = useState<AnyRecord | null>(null);
+  const mobileLayout = useIsMobileLayout();
   const tasks = data || [];
   const executionTasks = tasks.filter((task) => task.viewer_relation === 'executor' || task.viewer_relation === 'both');
   const ownerTasks = tasks.filter((task) => task.viewer_relation === 'owner');
@@ -1750,6 +2328,8 @@ function SubTasks() {
         <Space size={4}>
           {row.can_update_weekly
             ? <Link className="table-action-link" to={`/sub-tasks/${row.id}/update${row.current_assignee_id ? `?assigneeId=${row.current_assignee_id}` : ''}`}>更新</Link>
+            : row.can_reopen && row.status === 'completed'
+              ? <Link className="table-action-link" to={`/sub-tasks/${row.id}/update`}>处理</Link>
             : <Typography.Text type="secondary">只读</Typography.Text>}
           {row.can_create_risk && (
             <Button size="small" type="link" icon={<SafetyOutlined />} onClick={() => setRiskTarget(row)}>风险</Button>
@@ -1758,25 +2338,80 @@ function SubTasks() {
       )
     }
   ];
+  const renderSubTaskCard = (row: AnyRecord) => {
+    const relationMeta = relationLabels[String(row.viewer_relation)] || { label: '-', color: 'default' };
+    return (
+      <Card key={row.id} className="mobile-subtask-card">
+        <Space direction="vertical" size={10} className="full-width">
+          <div className="mobile-subtask-card-head">
+            <div>
+              <Typography.Text className="task-code">{row.code || '-'}</Typography.Text>
+              <Typography.Title level={5}>{row.title || '-'}</Typography.Title>
+            </div>
+            <Tag color={relationMeta.color}>{relationMeta.label}</Tag>
+          </div>
+          <div className="mobile-task-meta">
+            <span>部门任务</span>
+            <Typography.Text>{row.department_task || '-'}</Typography.Text>
+            <span>执行人</span>
+            <div>{renderPeople(row.executors || row.executor)}</div>
+            <span>负责人</span>
+            <div>{renderPeople(row.owners || row.owner)}</div>
+            <span>状态</span>
+            <div><StatusTag value={row.status} /></div>
+            <span>本周</span>
+            <div><StatusTag value={row.weekly_status} /></div>
+            <span>截止</span>
+            <Typography.Text>{row.due_date || '-'}</Typography.Text>
+          </div>
+          <Space wrap className="mobile-card-actions">
+            {row.can_update_weekly
+              ? (
+                <Link className="mobile-primary-link" to={`/sub-tasks/${row.id}/update${row.current_assignee_id ? `?assigneeId=${row.current_assignee_id}` : ''}`}>
+                  更新
+                </Link>
+              )
+              : row.can_reopen && row.status === 'completed'
+                ? <Link className="mobile-primary-link" to={`/sub-tasks/${row.id}/update`}>处理</Link>
+              : <Tag>只读</Tag>}
+            {row.can_create_risk && (
+              <Button size="small" icon={<SafetyOutlined />} onClick={() => setRiskTarget(row)}>风险</Button>
+            )}
+          </Space>
+        </Space>
+      </Card>
+    );
+  };
   const renderGroup = (title: string, items: AnyRecord[], description: string, id?: string) => (
     items.length ? (
-      <Table
-        id={id}
-        key={title}
-        rowKey="id"
-        dataSource={items}
-        columns={columns}
-        className={`business-table subtask-table subtask-table-${title === '管理查看' ? 'management' : 'personal'}`}
-        tableLayout="fixed"
-        scroll={{ x: 1120 }}
-        title={() => renderTableHeader(title, items.length, description)}
-      />
+      mobileLayout ? (
+        <section id={id} key={title} className={`mobile-subtask-section mobile-subtask-section-${title === '管理查看' ? 'management' : 'personal'}`}>
+          <div className="mobile-subtask-section-title">
+            {renderTableHeader(title, items.length, description)}
+          </div>
+          <Space direction="vertical" size={12} className="full-width">
+            {items.map(renderSubTaskCard)}
+          </Space>
+        </section>
+      ) : (
+        <Table
+          id={id}
+          key={title}
+          rowKey="id"
+          dataSource={items}
+          columns={columns}
+          className={`business-table subtask-table subtask-table-${title === '管理查看' ? 'management' : 'personal'}`}
+          tableLayout="fixed"
+          scroll={{ x: 1120 }}
+          title={() => renderTableHeader(title, items.length, description)}
+        />
+      )
     ) : null
   );
   return (
     <PageShell title="子任务执行" subtitle="个人更新入口：执行人填写周更新，负责人查看跟进，管理查看只读区分">
-      <Space id="department-owner-sub-task-groups" direction="vertical" size={16} style={{ width: '100%' }}>
-        {renderGroup('我执行', executionTasks, '可开启、完成并填写周更新', 'department-owner-sub-task-execution')}
+      <Space id="sub-task-guide-groups" direction="vertical" size={16} style={{ width: '100%' }}>
+        {renderGroup('我执行', executionTasks, '可开启、完成并填写周更新', 'sub-task-guide-execution')}
         {renderGroup('我负责', ownerTasks, '仅查看负责的子任务，不代执行人填写')}
         {renderGroup('管理查看', managementTasks, '全局查看人员的只读入口；管理员可兜底更新')}
         {!tasks.length && <Alert type="info" showIcon message="当前没有与你相关的子任务。" />}
@@ -1795,6 +2430,7 @@ function SubTaskUpdate() {
   const location = useLocation();
   const { subTaskId } = useParams();
   const [form] = Form.useForm();
+  const mobileLayout = useIsMobileLayout();
   const weekKey = currentIsoWeekKey();
   const assigneeId = new URLSearchParams(location.search).get('assigneeId');
   const assigneeQuery = assigneeId ? `&assignee_id=${assigneeId}` : '';
@@ -1804,11 +2440,13 @@ function SubTaskUpdate() {
   const update = updateApi.data;
   const [updateStatus, setUpdateStatus] = useState('empty');
   const [riskModalOpen, setRiskModalOpen] = useState(false);
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const isCompleted = subTask?.status === 'completed';
   const isStarted = Boolean(subTask && subTask.status !== 'pending_update');
   const canUpdateWeekly = Boolean(subTask?.can_update_weekly);
   const canEditUpdate = canUpdateWeekly && isStarted && !isCompleted;
   const shouldWarn = canEditUpdate && updateStatus !== 'submitted';
+  const attachments = update?.attachments || [];
 
   useEffect(() => {
     if (!update) return;
@@ -1822,9 +2460,9 @@ function SubTaskUpdate() {
   }, [update?.id, update?.status, subTaskId]);
 
   const saveUpdate = async (submitUpdate: boolean) => {
-    if (!canEditUpdate) return;
+    if (!canEditUpdate) return null;
     const values = form.getFieldsValue();
-    await postJson('/weekly-updates', {
+    const saved = await postJson('/weekly-updates', {
       sub_task_id: Number(subTaskId),
       assignee_id: update?.assignee_id || (assigneeId ? Number(assigneeId) : undefined),
       week_key: weekKey,
@@ -1840,6 +2478,49 @@ function SubTaskUpdate() {
     }
     updateApi.reload();
     subTaskApi.reload();
+    return saved;
+  };
+  const ensureWeeklyUpdateForAttachment = async () => {
+    if (update?.id) return update.id;
+    const saved = await saveUpdate(false);
+    if (!saved?.id) throw new Error('无法创建周更新草稿');
+    return saved.id;
+  };
+  const uploadAttachment = async (file: File) => {
+    if (!canEditUpdate) {
+      message.warning('当前状态不能上传附件');
+      return;
+    }
+    setUploadingAttachment(true);
+    try {
+      const weeklyUpdateId = await ensureWeeklyUpdateForAttachment();
+      const formData = new FormData();
+      formData.append('file', file);
+      await api.post(`/weekly-updates/${weeklyUpdateId}/attachments`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      message.success('附件已上传');
+      await updateApi.reload();
+    } catch (error: any) {
+      const detail = error?.response?.data?.detail;
+      message.error(detail || '附件上传失败');
+    } finally {
+      setUploadingAttachment(false);
+    }
+  };
+  const deleteAttachment = async (attachment: AnyRecord) => {
+    Modal.confirm({
+      title: '删除附件？',
+      content: attachment.filename,
+      okText: '删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        await deleteJson(`/attachments/${attachment.id}`);
+        message.success('附件已删除');
+        updateApi.reload();
+      }
+    });
   };
   const autoSaveDraft = async () => {
     if (updateStatus === 'submitted' || !canEditUpdate) return;
@@ -1851,9 +2532,33 @@ function SubTaskUpdate() {
     subTaskApi.reload();
   };
   const completeTask = async () => {
-    await postJson(`/sub-tasks/${subTaskId}/complete`, {});
-    message.success('任务已完成');
-    subTaskApi.reload();
+    Modal.confirm({
+      title: '确认完成子任务？',
+      content: '完成后周更新表单会锁定。若误操作，需由子任务负责人或管理员撤回完成。',
+      okText: '确认完成',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        await postJson(`/sub-tasks/${subTaskId}/complete`, {});
+        message.success('任务已完成');
+        await subTaskApi.reload();
+        await updateApi.reload();
+      }
+    });
+  };
+  const reopenTask = async () => {
+    Modal.confirm({
+      title: '撤回子任务完成状态？',
+      content: '任务将恢复为进行中，当前进度清零；历史周更新和完成记录会保留。',
+      okText: '确认撤回',
+      cancelText: '取消',
+      onOk: async () => {
+        await postJson(`/sub-tasks/${subTaskId}/reopen`, {});
+        message.success('已撤回完成，任务恢复为进行中');
+        await subTaskApi.reload();
+        await updateApi.reload();
+      }
+    });
   };
   const confirmLeave = (target?: string | number) => {
     if (!shouldWarn) {
@@ -1929,8 +2634,8 @@ function SubTaskUpdate() {
       subtitle={`当前周期 ${weekKey}，失焦后自动保存草稿`}
       back={<Button size="small" icon={<ArrowLeftOutlined />} onClick={() => confirmLeave(-1)}>返回</Button>}
     >
-      <Card className="mb16">
-        <Descriptions column={3}>
+      <Card className="mb16 subtask-update-summary-card">
+        <Descriptions column={mobileLayout ? 1 : 3}>
           <Descriptions.Item label="部门级任务">{subTask?.department_task || '-'}</Descriptions.Item>
           <Descriptions.Item label="执行人">{renderPeople(subTask?.executors || subTask?.executor)}</Descriptions.Item>
           <Descriptions.Item label="负责人">{renderPeople(subTask?.owners || subTask?.owner)}</Descriptions.Item>
@@ -1943,14 +2648,15 @@ function SubTaskUpdate() {
           </Descriptions.Item>
           <Descriptions.Item label="本周状态"><StatusTag value={subTask?.weekly_status} /></Descriptions.Item>
         </Descriptions>
-        <Space className="mt16">
+        <Space className="mt16 subtask-update-top-actions" wrap direction={mobileLayout ? 'vertical' : 'horizontal'}>
           {canUpdateWeekly && !isStarted && <Button type="primary" onClick={startTask}>开启任务</Button>}
           {canEditUpdate && <Button danger onClick={completeTask}>标记已完成</Button>}
+          {isCompleted && subTask?.can_reopen && <Button onClick={reopenTask}>撤回完成</Button>}
           {!canUpdateWeekly && <Tag>只读查看</Tag>}
           {isCompleted && <Tag color="green">该子任务已完成</Tag>}
         </Space>
       </Card>
-      <Card title="本周更新">
+      <Card title="本周更新" className="subtask-update-form-card">
         {!isStarted && <Alert type="info" showIcon className="mb16" message="该任务尚未开启。请先点击“开启任务”，再填写本周更新。" />}
         {isCompleted && <Alert type="success" showIcon className="mb16" message="该任务已完成，周更新表单已锁定。" />}
         <Form form={form} layout="vertical">
@@ -1973,11 +2679,42 @@ function SubTaskUpdate() {
           >
             <Input.TextArea rows={4} disabled={!canEditUpdate} onBlur={autoSaveDraft} placeholder="请填写距离完全完成仍遗留的事项、尾项或待确认内容" />
           </Form.Item>
-          <Space>
+          <Space className="subtask-update-submit-bar" direction={mobileLayout ? 'vertical' : 'horizontal'}>
             <Button disabled={!canEditUpdate} onClick={() => saveUpdate(false)}>保存草稿暂不提交</Button>
             <Button disabled={!canEditUpdate} type="primary" onClick={() => saveUpdate(true)}>提交保存</Button>
           </Space>
         </Form>
+      </Card>
+      <Card title="附件" className="subtask-update-attachments-card mt16">
+        <Space direction="vertical" className="full-width">
+          <Upload
+            beforeUpload={async (file) => {
+              await uploadAttachment(file);
+              return false;
+            }}
+            showUploadList={false}
+            disabled={!canEditUpdate || uploadingAttachment}
+          >
+            <Button icon={<UploadOutlined />} loading={uploadingAttachment} disabled={!canEditUpdate}>
+              上传附件
+            </Button>
+          </Upload>
+          {!canEditUpdate && <Typography.Text type="secondary">当前状态不能上传新附件。</Typography.Text>}
+          {attachments.length ? (
+            <div className="attachment-list">
+              {attachments.map((attachment: AnyRecord) => (
+                <div className="attachment-row" key={attachment.id}>
+                  <a href={attachment.download_url} target="_blank" rel="noreferrer">{attachment.filename}</a>
+                  {attachment.can_delete && (
+                    <Button size="small" danger onClick={() => deleteAttachment(attachment)}>删除</Button>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <Typography.Text type="secondary">暂无附件</Typography.Text>
+          )}
+        </Space>
       </Card>
       <RiskItemModal
         open={riskModalOpen}
@@ -2013,6 +2750,7 @@ function MeetingBoardTabs() {
 }
 
 function DashboardDetailModal({ detail, onClose, onChanged }: { detail: AnyRecord | null; onClose: () => void; onChanged: () => void }) {
+  const mobileLayout = useIsMobileLayout();
   const [keyword, setKeyword] = useState('');
   const [editingRisk, setEditingRisk] = useState<AnyRecord | null>(null);
   useEffect(() => {
@@ -2064,6 +2802,75 @@ function DashboardDetailModal({ detail, onClose, onChanged }: { detail: AnyRecor
   ];
   const columns = detail?.type === 'parent' ? parentColumns : detail?.type === 'risk' ? riskColumns : subTaskColumns;
   const scrollX = detail?.type === 'parent' ? 920 : detail?.type === 'risk' ? 1690 : 1620;
+  const renderMobileDetailCard = (row: AnyRecord) => {
+    if (detail?.type === 'parent') {
+      return (
+        <Card key={`parent-${row.id}`} className="mobile-dashboard-detail-card">
+          <Space direction="vertical" size={10} className="full-width">
+            <div className="mobile-subtask-card-head">
+              <div>
+                <Typography.Text className="task-code">{row.code || '-'}</Typography.Text>
+                <Typography.Title level={5}>{row.title || '-'}</Typography.Title>
+              </div>
+              <StatusTag value={row.status} />
+            </div>
+            <div className="mobile-task-meta">
+              <span>负责人</span><div>{renderPeople(row.owners || row.owner)}</div>
+              <span>牵头部门</span><Typography.Text>{row.department || '-'}</Typography.Text>
+              <span>截止</span><Typography.Text>{row.due_date || '-'}</Typography.Text>
+            </div>
+          </Space>
+        </Card>
+      );
+    }
+    if (detail?.type === 'risk') {
+      return (
+        <Card key={`risk-${row.id}`} className="mobile-dashboard-detail-card">
+          <Space direction="vertical" size={10} className="full-width">
+            <div className="mobile-subtask-card-head">
+              <div>
+                <Typography.Text className="task-code">{row.code || '-'}</Typography.Text>
+                <Typography.Title level={5}>{row.title || '-'}</Typography.Title>
+              </div>
+              <StatusTag value={row.level} />
+            </div>
+            <div className="mobile-task-meta">
+              <span>分值</span><Typography.Text>{row.score ?? '-'}</Typography.Text>
+              <span>责任人</span><div>{renderPeople(row.owner)}</div>
+              <span>来源任务</span><Typography.Text>{`${row.sub_task_code || '-'} ${row.sub_task || ''}`}</Typography.Text>
+              <span>部门任务</span><Typography.Text>{`${row.department_task_code || '-'} ${row.department_task || ''}`}</Typography.Text>
+              <span>处理日期</span><Typography.Text>{row.due_date || '-'}</Typography.Text>
+              <span>状态</span><div><StatusTag value={row.status} /></div>
+            </div>
+            {row.can_manage ? <Button onClick={() => setEditingRisk(row)}>处理风险</Button> : <Tag>只读</Tag>}
+          </Space>
+        </Card>
+      );
+    }
+    return (
+      <Card key={`sub-task-${row.id}`} className="mobile-dashboard-detail-card">
+        <Space direction="vertical" size={10} className="full-width">
+          <div className="mobile-subtask-card-head">
+            <div>
+              <Typography.Text className="task-code">{row.code || '-'}</Typography.Text>
+              <Typography.Title level={5}>{row.title || '-'}</Typography.Title>
+            </div>
+            <StatusTag value={row.status} />
+          </div>
+          <div className="mobile-task-meta">
+            <span>母任务</span><Typography.Text>{`${row.parent_task_code || '-'} ${row.parent_task || ''}`}</Typography.Text>
+            <span>部门任务</span><Typography.Text>{`${row.department_task_code || '-'} ${row.department_task || ''}`}</Typography.Text>
+            <span>执行人</span><div>{renderPeople(row.executors)}</div>
+            <span>负责人</span><div>{renderPeople(row.owners)}</div>
+            <span>本周</span><div><StatusTag value={row.weekly_status} /></div>
+            <span>截止</span><Typography.Text>{row.due_date || '-'}</Typography.Text>
+            <span>完成内容</span><Typography.Text>{row.weekly_this_week || '-'}</Typography.Text>
+            <span>遗留事项</span><Typography.Text>{row.weekly_risk || '-'}</Typography.Text>
+          </div>
+        </Space>
+      </Card>
+    );
+  };
   return (
     <>
       <Modal
@@ -2071,8 +2878,8 @@ function DashboardDetailModal({ detail, onClose, onChanged }: { detail: AnyRecor
         open={Boolean(detail)}
         onCancel={onClose}
         footer={null}
-        width={1280}
-        className="dashboard-detail-modal"
+        width={mobileLayout ? '100%' : 1280}
+        className={mobileLayout ? 'dashboard-detail-modal mobile-fullscreen-modal' : 'dashboard-detail-modal'}
         destroyOnClose
       >
         <Input.Search
@@ -2082,15 +2889,22 @@ function DashboardDetailModal({ detail, onClose, onChanged }: { detail: AnyRecor
           onChange={(event) => setKeyword(event.target.value)}
           className="mb16"
         />
-        <Table
-          rowKey={(row) => `${detail?.type || 'detail'}-${row.id}`}
-          size="small"
-          dataSource={visibleRows}
-          columns={columns}
-          tableLayout="fixed"
-          scroll={{ x: scrollX, y: 520 }}
-          pagination={{ pageSize: 12, showSizeChanger: false }}
-        />
+        {mobileLayout ? (
+          <Space direction="vertical" size={12} className="full-width mobile-dashboard-detail-list">
+            {visibleRows.map(renderMobileDetailCard)}
+            {!visibleRows.length ? <Alert type="info" showIcon message="没有匹配的数据。" /> : null}
+          </Space>
+        ) : (
+          <Table
+            rowKey={(row) => `${detail?.type || 'detail'}-${row.id}`}
+            size="small"
+            dataSource={visibleRows}
+            columns={columns}
+            tableLayout="fixed"
+            scroll={{ x: scrollX, y: 520 }}
+            pagination={{ pageSize: 12, showSizeChanger: false }}
+          />
+        )}
       </Modal>
       <RiskManageModal
         risk={editingRisk}
@@ -2102,6 +2916,7 @@ function DashboardDetailModal({ detail, onClose, onChanged }: { detail: AnyRecor
 }
 
 function MeetingBoardOverview() {
+  const mobileLayout = useIsMobileLayout();
   const { data, loading, reload } = useApi<AnyRecord>('/meeting-board/overview', []);
   const [detail, setDetail] = useState<AnyRecord | null>(null);
   const [editingRisk, setEditingRisk] = useState<AnyRecord | null>(null);
@@ -2133,7 +2948,7 @@ function MeetingBoardOverview() {
           ['逾期任务', cards.overdue_tasks, '#b91c1c', 'overdue_tasks'],
           ['已完成任务', cards.completed_tasks, '#0f766e', 'completed_tasks']
         ].map(([label, value, color, detailKey]) => (
-          <Col xs={24} sm={12} xl={4} key={String(label)}>
+          <Col xs={12} xl={4} key={String(label)}>
             <Card loading={loading} hoverable className="metric-card meeting-metric-card clickable-card" style={{ borderTopColor: String(color) }} onClick={() => openSubTaskDetail(String(label), String(detailKey))}>
               <Statistic title={label} value={Number(value || 0)} valueStyle={{ color: String(color) }} />
             </Card>
@@ -2146,6 +2961,7 @@ function MeetingBoardOverview() {
             id="meeting-guide-weekly"
             title="本周更新状态"
             className="meeting-chart-card"
+            height={mobileLayout ? 240 : 300}
             onChartClick={(params) => {
               const item = params?.data;
               if (item?.detail_key) openSubTaskDetail(`本周更新状态：${item.name}`, item.detail_key);
@@ -2164,6 +2980,7 @@ function MeetingBoardOverview() {
             id="meeting-guide-risk"
             title="风险占比"
             className="meeting-chart-card"
+            height={mobileLayout ? 240 : 300}
             onChartClick={(params) => {
               const item = params?.data;
               if (item?.detail_key) openSubTaskDetail(`风险占比：${item.name}`, item.detail_key);
@@ -2180,6 +2997,7 @@ function MeetingBoardOverview() {
             id="meeting-guide-trend"
             title="近周提交趋势"
             className="meeting-chart-card"
+            height={mobileLayout ? 240 : 300}
             option={{
               tooltip: { trigger: 'axis' },
               legend: { top: 0 },
@@ -2197,7 +3015,7 @@ function MeetingBoardOverview() {
           <ChartCard
             id="meeting-guide-deadline"
             title="母任务截止日期管理"
-            height={340}
+            height={mobileLayout ? 280 : 340}
             className="meeting-chart-card"
             onChartClick={(params) => {
               const id = params?.data?.parent_id;
@@ -2239,7 +3057,31 @@ function MeetingBoardOverview() {
         </Col>
       </Row>
       <Card id="risk-overdue" className="section-row meeting-table-card business-card">
-        <Table
+        {mobileLayout ? (
+          <Space direction="vertical" size={12} className="full-width mobile-risk-overdue-list">
+            <div>{renderTableHeader('风险与逾期汇总', data?.risk_overdue?.length || 0, '风险、逾期和负责人快速核对')}</div>
+            {(data?.risk_overdue || []).map((row: AnyRecord) => (
+              <div className="mobile-risk-overdue-card" key={`${row.issue_type}-${row.id}`}>
+                <div className="mobile-subtask-card-head">
+                  <div>
+                    <Tag color={String(row.issue_type).includes('逾期') ? 'red' : 'orange'}>{row.issue_type}</Tag>
+                    <Typography.Title level={5}>{row.title || '-'}</Typography.Title>
+                  </div>
+                  <StatusTag value={row.risk_level} />
+                </div>
+                <div className="mobile-task-meta compact">
+                  <span>编号</span><Typography.Text>{row.code || '-'}</Typography.Text>
+                  <span>来源任务</span><Typography.Text>{row.sub_task_code ? `${row.sub_task_code} ${row.sub_task || ''}` : `${row.code || '-'} ${row.title || ''}`}</Typography.Text>
+                  <span>部门任务</span><Typography.Text>{row.department_task || '-'}</Typography.Text>
+                  <span>负责人</span><div>{renderPeople(row.owners || row.owner)}</div>
+                  <span>截止</span><Typography.Text>{row.due_date || '-'}</Typography.Text>
+                </div>
+                {row.can_manage ? <Button size="small" onClick={() => setEditingRisk(row)}>处理</Button> : null}
+              </div>
+            ))}
+            {!data?.risk_overdue?.length ? <Alert type="success" showIcon message="当前没有风险或逾期事项。" /> : null}
+          </Space>
+        ) : <Table
           rowKey="id"
           dataSource={data?.risk_overdue || []}
           className="business-table"
@@ -2264,7 +3106,7 @@ function MeetingBoardOverview() {
                 : null
             }
           ]}
-        />
+        />}
       </Card>
       <DashboardDetailModal
         detail={detail}
@@ -2284,24 +3126,47 @@ function MeetingBoardOverview() {
 }
 
 function MeetingBoardParent() {
+  const mobileLayout = useIsMobileLayout();
   const { data } = useApi<AnyRecord>('/meeting-board/parent', []);
   const rows = data?.rows || [];
+  const chartRows = mobileLayout
+    ? [...rows].sort((a: AnyRecord, b: AnyRecord) => b.missing_updates - a.missing_updates).slice(0, 10).reverse()
+    : rows;
   return (
     <PageShell title="母任务看板" subtitle={`当前周期 ${data?.week_key || '-'}，按母任务汇总任务推进风险`}>
       <MeetingBoardTabs />
       <ChartCard
         title="母任务待更新排行"
         className="meeting-chart-card"
+        height={mobileLayout ? Math.max(280, chartRows.length * 38) : 300}
         option={{
           tooltip: { trigger: 'axis' },
-          grid: { left: 80, right: 20, top: 24, bottom: 80 },
-          xAxis: { type: 'category', data: rows.map((item: AnyRecord) => item.code), axisLabel: { rotate: 35 } },
-          yAxis: { type: 'value' },
-          series: [{ type: 'bar', data: rows.map((item: AnyRecord) => item.missing_updates), itemStyle: { color: '#d97706' } }]
+          grid: mobileLayout ? { left: 64, right: 20, top: 18, bottom: 28 } : { left: 80, right: 20, top: 24, bottom: 80 },
+          xAxis: mobileLayout ? { type: 'value' } : { type: 'category', data: chartRows.map((item: AnyRecord) => item.code), axisLabel: { rotate: 35 } },
+          yAxis: mobileLayout ? { type: 'category', data: chartRows.map((item: AnyRecord) => item.code) } : { type: 'value' },
+          series: [{ type: 'bar', data: chartRows.map((item: AnyRecord) => item.missing_updates), itemStyle: { color: '#d97706' } }]
         }}
       />
       <Card className="section-row meeting-table-card business-card">
-        <Table
+        {mobileLayout ? (
+          <div className="mobile-board-list">
+            {rows.map((row: AnyRecord) => (
+              <div className="mobile-board-card" key={row.id}>
+                <div className="mobile-board-card-head">
+                  <div><Typography.Text className="task-code">{row.code}</Typography.Text><Typography.Title level={5}>{row.title}</Typography.Title></div>
+                  <Tag color={row.missing_updates ? 'orange' : 'green'}>{row.missing_updates} 待更新</Tag>
+                </div>
+                <div className="mobile-task-meta compact">
+                  <span>牵头部门</span><Typography.Text>{row.department || '-'}</Typography.Text>
+                  <span>负责人</span><div>{renderPeople(row.owners || row.owner)}</div>
+                  <span>任务构成</span><Typography.Text>{row.department_task_count} 部门任务 / {row.sub_task_count} 子任务</Typography.Text>
+                  <span>异常</span><Typography.Text>{row.risk_count} 风险 / {row.overdue_count} 逾期</Typography.Text>
+                  <span>完成</span><Typography.Text>{row.completed_count} 项</Typography.Text>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : <Table
           rowKey="id"
           dataSource={rows}
           className="business-table"
@@ -2320,15 +3185,29 @@ function MeetingBoardParent() {
             { title: '逾期', dataIndex: 'overdue_count', width: 68 },
             { title: '完成', dataIndex: 'completed_count', width: 68 }
           ]}
-        />
+        />}
       </Card>
     </PageShell>
   );
 }
 
 function MeetingBoardDepartment() {
+  const mobileLayout = useIsMobileLayout();
   const { data } = useApi<AnyRecord>('/meeting-board/department', []);
   const rows = data?.rows || [];
+  const volumeRows = mobileLayout
+    ? [...rows].sort((a: AnyRecord, b: AnyRecord) => b.sub_task_count - a.sub_task_count).slice(0, 10).reverse()
+    : rows;
+  const missingRows = mobileLayout
+    ? [...rows].sort((a: AnyRecord, b: AnyRecord) => b.missing_updates - a.missing_updates).slice(0, 10).reverse()
+    : rows;
+  const mobileBarOption = (items: AnyRecord[], field: string, color: string) => ({
+    tooltip: { trigger: 'axis' },
+    grid: { left: 92, right: 18, top: 18, bottom: 28 },
+    xAxis: { type: 'value' },
+    yAxis: { type: 'category', data: items.map((item: AnyRecord) => item.name), axisLabel: { width: 82, overflow: 'truncate' } },
+    series: [{ type: 'bar', data: items.map((item: AnyRecord) => item[field]), itemStyle: { color } }]
+  });
   return (
     <PageShell title="部门看板" subtitle={`当前周期 ${data?.week_key || '-'}，按负责部门汇总任务状态`}>
       <MeetingBoardTabs />
@@ -2337,7 +3216,8 @@ function MeetingBoardDepartment() {
           <ChartCard
             title="部门任务量"
             className="meeting-chart-card"
-            option={{
+            height={mobileLayout ? Math.max(280, volumeRows.length * 38) : 300}
+            option={mobileLayout ? mobileBarOption(volumeRows, 'sub_task_count', '#2457d6') : {
               tooltip: { trigger: 'axis' },
               grid: { left: 80, right: 16, top: 24, bottom: 80 },
               xAxis: { type: 'category', data: rows.map((item: AnyRecord) => item.name), axisLabel: { rotate: 35 } },
@@ -2350,7 +3230,8 @@ function MeetingBoardDepartment() {
           <ChartCard
             title="部门待更新"
             className="meeting-chart-card"
-            option={{
+            height={mobileLayout ? Math.max(280, missingRows.length * 38) : 300}
+            option={mobileLayout ? mobileBarOption(missingRows, 'missing_updates', '#d97706') : {
               tooltip: { trigger: 'axis' },
               grid: { left: 80, right: 16, top: 24, bottom: 80 },
               xAxis: { type: 'category', data: rows.map((item: AnyRecord) => item.name), axisLabel: { rotate: 35 } },
@@ -2361,7 +3242,24 @@ function MeetingBoardDepartment() {
         </Col>
       </Row>
       <Card className="section-row meeting-table-card business-card">
-        <Table
+        {mobileLayout ? (
+          <div className="mobile-board-list">
+            {rows.map((row: AnyRecord) => (
+              <div className="mobile-board-card" key={row.id}>
+                <div className="mobile-board-card-head">
+                  <Typography.Title level={5}>{row.name}</Typography.Title>
+                  <Tag color={row.missing_updates ? 'orange' : 'green'}>{row.missing_updates} 待更新</Tag>
+                </div>
+                <div className="mobile-task-meta compact">
+                  <span>任务构成</span><Typography.Text>{row.department_task_count} 部门任务 / {row.sub_task_count} 子任务</Typography.Text>
+                  <span>风险</span><Typography.Text>{row.risk_count} 项</Typography.Text>
+                  <span>逾期</span><Typography.Text>{row.overdue_count} 项</Typography.Text>
+                  <span>完成</span><Typography.Text>{row.completed_count} 项</Typography.Text>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : <Table
           rowKey="id"
           dataSource={rows}
           className="business-table"
@@ -2377,21 +3275,68 @@ function MeetingBoardDepartment() {
             { title: '逾期', dataIndex: 'overdue_count', width: 68 },
             { title: '完成', dataIndex: 'completed_count', width: 68 }
           ]}
-        />
+        />}
       </Card>
     </PageShell>
   );
 }
 
 function TimelinePage() {
+  const mobileLayout = useIsMobileLayout();
   const { data, loading } = useApi<AnyRecord>('/timeline/matrix', []);
   const weeks: string[] = data?.weeks || [];
+  const [selectedWeek, setSelectedWeek] = useState<string | undefined>();
+  useEffect(() => {
+    if (!weeks.length) return;
+    if (!selectedWeek || !weeks.includes(selectedWeek)) setSelectedWeek(weeks[weeks.length - 1]);
+  }, [weeks.join('|'), selectedWeek]);
   const timelineColumns = `240px 132px repeat(${weeks.length}, 156px)`;
   const renderCell = (value?: string | null) => renderTimelineText(value);
   return (
     <PageShell title="历史时间线" subtitle="按任务层级展开，以周为主轴查看完成内容、遗留事项和附件">
-      <Card loading={loading} className="timeline-card">
-        <div className="timeline-matrix">
+      <Card id="timeline-guide-card" loading={loading} className="timeline-card">
+        {mobileLayout ? (
+          <div id="timeline-guide-matrix" className="mobile-timeline">
+            <Select
+              value={selectedWeek}
+              onChange={setSelectedWeek}
+              options={weeks.map((week) => ({ value: week, label: week }))}
+              className="mobile-section-selector mb16"
+              placeholder="选择查看周次"
+            />
+            {(data?.parents || []).map((parent: AnyRecord) => (
+              <details key={parent.id} className="mobile-timeline-node">
+                <summary><span className="timeline-code">{parent.code}</span>{parent.title}</summary>
+                {(parent.department_tasks || []).map((departmentTask: AnyRecord) => (
+                  <details key={departmentTask.id} className="mobile-timeline-node child">
+                    <summary><span className="timeline-code">{departmentTask.code}</span>{departmentTask.title}</summary>
+                    <div className="mobile-timeline-subtasks">
+                      {(departmentTask.sub_tasks || []).map((subTask: AnyRecord) => {
+                        const cell = selectedWeek ? subTask.cells?.[selectedWeek] : null;
+                        const attachments = cell?.attachments || [];
+                        return (
+                          <div className="mobile-timeline-card" key={subTask.id}>
+                            <div className="mobile-department-subtask-head">
+                              <Typography.Text className="task-code">{subTask.code}</Typography.Text>
+                              <StatusTag value={subTask.status} />
+                            </div>
+                            <Typography.Text strong>{subTask.title}</Typography.Text>
+                            <div className="mobile-task-meta compact">
+                              <span>开始时间</span><Typography.Text>{subTask.started_at || '-'}</Typography.Text>
+                              <span>完成内容</span><Typography.Text>{cell?.this_week || '-'}</Typography.Text>
+                              <span>遗留事项</span><Typography.Text>{cell?.risk || '-'}</Typography.Text>
+                              <span>附件</span><Typography.Text>{renderAttachmentLinks(attachments)}</Typography.Text>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </details>
+                ))}
+              </details>
+            ))}
+          </div>
+        ) : <div id="timeline-guide-matrix" className="timeline-matrix">
           <div className="timeline-grid timeline-header" style={{ gridTemplateColumns: timelineColumns }}>
             <strong>任务</strong>
             <strong>任务开始时间</strong>
@@ -2425,7 +3370,7 @@ function TimelinePage() {
                         <span />
                         {weeks.map((week) => {
                           const attachments = subTask.cells?.[week]?.attachments || [];
-                          return <span key={week}>{attachments.length ? renderTimelineText(attachments.map((item: AnyRecord) => item.filename).join('、')) : <span className="muted-cell timeline-cell-text">暂无附件</span>}</span>;
+                          return <span key={week}>{renderAttachmentLinks(attachments)}</span>;
                         })}
                       </div>
                     </div>
@@ -2434,45 +3379,44 @@ function TimelinePage() {
               ))}
             </details>
           ))}
-        </div>
+        </div>}
       </Card>
     </PageShell>
   );
 }
 
 function Notifications() {
-  const { data, reload } = useApi<AnyRecord[]>('/notifications', []);
-  const { data: users } = useApi<AnyRecord[]>('/user-options', []);
+  const mobileLayout = useIsMobileLayout();
+  const [includeHistorical, setIncludeHistorical] = useState(false);
+  const { data, reload } = useApi<AnyRecord[]>(`/notifications?include_historical=${includeHistorical}`, [includeHistorical]);
   const { data: scheduler, reload: reloadScheduler } = useApi<AnyRecord>('/notifications/scheduler-status', []);
   const [loading, setLoading] = useState(false);
-  const [testTargetUserId, setTestTargetUserId] = useState<number | null>(null);
   const [notificationType, setNotificationType] = useState<string | undefined>();
   const notificationTypeLabels: Record<string, string> = {
     weekly_update_digest: '周更新汇总提醒',
     department_task_split_required: '部门任务拆解提醒',
     department_task_due_soon: '部门任务临期提醒',
     risk_item_alert: '风险项提醒',
-    lark_test_message: '测试卡片',
-    weekly_update_reminder: '周更新提醒',
+    lark_test_message: '历史测试卡片',
+    weekly_update_reminder: '历史周更新模拟',
   };
   const filteredNotifications = notificationType
     ? (data || []).filter((item) => item.notification_type === notificationType)
     : (data || []);
-  const userOptions = (users || []).map((item) => ({
-    value: item.id,
-    label: `${item.name}${item.department ? ` / ${item.department}` : ''}`
-  }));
-  const createMock = async () => {
-    setLoading(true);
-    try {
-      await postJson('/notifications/mock-reminders', { week_key: currentIsoWeekKey() });
-      message.success('已生成模拟提醒记录');
-      reload();
-    } finally {
-      setLoading(false);
-    }
+  const runOfficialNotification = (title: string, content: string, action: () => Promise<void>) => {
+    Modal.confirm({
+      title,
+      content,
+      okText: '确认正式发送',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: action
+    });
   };
-  const sendLark = async () => {
+  const sendLark = () => runOfficialNotification(
+    '确认发送本周更新提醒？',
+    '系统将向所有符合条件且尚未提交本周更新的执行人正式发送飞书卡片；同一周已发送对象会按去重规则跳过。',
+    async () => {
     setLoading(true);
     try {
       const result = await postJson('/notifications/lark-weekly-reminders', { week_key: currentIsoWeekKey() });
@@ -2481,8 +3425,11 @@ function Notifications() {
     } finally {
       setLoading(false);
     }
-  };
-  const sendDepartmentDue = async () => {
+  });
+  const sendDepartmentDue = () => runOfficialNotification(
+    '确认发送部门任务临期提醒？',
+    '系统将扫描未来 7 天内到期的未完成部门任务，并向任务负责人正式发送飞书卡片；已发送记录会按截止日期去重。',
+    async () => {
     setLoading(true);
     try {
       const result = await postJson('/notifications/department-task-due-reminders', {});
@@ -2492,8 +3439,11 @@ function Notifications() {
     } finally {
       setLoading(false);
     }
-  };
-  const sendRiskOverdue = async () => {
+  });
+  const sendRiskOverdue = () => runOfficialNotification(
+    '确认发送风险逾期提醒？',
+    '系统将扫描开放或处理中的逾期风险，并向风险责任人及相关任务负责人正式发送飞书卡片。',
+    async () => {
     setLoading(true);
     try {
       const result = await postJson('/notifications/risk-overdue', {});
@@ -2502,7 +3452,7 @@ function Notifications() {
     } finally {
       setLoading(false);
     }
-  };
+  });
   const checkLark = async () => {
     setLoading(true);
     try {
@@ -2549,46 +3499,6 @@ function Notifications() {
     }
     return false;
   };
-  const sendTest = async () => {
-    if (!testTargetUserId) {
-      message.warning('请选择测试接收人');
-      return;
-    }
-    setLoading(true);
-    try {
-      const result = await postJson('/notifications/lark-test-message', {
-        target_user_id: testTargetUserId
-      });
-      if (result.ok) {
-        message.success('飞书测试卡片已发送');
-      } else {
-        message.warning(result.message || '飞书测试卡片未发送成功');
-      }
-      reload();
-    } finally {
-      setLoading(false);
-    }
-  };
-  const sendPreviewSuite = async () => {
-    if (!testTargetUserId) {
-      message.warning('请选择验收接收人');
-      return;
-    }
-    setLoading(true);
-    try {
-      const result = await postJson('/notifications/lark-card-preview-suite', {
-        target_user_id: testTargetUserId
-      });
-      if (result.ok) {
-        message.success(`四类验收卡片已发送给 ${result.target_user}`);
-      } else {
-        message.warning(`验收卡片：成功 ${result.sent || 0}，失败 ${result.failed || 0}，阻塞 ${result.blocked || 0}，抑制 ${result.suppressed || 0}`);
-      }
-      reload();
-    } finally {
-      setLoading(false);
-    }
-  };
   const statusColor = (value: string) => {
     if (value === 'sent' || value === 'mock_sent') return 'green';
     if (value === 'pending') return 'blue';
@@ -2606,6 +3516,7 @@ function Notifications() {
       return `${labels[job.id] || job.id}：${job.next_run_time ? dayjs(job.next_run_time).format('YYYY-MM-DD HH:mm') : '未安排'}`;
     })
     .join('；');
+  const deliveryModeText = scheduler?.delivery_mode === 'allowlist' ? '白名单试运行' : '正式全员投递';
   return (
     <PageShell
       title="通知记录"
@@ -2619,7 +3530,6 @@ function Notifications() {
               <Button icon={<UploadOutlined />} loading={loading}>导入邮箱表</Button>
             </Upload>
             <Button onClick={resolveOpenIds} loading={loading}>邮箱解析 open_id</Button>
-            <Button onClick={createMock} loading={loading}>生成模拟提醒</Button>
             <Select
               allowClear
               placeholder="通知类型"
@@ -2628,20 +3538,11 @@ function Notifications() {
               options={Object.entries(notificationTypeLabels).map(([value, label]) => ({ value, label }))}
               style={{ minWidth: 180 }}
             />
+            <Checkbox checked={includeHistorical} onChange={(event) => setIncludeHistorical(event.target.checked)}>
+              查看历史测试记录
+            </Checkbox>
           </Space>
           <Space wrap className="admin-toolbar primary-toolbar">
-            <Select
-              allowClear
-              showSearch
-              placeholder="测试接收人"
-              optionFilterProp="label"
-              options={userOptions}
-              value={testTargetUserId}
-              onChange={(value) => setTestTargetUserId(value || null)}
-              className="toolbar-select"
-            />
-            <Button onClick={sendTest} loading={loading}>发送测试卡片</Button>
-            <Button type="primary" icon={<SafetyOutlined />} onClick={sendPreviewSuite} loading={loading}>发送四类验收卡片</Button>
             <Button type="primary" onClick={sendLark} loading={loading}>发送飞书提醒</Button>
             <Button icon={<ScheduleOutlined />} onClick={sendDepartmentDue} loading={loading}>部门任务临期提醒</Button>
             <Button danger icon={<SafetyOutlined />} onClick={sendRiskOverdue} loading={loading}>风险逾期提醒</Button>
@@ -2649,19 +3550,41 @@ function Notifications() {
           <Alert
             type={scheduler?.running ? 'success' : 'warning'}
             showIcon
-            message={`通知调度：${scheduler?.running ? '运行中' : '未运行'} · ${scheduler?.timezone || 'Asia/Shanghai'} · ${scheduler?.delivery_mode === 'allowlist' ? '调试白名单' : '全员发送'}`}
+            message={`通知调度：${scheduler?.running ? '运行中' : '未运行'} · ${scheduler?.timezone || 'Asia/Shanghai'} · ${deliveryModeText}`}
             description={scheduleText || '暂无调度任务'}
           />
         </Space>
       </Card>
       <Card className="business-card">
-        <Table
+        {mobileLayout ? (
+          <div className="mobile-notification-list">
+            <div>{renderTableHeader('通知记录', filteredNotifications.length, '记录正式业务提醒、点击状态和异常结果')}</div>
+            {filteredNotifications.map((row) => (
+              <div className="mobile-notification-card" key={row.id}>
+                <div className="mobile-board-card-head">
+                  <div>
+                    <Typography.Text strong>{notificationTypeLabels[row.notification_type] || row.notification_type}</Typography.Text>
+                    <div><Typography.Text type="secondary">{row.created_at ? dayjs(row.created_at).format('YYYY-MM-DD HH:mm') : '-'}</Typography.Text></div>
+                  </div>
+                  <Tag color={statusColor(row.send_status)}>{row.send_status}</Tag>
+                </div>
+                <div className="mobile-task-meta compact">
+                  <span>通知对象</span><Typography.Text>{row.target_user || '-'}</Typography.Text>
+                  <span>关联对象</span><Typography.Text>{`${row.related_type || '-'} ${row.related_id || ''}`}</Typography.Text>
+                  <span>点击状态</span><Typography.Text>{row.clicked ? `已点击 ${row.click_count || 0} 次` : '未点击'}</Typography.Text>
+                  <span>首次点击</span><Typography.Text>{row.first_clicked_at ? dayjs(row.first_clicked_at).format('YYYY-MM-DD HH:mm') : '-'}</Typography.Text>
+                  <span>处理结果</span><Typography.Text>{row.result || '-'}</Typography.Text>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : <Table
           rowKey="id"
           dataSource={filteredNotifications}
           className="business-table"
           tableLayout="fixed"
           scroll={{ x: 1320 }}
-          title={() => renderTableHeader('通知记录', filteredNotifications.length, '记录飞书提醒、测试卡片和模拟提醒的发送结果')}
+          title={() => renderTableHeader('通知记录', filteredNotifications.length, '记录飞书业务提醒、点击状态和异常结果')}
           columns={[
             {
               title: '通知时间',
@@ -2699,18 +3622,21 @@ function Notifications() {
             },
             { title: '处理结果', dataIndex: 'result', width: 228, ellipsis: true, render: renderEllipsis }
           ]}
-        />
+        />}
       </Card>
     </PageShell>
   );
 }
 
 function People() {
+  const mobileLayout = useIsMobileLayout();
   const { data, reload } = useApi<AnyRecord[]>('/people', []);
   const { data: departments } = useApi<AnyRecord[]>('/departments', []);
   const { data: roles } = useApi<AnyRecord[]>('/roles', []);
   const [form] = Form.useForm();
   const [editForm] = Form.useForm();
+  const [createOpen, setCreateOpen] = useState(false);
+  const [searchText, setSearchText] = useState('');
   const [editing, setEditing] = useState<AnyRecord | null>(null);
   const departmentOptions = (departments || []).map((item) => ({ value: item.id, label: item.name }));
   const roleOptions = (roles || []).map((item) => ({ value: item.id, label: item.name }));
@@ -2718,8 +3644,10 @@ function People() {
     await postJson('/people', values);
     message.success('人员已创建');
     form.resetFields();
+    setCreateOpen(false);
     reload();
   };
+  const submitCreatePerson = async () => createPerson(await form.validateFields());
   const openEdit = (person: AnyRecord) => {
     setEditing(person);
     editForm.setFieldsValue({
@@ -2739,47 +3667,59 @@ function People() {
     setEditing(null);
     reload();
   };
+  const filteredPeople = (data || []).filter((person) => person.name?.includes(searchText.trim()));
+  const createFormContent = (
+    <Form form={form} layout="vertical" onFinish={createPerson} initialValues={{ status: 'active', role_ids: [] }}>
+      <Row gutter={16}>
+        <Col xs={24} md={6}>
+          <Form.Item name="name" label="姓名" rules={[{ required: true, message: '请输入姓名' }]}><Input /></Form.Item>
+        </Col>
+        <Col xs={24} md={6}>
+          <Form.Item name="department_id" label="部门"><Select allowClear options={departmentOptions} /></Form.Item>
+        </Col>
+        <Col xs={24} md={6}>
+          <Form.Item name="status" label="状态">
+            <Select options={[{ value: 'active', label: '启用' }, { value: 'pending', label: '待完善' }, { value: 'disabled', label: '停用' }]} />
+          </Form.Item>
+        </Col>
+      </Row>
+      <Form.Item name="open_id" label="飞书 open_id"><Input placeholder="手动录入飞书 open_id，或通过邮箱解析自动绑定" /></Form.Item>
+      <Form.Item name="email" label="邮箱"><Input placeholder="用于批量解析飞书 open_id" /></Form.Item>
+      <Form.Item name="role_ids" label="角色"><Select mode="multiple" allowClear options={roleOptions} /></Form.Item>
+      {!mobileLayout ? <Button type="primary" htmlType="submit">新增人员</Button> : null}
+    </Form>
+  );
   return (
-    <PageShell title="人员" subtitle="预设员工姓名、部门、角色和邮箱；实际登录后绑定 open_id">
-      <Card title="新增预设人员" className="mb16 admin-form-card">
-        <Form form={form} layout="vertical" onFinish={createPerson} initialValues={{ status: 'active', role_ids: [] }}>
-          <Row gutter={16}>
-            <Col xs={24} md={6}>
-              <Form.Item name="name" label="姓名" rules={[{ required: true, message: '请输入姓名' }]}>
-                <Input />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={6}>
-              <Form.Item name="department_id" label="部门">
-                <Select allowClear options={departmentOptions} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={6}>
-              <Form.Item name="status" label="状态">
-                <Select
-                  options={[
-                    { value: 'active', label: '启用' },
-                    { value: 'pending', label: '待完善' },
-                    { value: 'disabled', label: '停用' }
-                  ]}
-                />
-              </Form.Item>
-            </Col>
-          </Row>
-          <Form.Item name="open_id" label="飞书 open_id">
-            <Input placeholder="手动录入飞书 open_id，或通过邮箱解析自动绑定" />
-          </Form.Item>
-          <Form.Item name="email" label="邮箱">
-            <Input placeholder="用于 2.0.4 批量解析飞书 open_id" />
-          </Form.Item>
-          <Form.Item name="role_ids" label="角色">
-            <Select mode="multiple" allowClear options={roleOptions} />
-          </Form.Item>
-          <Button type="primary" htmlType="submit">新增人员</Button>
-        </Form>
-      </Card>
+    <PageShell
+      title="人员"
+      subtitle="预设员工姓名、部门、角色和邮箱；实际登录后绑定 open_id"
+      extra={mobileLayout ? <Button type="primary" onClick={() => setCreateOpen(true)}>新增人员</Button> : null}
+    >
+      {!mobileLayout ? <Card title="新增预设人员" className="mb16 admin-form-card">{createFormContent}</Card> : (
+        <Input.Search value={searchText} onChange={(event) => setSearchText(event.target.value)} allowClear placeholder="搜索人员姓名" className="mb16" />
+      )}
       <Card className="business-card">
-        <Table
+        {mobileLayout ? (
+          <div className="mobile-people-list">
+            <div>{renderTableHeader('人员列表', filteredPeople.length, '维护部门、角色、邮箱和飞书绑定状态')}</div>
+            {filteredPeople.map((person) => (
+              <div className="mobile-person-card" key={person.id}>
+                <div className="mobile-board-card-head">
+                  <Typography.Title level={5}>{person.name}</Typography.Title>
+                  <StatusTag value={person.status} />
+                </div>
+                <div className="mobile-task-meta compact">
+                  <span>部门</span><Typography.Text>{person.department || '未分配'}</Typography.Text>
+                  <span>角色</span><div><Space wrap size={[4, 4]}>{(person.roles || []).map((role: AnyRecord) => <Tag className="role-tag" key={role.id}>{role.name}</Tag>)}</Space></div>
+                  <span>飞书绑定</span><div>{renderBindingStatus(person.open_id)}</div>
+                  <span>邮箱</span><Typography.Text className="mobile-break-text">{person.email || '未录入'}</Typography.Text>
+                  <span>来源</span><Typography.Text>{person.source || '-'}</Typography.Text>
+                </div>
+                <Button onClick={() => openEdit(person)}>编辑人员</Button>
+              </div>
+            ))}
+          </div>
+        ) : <Table
           rowKey="id"
           dataSource={data || []}
           className="business-table"
@@ -2818,9 +3758,12 @@ function People() {
             },
             { title: '操作', width: 88, render: (_, row) => <Button size="small" onClick={() => openEdit(row)}>编辑</Button> }
           ]}
-        />
+        />}
       </Card>
-      <Modal title="编辑人员" open={Boolean(editing)} onOk={saveEdit} onCancel={() => setEditing(null)} destroyOnClose>
+      {mobileLayout ? <Modal className="mobile-form-modal" title="新增人员" open={createOpen} onOk={submitCreatePerson} onCancel={() => setCreateOpen(false)} destroyOnClose>
+        {createFormContent}
+      </Modal> : null}
+      <Modal className={mobileLayout ? 'mobile-form-modal' : undefined} title="编辑人员" open={Boolean(editing)} onOk={saveEdit} onCancel={() => setEditing(null)} destroyOnClose>
         <Form form={editForm} layout="vertical">
           <Form.Item name="name" label="姓名" rules={[{ required: true, message: '请输入姓名' }]}>
             <Input />
@@ -2853,6 +3796,7 @@ function People() {
 }
 
 function BaseSync() {
+  const mobileLayout = useIsMobileLayout();
   const [preview, setPreview] = useState<AnyRecord | null>(null);
   const [result, setResult] = useState<AnyRecord | null>(null);
   const [loading, setLoading] = useState(false);
@@ -2869,7 +3813,7 @@ function BaseSync() {
       setLoading(false);
     }
   };
-  const runImport = async () => {
+  const executeImport = async () => {
     setLoading(true);
     try {
       const data = await postJson('/sync/base-2026/import', {});
@@ -2883,6 +3827,29 @@ function BaseSync() {
       setLoading(false);
     }
   };
+  const runImport = () => {
+    let confirmationText = '';
+    Modal.confirm({
+      title: '确认清空并导入 Base 数据？',
+      content: (
+        <Space direction="vertical" className="full-width">
+          <Alert type="error" showIcon message="该操作会清空现有业务任务数据，无法通过页面撤销。" />
+          <Typography.Text>请输入“清空并导入”后继续：</Typography.Text>
+          <Input onChange={(event) => { confirmationText = event.target.value; }} placeholder="清空并导入" />
+        </Space>
+      ),
+      okText: '确认清空并导入',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        if (confirmationText !== '清空并导入') {
+          message.error('确认文字不正确');
+          throw new Error('confirmation mismatch');
+        }
+        await executeImport();
+      }
+    });
+  };
   return (
     <PageShell title="Base同步" subtitle="从飞书多维表格 2026任务跟踪表一次性导入真实任务">
       <Alert
@@ -2892,7 +3859,7 @@ function BaseSync() {
         message="导入会清空现有业务任务数据，保留管理员、部门、角色和权限基础数据。"
       />
       <Card>
-        <Space>
+        <Space direction={mobileLayout ? 'vertical' : 'horizontal'} className={mobileLayout ? 'full-width mobile-action-stack' : undefined}>
           <Button onClick={runPreview} loading={loading}>预览 Base</Button>
           <Button type="primary" danger onClick={runImport} loading={loading}>清空并导入</Button>
         </Space>
@@ -2900,14 +3867,14 @@ function BaseSync() {
           <div className="json-panel">
             <Typography.Title level={5}>预览结果</Typography.Title>
             {!preview.ok && <Alert type="warning" showIcon message={preview.message || 'Base CLI 暂不可用'} className="mb16" />}
-            <pre>{JSON.stringify(preview, null, 2)}</pre>
+            <pre className="mobile-json-output">{JSON.stringify(preview, null, 2)}</pre>
           </div>
         )}
         {result && (
           <div className="json-panel">
             <Typography.Title level={5}>导入结果</Typography.Title>
             {!result.ok && <Alert type="warning" showIcon message={result.message || '导入被阻塞'} className="mb16" />}
-            <pre>{JSON.stringify(result, null, 2)}</pre>
+            <pre className="mobile-json-output">{JSON.stringify(result, null, 2)}</pre>
           </div>
         )}
       </Card>
@@ -2916,13 +3883,28 @@ function BaseSync() {
 }
 
 function Permissions() {
+  const mobileLayout = useIsMobileLayout();
   const { data, reload } = useApi<AnyRecord>('/permissions', []);
   const permissions = data?.permissions || [];
   const matrix = data?.matrix || [];
+  const [draftPermissions, setDraftPermissions] = useState<Record<number, string[]>>({});
+  useEffect(() => {
+    setDraftPermissions(Object.fromEntries(matrix.map((role: AnyRecord) => [role.role_id, role.permission_codes || []])));
+  }, [JSON.stringify(matrix)]);
   const updateRole = async (roleId: number, values: string[]) => {
-    await putJson('/permissions/matrix', { role_id: roleId, permission_codes: values });
-    message.success('权限矩阵已更新');
-    reload();
+    const role = matrix.find((item: AnyRecord) => item.role_id === roleId);
+    Modal.confirm({
+      title: `确认更新“${role?.role_name || '角色'}”权限？`,
+      content: '权限变更会立即影响该角色人员可见页面和可执行操作，请确认勾选结果无误。',
+      okText: '确认保存',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        await putJson('/permissions/matrix', { role_id: roleId, permission_codes: values });
+        message.success('权限矩阵已更新');
+        await reload();
+      }
+    });
   };
   return (
     <PageShell title="角色权限" subtitle="角色动作矩阵可配置，并叠加任务关系权限">
@@ -2932,10 +3914,18 @@ function Permissions() {
             <Card title={role.role_name}>
               <Checkbox.Group
                 className="permission-grid"
-                value={role.permission_codes}
+                value={draftPermissions[role.role_id] || []}
                 options={permissions.map((item: AnyRecord) => ({ value: item.code, label: item.name }))}
-                onChange={(values) => updateRole(role.role_id, values as string[])}
+                onChange={(values) => setDraftPermissions((current) => ({ ...current, [role.role_id]: values as string[] }))}
               />
+              <Button
+                type="primary"
+                className={mobileLayout ? 'full-width mt16' : 'mt16'}
+                disabled={JSON.stringify([...(draftPermissions[role.role_id] || [])].sort()) === JSON.stringify([...(role.permission_codes || [])].sort())}
+                onClick={() => updateRole(role.role_id, draftPermissions[role.role_id] || [])}
+              >
+                保存权限
+              </Button>
             </Card>
           </Col>
         ))}

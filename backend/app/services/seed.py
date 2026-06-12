@@ -82,10 +82,7 @@ def clear_business_data(db: Session, *, include_sync_runs: bool = True) -> None:
     db.commit()
 
 
-def seed_demo_data(db: Session) -> None:
-    if not settings.seed_demo_data:
-        return
-
+def seed_system_data(db: Session) -> None:
     departments: dict[str, Department] = {}
     for name in BASE_DEPARTMENTS:
         department = db.scalar(select(Department).where(Department.name == name))
@@ -149,5 +146,12 @@ def seed_demo_data(db: Session) -> None:
         admin.status = "active"
     admin.roles = [roles["admin"], roles["it_maintainer"]]
     departments["信息中心"].manager_id = admin.id
-    db.execute(delete(AuthSession))
+    db.commit()
+
+
+def seed_demo_data(db: Session) -> None:
+    if not settings.seed_demo_data:
+        return
+    # Business demo records were removed after real task imports. Keep this hook
+    # for local experiments without tying production system initialization to it.
     db.commit()

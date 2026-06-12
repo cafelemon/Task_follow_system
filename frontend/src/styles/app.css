@@ -799,6 +799,41 @@ body {
   color: #16a34a;
 }
 
+.attachment-list {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+
+.attachment-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.attachment-row a {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.attachment-link-list {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 100%;
+}
+
+.attachment-link-list a {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .timeline-matrix {
   overflow-x: auto;
   border: 1px solid #e5e7eb;
@@ -1013,5 +1048,533 @@ body {
 
   .department-directory {
     position: static;
+  }
+}
+
+@media (max-width: 900px) {
+  html,
+  body,
+  #root {
+    width: 100%;
+    min-height: 100%;
+    overflow-x: hidden;
+  }
+
+  .app-layout {
+    min-height: 100dvh;
+    width: 100%;
+  }
+
+  .app-header {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px 10px;
+    min-height: 64px;
+    padding: calc(8px + env(safe-area-inset-top)) 12px 8px;
+  }
+
+  .header-title-group,
+  .mobile-header-brand {
+    min-width: 0;
+  }
+
+  .app-header h4 {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 16px;
+  }
+
+  .header-meta {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+    overflow: hidden;
+    font-size: 12px;
+  }
+
+  .header-meta .ant-tag {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .header-actions {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .header-actions .ant-btn {
+    min-width: 36px;
+    padding-inline: 10px;
+  }
+
+  .app-content {
+    width: 100%;
+    padding: 12px 12px calc(88px + env(safe-area-inset-bottom));
+    overflow-x: hidden;
+  }
+
+  .page-heading {
+    display: grid;
+    gap: 10px;
+  }
+
+  .page-heading h3 {
+    font-size: 20px;
+    line-height: 1.25;
+  }
+
+  .page-heading .ant-typography {
+    font-size: 13px;
+  }
+
+  .ant-card-body {
+    padding: 14px;
+  }
+
+  .app-content .ant-btn,
+  .app-content .ant-input,
+  .app-content .ant-select-selector,
+  .mobile-nav-drawer .ant-menu-item {
+    min-height: 44px;
+  }
+
+  .app-content .ant-btn-sm {
+    min-height: 36px;
+  }
+
+  .ant-table-wrapper {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  .mobile-nav-drawer .ant-drawer-body {
+    position: relative;
+    min-height: 100%;
+    padding: 0;
+    background: #fff;
+  }
+
+  .mobile-nav-drawer .brand {
+    height: 68px;
+  }
+
+  .mobile-nav-drawer .app-menu-guide-target {
+    padding-bottom: 128px;
+  }
+
+  .mobile-nav-drawer .ant-menu {
+    border-inline-end: 0 !important;
+    padding: 8px;
+  }
+
+  .mobile-nav-drawer .ant-menu-item {
+    height: 42px;
+    line-height: 42px;
+    margin-inline: 0;
+    width: 100%;
+    border-radius: 6px;
+  }
+
+  .mobile-nav-drawer .sider-footer {
+    right: 14px;
+    left: 14px;
+    bottom: 14px;
+  }
+
+  .mobile-department-selector {
+    width: 100%;
+    margin-bottom: 12px;
+  }
+
+  .mobile-section-selector {
+    width: 100%;
+  }
+
+  .mobile-page-actions,
+  .mobile-page-actions .ant-space-item,
+  .mobile-page-actions .ant-btn {
+    width: 100%;
+  }
+
+  .mobile-card-list,
+  .mobile-board-list,
+  .mobile-notification-list,
+  .mobile-people-list,
+  .mobile-timeline-subtasks {
+    display: grid;
+    gap: 12px;
+  }
+
+  .mobile-department-task-list {
+    display: grid;
+    gap: 12px;
+  }
+
+  .mobile-department-task-card h5,
+  .mobile-dashboard-detail-card h5,
+  .mobile-risk-overdue-card h5 {
+    margin: 8px 0 0;
+    color: var(--ink-strong);
+    font-size: 15px;
+    line-height: 1.45;
+  }
+
+  .mobile-department-subtask-list {
+    display: grid;
+    gap: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line-soft);
+  }
+
+  .mobile-department-subtask {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid #dbe7f5;
+    border-radius: 8px;
+    background: #fbfdff;
+  }
+
+  .mobile-department-subtask-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: flex-start;
+  }
+
+  .mobile-form-modal {
+    width: calc(100vw - 24px) !important;
+    max-width: calc(100vw - 24px);
+    top: 12px;
+    padding-bottom: 12px;
+  }
+
+  .mobile-form-modal .ant-modal-body {
+    max-height: calc(100dvh - 170px);
+    overflow-y: auto;
+  }
+
+  .mobile-form-modal .ant-modal-footer {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .mobile-form-modal .ant-modal-footer .ant-btn {
+    width: 100%;
+    margin-inline-start: 0 !important;
+  }
+
+  .meeting-tabs {
+    display: flex;
+    width: 100%;
+    overflow-x: auto;
+    flex-wrap: nowrap !important;
+    scrollbar-width: none;
+  }
+
+  .meeting-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .meeting-tabs .ant-space-item,
+  .meeting-tabs .ant-btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .meeting-metric-row {
+    margin-inline: -6px !important;
+    row-gap: 12px !important;
+  }
+
+  .meeting-metric-row > .ant-col {
+    padding-inline: 6px !important;
+  }
+
+  .meeting-metric-card .ant-card-body {
+    min-height: 100px;
+    padding: 12px;
+  }
+
+  .meeting-metric-card .ant-statistic-title {
+    min-height: 38px;
+    font-size: 12px;
+    line-height: 19px;
+  }
+
+  .meeting-metric-card .ant-statistic-content {
+    font-size: 24px;
+  }
+
+  .meeting-chart-card .ant-card-head-title {
+    font-size: 14px;
+  }
+
+  .mobile-risk-overdue-card {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid var(--line-soft);
+    border-radius: 8px;
+    background: #fff;
+  }
+
+  .mobile-board-card,
+  .mobile-notification-card,
+  .mobile-person-card,
+  .mobile-timeline-card {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+    padding: 12px;
+    border: 1px solid var(--line-soft);
+    border-radius: 8px;
+    background: #fff;
+  }
+
+  .mobile-board-card-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: start;
+  }
+
+  .mobile-board-card-head h5 {
+    margin: 6px 0 0;
+    color: var(--ink-strong);
+    font-size: 15px;
+    line-height: 1.45;
+  }
+
+  .mobile-timeline {
+    min-width: 0;
+  }
+
+  .mobile-timeline-node {
+    margin-bottom: 10px;
+    border: 1px solid var(--line-soft);
+    border-radius: 8px;
+    background: #fff;
+  }
+
+  .mobile-timeline-node > summary {
+    padding: 12px;
+    cursor: pointer;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-timeline-node.child {
+    margin: 0 10px 10px;
+    background: #f8fafc;
+  }
+
+  .mobile-timeline-subtasks {
+    padding: 0 10px 10px;
+  }
+
+  .mobile-notification-card .ant-typography,
+  .mobile-person-card .ant-typography,
+  .mobile-break-text,
+  .mobile-task-meta .ant-typography {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .admin-toolbar,
+  .primary-toolbar,
+  .admin-toolbar > .ant-space-item,
+  .primary-toolbar > .ant-space-item,
+  .admin-toolbar .ant-btn,
+  .primary-toolbar .ant-btn,
+  .admin-toolbar .ant-select,
+  .primary-toolbar .ant-select {
+    width: 100%;
+  }
+
+  .mobile-action-stack,
+  .mobile-action-stack > .ant-space-item,
+  .mobile-action-stack .ant-btn {
+    width: 100%;
+  }
+
+  .mobile-json-output,
+  .json-panel pre {
+    max-width: 100%;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .permission-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .mobile-fullscreen-modal {
+    top: 0;
+    max-width: none;
+    height: 100dvh;
+    margin: 0;
+    padding-bottom: 0;
+  }
+
+  .mobile-fullscreen-modal .ant-modal-content {
+    min-height: 100dvh;
+    border-radius: 0;
+  }
+
+  .mobile-fullscreen-modal .ant-modal-body {
+    max-height: calc(100dvh - 64px);
+    overflow-y: auto;
+    padding-bottom: calc(20px + env(safe-area-inset-bottom));
+  }
+
+  .mobile-dashboard-detail-list {
+    padding-bottom: 12px;
+  }
+
+  .mobile-dashboard-detail-card {
+    box-shadow: none;
+  }
+
+  .mobile-subtask-section {
+    display: grid;
+    gap: 10px;
+  }
+
+  .mobile-subtask-section-title {
+    padding: 12px 14px;
+    border: 1px solid var(--line-soft);
+    border-radius: 8px;
+    background: #fff;
+  }
+
+  .mobile-subtask-section-personal .mobile-subtask-section-title {
+    border-top: 3px solid rgba(36, 87, 214, 0.64);
+  }
+
+  .mobile-subtask-section-management .mobile-subtask-section-title {
+    border-top: 3px solid rgba(100, 116, 139, 0.32);
+    background: #fafafa;
+  }
+
+  .mobile-subtask-card {
+    box-shadow: 0 8px 22px rgba(15, 23, 42, 0.05);
+  }
+
+  .mobile-subtask-card-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: start;
+  }
+
+  .mobile-subtask-card h5 {
+    margin: 8px 0 0;
+    color: var(--ink-strong);
+    font-size: 15px;
+    line-height: 1.45;
+  }
+
+  .mobile-task-meta {
+    display: grid;
+    grid-template-columns: 64px minmax(0, 1fr);
+    gap: 8px 10px;
+    padding-top: 10px;
+    border-top: 1px dashed #e2e8f0;
+    font-size: 13px;
+  }
+
+  .mobile-task-meta.compact {
+    grid-template-columns: 70px minmax(0, 1fr);
+  }
+
+  .mobile-task-meta > span:nth-child(odd) {
+    color: var(--ink-muted);
+  }
+
+  .mobile-task-meta > * {
+    min-width: 0;
+  }
+
+  .mobile-card-actions {
+    width: 100%;
+    padding-top: 2px;
+  }
+
+  .mobile-primary-link {
+    display: inline-flex;
+    justify-content: center;
+    align-items: center;
+    min-width: 92px;
+    height: 34px;
+    padding: 0 14px;
+    border-radius: 6px;
+    color: #fff;
+    background: linear-gradient(135deg, var(--system-blue), var(--system-indigo));
+    box-shadow: 0 8px 18px rgba(36, 87, 214, 0.16);
+  }
+
+  .mobile-primary-link:hover {
+    color: #fff;
+    background: linear-gradient(135deg, #1d4ed8, #3027b8);
+  }
+
+  .subtask-update-summary-card .ant-descriptions-item-label,
+  .subtask-update-summary-card .ant-descriptions-item-content {
+    padding: 8px 0;
+  }
+
+  .subtask-update-top-actions {
+    width: 100%;
+  }
+
+  .subtask-update-top-actions .ant-btn {
+    width: 100%;
+  }
+
+  .subtask-update-form-card {
+    margin-bottom: 74px;
+  }
+
+  .subtask-update-form-card textarea.ant-input {
+    min-height: 132px;
+    font-size: 15px;
+  }
+
+  .subtask-update-submit-bar {
+    position: sticky;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 15;
+    width: calc(100% + 28px);
+    margin: 8px -14px -14px;
+    padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--line-soft);
+    background: rgba(255, 255, 255, 0.96);
+    backdrop-filter: blur(10px);
+  }
+
+  .subtask-update-submit-bar .ant-space-item,
+  .subtask-update-submit-bar .ant-btn {
+    width: 100%;
+  }
+
+  .subtask-update-attachments-card .ant-upload,
+  .subtask-update-attachments-card .ant-btn {
+    width: 100%;
+  }
+
+  .attachment-row {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

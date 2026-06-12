@@ -20,6 +20,15 @@ SESSION_COOKIE = "task_follow_session"
 SESSION_DAYS = 7
 
 
+def session_cookie_kwargs() -> dict:
+    return {
+        "max_age": SESSION_DAYS * 24 * 60 * 60,
+        "httponly": True,
+        "samesite": "lax",
+        "secure": settings.cookie_secure,
+    }
+
+
 def hash_password(password: str, *, salt: bytes | None = None, iterations: int = 260000) -> str:
     salt = salt or secrets.token_bytes(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)

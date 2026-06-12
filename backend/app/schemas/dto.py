@@ -109,16 +109,8 @@ class RolePermissionUpdate(BaseModel):
     permission_codes: list[str]
 
 
-class MockNotificationRequest(BaseModel):
+class WeeklyReminderRequest(BaseModel):
     week_key: str
-
-
-class LarkTestMessageRequest(BaseModel):
-    target_user_id: int
-
-
-class LarkCardPreviewRequest(BaseModel):
-    target_user_id: int
 
 
 class OnboardingUpdate(BaseModel):

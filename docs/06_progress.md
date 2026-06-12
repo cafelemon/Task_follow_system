@@ -6,9 +6,9 @@
 
 ## 2. 当前状态
 
-当前状态：2.3.1 通知类型细分与定时提醒已进入实施，聚焦周五更新汇总、部门任务拆解通知、部门任务临期提醒和调试白名单。
+当前状态：4.0.0 已作为生产急修同步版完成版本标记，包含生产预检分级和周更新附件上传下载权限闭环。
 
-记录日期：2026-06-09。
+记录日期：2026-06-11。
 
 项目已从 V0 文档和原型阶段进入 V1 MVP 初版实施。1.0.0 目标是基于样板和 overview 建立独立 Web 系统，完成任务层级、周更新历史、自动会议看板、风险逾期、通知记录、权限矩阵和本地 Docker 部署。
 
@@ -416,3 +416,127 @@
 - 浏览器验收通过：刘博洋作为有执行任务的部门负责人，可触发框架、母任务管理、部门任务和子任务执行引导；刘静作为无执行任务的部门负责人，不返回也不触发子任务执行引导。
 - 修复侧栏连续切换时板块引导偶发不触发的问题：除 Ant Design Menu 事件外，增加侧栏链接点击捕获，并以 `/auth/me` 返回的模块状态为准。
 - `bash scripts/start_lan_dev.sh` 已重建服务；健康接口返回 `2.3.5`，本机和 `http://10.10.11.229:8080` 局域网入口均返回 200。
+
+2.3.6 任务负责人双层引导实施内容：
+
+- 版本推进到 `2.3.6`。
+- 任务负责人新增独立系统框架引导，不再使用旧版通用短引导。
+- 任务负责人固定提供部门任务板块专项引导，围绕拆解子任务、指定执行人、继承负责人和跟踪进展展开。
+- 当任务负责人本人存在有效负责或执行子任务时，额外提供子任务执行专项引导；无有效子任务关系时不展示该引导。
+- 总经办、部门负责人仍按更高优先级展示既有引导；任务负责人不能进入母任务拆分职责的产品口径保持不变。
+- 本版不调整权限规则、任务数据、角色分配和数据库结构，继续复用 `user_guide_progress` 记录引导状态。
+- `python3 -m compileall backend/app`、`npm run build`、`alembic check`、Compose 配置检查和 `git diff --check` 均通过；前端构建仍存在 Vite 大 chunk 提示，不影响本版交付。
+- 浏览器验收通过：李松恒作为任务负责人+执行人，可触发框架、部门任务和子任务执行引导；吴静璇作为无有效子任务关系的任务负责人，不返回也不触发子任务执行引导。
+- `bash scripts/start_lan_dev.sh` 已重建服务；健康接口返回 `2.3.6`，本机和 `http://10.10.11.229:8080` 局域网入口均返回 200。
+
+2.3.7 子任务执行者双层引导实施内容：
+
+- 版本推进到 `2.3.7`。
+- 子任务执行者新增独立系统框架引导，不再使用旧版通用短引导。
+- 当执行者本人存在有效未归档执行任务时，额外提供子任务执行专项引导；无有效执行任务时不展示该板块引导。
+- 执行者引导聚焦本人任务、开启任务、周更新提交、风险登记和完成状态，不涉及任务拆解、负责人维护和会议审阅。
+- 总经办、部门负责人和任务负责人仍按更高优先级展示既有引导；观察者继续留到后续版本。
+- 本版不调整权限规则、任务数据、角色分配和数据库结构，继续复用 `user_guide_progress` 记录引导状态。
+- `python3 -m compileall backend/app`、`npm run build`、`alembic check`、Compose 配置检查和 `git diff --check` 均通过；前端构建仍存在 Vite 大 chunk 提示，不影响本版交付。
+- 浏览器验收通过：肖飞作为纯执行人且有执行任务，可触发框架和子任务执行引导；何庚霖作为纯执行人但无有效执行任务，不返回也不触发子任务执行引导。
+- `bash scripts/start_lan_dev.sh` 已重建服务；健康接口返回 `2.3.7`，本机和 `http://10.10.11.229:8080` 局域网入口均返回 200。
+
+2.3.8 观察者双层引导实施内容：
+
+- 版本推进到 `2.3.8`。
+- 观察者新增独立系统框架引导，不再使用旧版通用短引导。
+- 观察者固定提供会议看板、母任务管理、部门任务和历史时间线四个板块专项引导，均围绕只读审阅、任务追溯和会议准备展开。
+- 当观察者本人存在有效未归档执行任务时，额外提供子任务执行专项引导，提示其按执行人身份完成周更新、风险登记和正式提交。
+- 引导画像优先级调整为总经办最高，观察者优先于部门负责人、任务负责人和执行者；用于覆盖陈俊伊这类以审阅为主、同时兼任具体任务的多重身份场景。
+- 本版不调整权限规则、任务数据、角色分配和数据库结构，继续复用 `user_guide_progress` 记录引导状态。
+- `python3 -m compileall backend/app`、`npm run build`、`alembic check` 和 Compose 配置检查均通过；前端构建仍存在 Vite 大 chunk 提示，不影响本版交付。
+- 服务已通过 `bash scripts/start_lan_dev.sh` 重建；健康接口返回 `2.3.8`，本机和 `http://10.10.11.229:8080` 局域网入口均返回 200。
+- 后端画像验证通过：陈俊伊返回 `guide_profile=observer`，并返回会议看板、母任务管理、部门任务、历史时间线和子任务执行五个观察者专项引导；总经办人员仍返回 `executive_office`。
+- 浏览器验收通过：陈俊伊身份首次进入展示观察者系统框架引导，首次主动点击会议看板、母任务管理、部门任务、历史时间线和子任务执行时分别展示对应观察者专项引导；验收产生的 `observer_%` 引导进度已清理，保留真实首次体验。
+
+2.4.0 正式上线前生产口径收敛实施内容：
+
+- 版本推进到 `2.4.0`。
+- 新增生产配置模板 `.env.production.example`，并使用本机实配文件 `env_of` 承载真实生产密钥；正式入口为 `https://task.citronmicrobot.com:4442`，OAuth callback 为 `https://task.citronmicrobot.com:4442/api/auth/lark-oauth/callback`。
+- `.env.example` 不再默认使用贾飞、刘星科通知白名单；生产通知口径为 `TASK_FOLLOW_NOTIFICATION_DELIVERY_MODE=all`。
+- 新增 `TASK_FOLLOW_CORS_ORIGINS`、`TASK_FOLLOW_COOKIE_SECURE` 和 `TASK_FOLLOW_NOTIFICATION_DEBUG_TOOLS_ENABLED`，生产可收敛 CORS、启用 Secure Cookie 并关闭通知调试工具。
+- 生产模式默认隐藏并阻断模拟提醒、测试卡片和四类验收卡片；保留飞书诊断、邮箱解析 open_id、正式周提醒、部门任务临期和风险逾期手动触发。
+- 系统基础初始化和演示数据开关解耦：角色、权限、基础部门和初始管理员始终可初始化，`TASK_FOLLOW_SEED_DEMO_DATA=false` 不再阻断新库创建管理员。
+- 新增 `scripts/preflight_prod_check.py`，只读检查正式 URL、OAuth callback、通知投递模式、调度、CORS、Cookie、飞书诊断、open_id 绑定和 Compose 端口。
+- 本版仍不自动操作飞书开发者后台；正式 redirect URL 需人工确认并发布。
+- `python3 -m compileall backend/app scripts/preflight_prod_check.py`、`npm run build`、Compose 配置检查、`alembic check` 和 `git diff --check` 均通过；前端构建仍存在 Vite 大 chunk 提示，不影响本版交付。
+- `bash scripts/start_lan_dev.sh` 已重建当前局域网服务；健康接口返回 `2.4.0`，本机和 `http://10.10.11.229:8080` 局域网入口均返回 200。
+- 当前局域网 `.env` 运行生产预检负面检查时，已正确拦截局域网 URL、`request_host` OAuth、通知白名单、非 Secure Cookie、CORS 未配置和调试工具未关闭等 blocker。
+- `env_of` 在跳过真实 HTTP/飞书/DB 外联时预检通过；带 DB 检查时当前沙箱无法访问 Docker socket，会作为预检 blocker 暴露。
+- 根据上线前端口隔离要求，正式外部入口已从旧生产端口调整为 `:4442`；`env_of` 已从当前 `.env` 继承真实密钥并覆盖生产口径，`.gitignore` 已忽略该实配文件，仓库只保留无密钥模板 `.env.production.example`。
+- `python3 scripts/preflight_prod_check.py --env-file env_of --base-url https://task.citronmicrobot.com:4442 --skip-http --skip-lark --skip-db` 返回 `ready=true`，用于证明本地实配文件在非外联检查项上满足生产口径。
+- 生产部署改为离线镜像包流程；新增 `docs/09_production_deploy_runbook.md`，部署目录固定为 `/data/jiafei/taskfollow`，外部 Nginx 监听 `4442` 并反代到 Docker 内网入口 `127.0.0.1:28081`。
+- 修复 Compose 后端环境读取隐患：`backend.env_file` 不再固定读取开发 `.env`，生产通过 `TASK_FOLLOW_BACKEND_ENV_FILE=../env_of` 指定真实生产配置；预检会拦截 Compose 展开结果中的局域网地址、`request_host` 和非生产通知口径。
+- 生产离线镜像包按生产机 `linux/amd64` 架构重新构建；手册增加错误架构镜像加载后的检查和 `--force-recreate` 恢复命令。
+- 后端开关验证通过：`TASK_FOLLOW_COOKIE_SECURE=true` 时 session cookie 选项包含 `secure=True`；`TASK_FOLLOW_NOTIFICATION_DEBUG_TOOLS_ENABLED=false` 时通知调试接口返回 403。
+
+3.0.0 生产第一版上线记录：
+
+- 版本推进到 `3.0.0`，作为生产第一版发布标记。
+- 正式入口确认为 `https://task.citronmicrobot.com:4442`；网络链路为公网 `4442` NAT 到生产机 `10.10.20.100:442`，生产机 Nginx 监听 `442` 并反代到 Docker 内网入口 `127.0.0.1:28081`。
+- 生产 Docker 内网健康检查和公网正式健康检查均已返回生产版本；生产页面可正式登录。
+- 飞书 OAuth 生产 callback 继续使用公网地址 `https://task.citronmicrobot.com:4442/api/auth/lark-oauth/callback`；OAuth start 检查需使用 GET，不使用 `curl -I` 的 HEAD 请求。
+- 生产初始部署后数据库为空，已确认原因是 Docker volume 不随镜像包迁移；本机业务库已导出 custom dump，生产通过 `pg_restore --clean --if-exists` 恢复人员、任务、子任务和周更新数据。
+- 本次迁移问题已集中记录到 `docs/09_production_deploy_runbook.md`：包括 amd64 镜像重打、NAT 端口 4442->442、OAuth HEAD 405、数据库 dump/restore、Compose 误读 `.env`、Docker 残留清理。
+
+3.1.0 手机适配第一阶段实施内容：
+
+- 版本推进到 `3.1.0`。
+- 移动端断点统一为 `900px` 以下，用顶部菜单按钮和 Ant Design 抽屉承载导航；桌面端继续保留左侧栏。
+- 移动端顶部保留当前用户、周次、使用指南和退出入口，内容区全宽展示并避免全局横向滚动。
+- “子任务执行”页在手机端改为分组卡片，优先保障“我执行”任务的更新和风险入口。
+- “子任务周更新”页在手机端改为单列任务信息、纵向操作和底部保存/提交按钮，降低手机填报成本。
+- 本版不调整数据库结构和后端业务接口；会议看板、历史时间线、通知、人员和后台管理页面后续分批专项适配。
+- 3.x 中间版本不重新打生产离线包，下一次完整打包留到 4.0.0 前的测试闭合版本。
+
+3.1.1 手机适配第二阶段实施内容：
+
+- 版本推进到 `3.1.1`。
+- 手机端部门任务页使用顶部部门选择器、部门任务卡片和可展开子任务卡片，保留拆解与编辑入口。
+- 手机端会议看板总览改为双列指标、紧凑图表、风险逾期卡片和全屏指标明细，桌面端继续保留表格。
+- 新增 `POST /api/sub-tasks/{sub_task_id}/reopen`；仅子任务负责人、管理员或具备 `permission.manage` 的人员可以撤回完成。
+- 撤回完成后子任务恢复为 `in_progress`，任务进度和当前周相关周更新进度重置为 `0`；历史周更新、风险、开启时间和完成事件不删除，并新增 `reopened` 事件。
+- 子任务完成和撤回完成均增加二次确认；负责人可只读进入更新页处理撤回，但不能代执行人填写周更新。
+- 本版不调整数据库结构，不发送撤回通知，也不反向修改母任务和部门任务状态。
+- 已完成回归验证：负责人撤回成功、仅执行人返回 `403`、重复撤回返回 `409`；当前周进度归零且周更新内容与提交状态保留。
+- 已在 `390x844`、`430x932` 和 `1440x900` 视口验收部门任务与会议总览，手机端无全局横向滚动，桌面表格交互保持不变。
+
+3.2.0 生产通知收口与手机适配闭环实施内容：
+
+- 版本推进到 `3.2.0`。
+- 删除模拟提醒、测试卡片和四类验收卡片的后端接口、请求模型、模拟数据构造和前端入口；正式卡片模板不再接受 `preview` 参数。
+- 通知记录默认排除 `card_preview`、历史测试卡片和历史模拟提醒；管理员可主动勾选“查看历史测试记录”进行审计。
+- 手动发送周更新、部门任务临期和风险逾期提醒前增加全员正式投递确认，继续遵循现有去重键。
+- 手机端完成母任务管理与详情、母任务看板、部门看板、历史时间线、通知记录、人员、角色权限和 Base 同步专项布局。
+- 手机端权限修改改为先调整后显式保存；Base 清空导入要求输入确认文字；人员新增使用移动弹窗。
+- 全局 viewport 增加 `viewport-fit=cover`，统一安全区域、触控高度、长文本换行和横向溢出约束。
+- 原计划本版不制作生产离线包，下一次完整打包留到 `4.0.0`；因通知收口和手机闭环属于生产重要体验修复，验收后例外制作 3.2.0 生产离线同步包。
+
+3.2.0 生产同步包补充：
+
+- 修复生产预检健康版本隐患：`scripts/preflight_prod_check.py` 改为读取仓库 `VERSION`，不再硬编码 `3.0.0`。
+- 新增 `scripts/package_prod_offline.sh`，统一执行静态检查、前端构建、Compose 配置检查、`linux/amd64` 镜像构建、镜像架构校验、镜像保存和 `release_packages/` 压缩包生成；`/private/tmp` 仅作为临时 staging。
+- 更新 `docs/09_production_deploy_runbook.md`、`README.md` 和 `deploy/README.md` 的 3.2.0 离线包名称、健康检查版本和生产同步说明。
+
+3.2.1 预检分级与周更新附件权限实施内容：
+
+- 版本推进到 `3.2.1`。
+- 生产预检 `open_id` 检查改为按正式通知目标分级：周更新待提交执行人、部门任务负责人和风险通知目标缺失为 blocker，暂无通知目标人员缺失为 warning。
+- 生产预检增加 `--base-url` 纯文本校验，避免粘贴 Markdown 链接导致正式入口检查异常。
+- 周更新新增附件上传、下载和删除接口；附件只关联具体 `weekly_update`，文件保存到 `TASK_FOLLOW_ATTACHMENT_ROOT/weekly_updates/{id}/`。
+- 子任务更新页新增附件卡片；无周更新记录时先保存草稿再上传，手机端附件列表和按钮全宽展示。
+- 历史时间线附件改为下载链接；缺少磁盘原文件的历史附件不展示，从本周开始启用真实可下载附件。
+- 附件下载权限跟随子任务/周更新可见范围，上传人、执行人、负责人、部门任务负责人、总经办/观察者和管理员可按关系下载，无关任务负责人不可下载。
+
+4.0.0 生产急修同步版实施内容：
+
+- 版本推进到 `4.0.0`，将 3.2.1 已验收能力作为生产急修同步包发布。
+- 生产离线包继续输出到仓库 `release_packages/`，`/private/tmp` 仅作为临时 staging，成功后清理。
+- 部署手册、README 和 deploy README 已同步 `task-follow-system-4.0.0` 解压目录、`task-follow-system-4.0.0-images.tar` 镜像包和 `/api/health` 期望版本。
+- 本版不改变生产域名、NAT、外部 Nginx 或数据库 volume；附件宿主机目录固定为 `/data/jiafei/taskfollow/data/attachments`，避免换版本目录时附件路径跟随解压目录变化。
+- 生产升级仍沿用加载镜像后 `docker compose --env-file env_of -f deploy/docker-compose.yml up -d --no-build`。

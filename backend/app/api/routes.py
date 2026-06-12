@@ -1,17 +1,21 @@
 import csv
 import logging
+import re
+import uuid
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from io import BytesIO, StringIO
+from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, Cookie, Depends, File, HTTPException, Request, Response, UploadFile, status
-from fastapi.responses import RedirectResponse
-from sqlalchemy import delete, func, select, update
+from fastapi.responses import FileResponse, RedirectResponse
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 from openpyxl import load_workbook
 
 from app import __version__
+from app.core.config import settings
 from app.db.session import get_db
 from app.models.entities import (
     Attachment,
@@ -40,10 +44,7 @@ from app.schemas.dto import (
     DepartmentTaskUpdate,
     GoalCreate,
     GuideProgressUpdate,
-    LarkCardPreviewRequest,
-    LarkTestMessageRequest,
     LoginRequest,
-    MockNotificationRequest,
     OnboardingUpdate,
     OpenIdLoginRequest,
     ParentTaskCreate,
@@ -55,18 +56,16 @@ from app.schemas.dto import (
     RolePermissionUpdate,
     SubTaskCreate,
     SubTaskUpdate,
+    WeeklyReminderRequest,
     WeeklyUpdateUpsert,
 )
 from app.services.business import (
     build_meeting_board,
-    create_mock_notifications,
     current_week_key,
     executor_people,
     generate_code,
     owner_people,
     people_payload,
-    send_lark_test_message,
-    send_lark_card_preview_suite,
     send_department_task_due_reminders,
     send_department_task_split_notifications,
     send_risk_item_notifications,
@@ -89,9 +88,13 @@ from app.services.permissions import (
     can_edit_parent_task,
     can_create_department_task,
     can_edit_department_task,
+    can_access_attachment,
+    can_delete_attachment,
     can_split_sub_task,
     can_access_sub_task,
+    can_reopen_sub_task,
     can_update_sub_task_weekly,
+    can_upload_weekly_update_attachment,
     can_view_sub_task_execution_entry,
     can_manage_parent_tasks,
     can_view_parent_task_page,
@@ -108,10 +111,10 @@ from app.services.permissions import (
 )
 from app.services.auth import (
     SESSION_COOKIE,
-    SESSION_DAYS,
     create_lark_oauth_authorize_url,
     create_session,
     delete_session,
+    session_cookie_kwargs,
     verify_lark_oauth_state,
     verify_lark_login_token,
     verify_password,
@@ -123,6 +126,22 @@ from app.services.scheduler import scheduler_status
 
 router = APIRouter(prefix="/api")
 logger = logging.getLogger(__name__)
+MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+ALLOWED_ATTACHMENT_EXTENSIONS = {
+    ".csv",
+    ".doc",
+    ".docx",
+    ".jpeg",
+    ".jpg",
+    ".pdf",
+    ".png",
+    ".ppt",
+    ".pptx",
+    ".txt",
+    ".xls",
+    ".xlsx",
+    ".zip",
+}
 CURRENT_ONBOARDING_VERSION = "1"
 EXECUTIVE_FRAMEWORK_GUIDE = ("executive_framework", "1")
 EXECUTIVE_MEETING_GUIDE = ("executive_meeting_board", "1")
@@ -130,6 +149,17 @@ DEPARTMENT_OWNER_FRAMEWORK_GUIDE = ("department_owner_framework", "1")
 DEPARTMENT_OWNER_PARENT_TASKS_GUIDE = ("department_owner_parent_tasks", "1")
 DEPARTMENT_OWNER_DEPARTMENT_TASKS_GUIDE = ("department_owner_department_tasks", "1")
 DEPARTMENT_OWNER_SUB_TASKS_GUIDE = ("department_owner_sub_tasks", "1")
+TASK_OWNER_FRAMEWORK_GUIDE = ("task_owner_framework", "1")
+TASK_OWNER_DEPARTMENT_TASKS_GUIDE = ("task_owner_department_tasks", "1")
+TASK_OWNER_SUB_TASKS_GUIDE = ("task_owner_sub_tasks", "1")
+EXECUTOR_FRAMEWORK_GUIDE = ("executor_framework", "1")
+EXECUTOR_SUB_TASKS_GUIDE = ("executor_sub_tasks", "1")
+OBSERVER_FRAMEWORK_GUIDE = ("observer_framework", "1")
+OBSERVER_MEETING_GUIDE = ("observer_meeting_board", "1")
+OBSERVER_PARENT_TASKS_GUIDE = ("observer_parent_tasks", "1")
+OBSERVER_DEPARTMENT_TASKS_GUIDE = ("observer_department_tasks", "1")
+OBSERVER_TIMELINE_GUIDE = ("observer_timeline", "1")
+OBSERVER_SUB_TASKS_GUIDE = ("observer_sub_tasks", "1")
 
 
 def feature_payload(db: Session, user: User) -> dict:
@@ -158,6 +188,8 @@ def guide_profile(db: Session, user: User) -> str | None:
     roles = user_role_codes(user)
     if roles & {"general_manager", "secretary"}:
         return "executive_office"
+    if "observer" in roles:
+        return "observer"
     if "department_owner" in roles and user.department_id:
         return "department_owner"
     owns_department_task = db.scalar(
@@ -188,8 +220,6 @@ def guide_profile(db: Session, user: User) -> str | None:
     )
     if "executor" in roles or executes_sub_task:
         return "executor"
-    if "observer" in roles:
-        return "observer"
     return None
 
 
@@ -209,6 +239,23 @@ def has_active_execution_task(db: Session, user: User) -> bool:
             .limit(1)
         )
     )
+
+
+def has_active_owned_or_execution_sub_task(db: Session, user: User) -> bool:
+    owned = db.scalar(
+        select(SubTaskOwner.user_id)
+        .join(SubTask, SubTask.id == SubTaskOwner.sub_task_id)
+        .join(DepartmentTask, DepartmentTask.id == SubTask.department_task_id)
+        .join(ParentTask, ParentTask.id == DepartmentTask.parent_task_id)
+        .where(
+            SubTaskOwner.user_id == user.id,
+            SubTask.status != "archived",
+            DepartmentTask.status != "archived",
+            ParentTask.status != "archived",
+        )
+        .limit(1)
+    )
+    return bool(owned or has_active_execution_task(db, user))
 
 
 def guide_state(db: Session, user: User, guide_key: str, version: str) -> dict:
@@ -254,6 +301,46 @@ def guides_payload(db: Session, user: User) -> dict:
             "system": guide_state(db, user, framework_key, framework_version),
             "modules": modules,
         }
+    if profile == "task_owner":
+        framework_key, framework_version = TASK_OWNER_FRAMEWORK_GUIDE
+        department_key, department_version = TASK_OWNER_DEPARTMENT_TASKS_GUIDE
+        modules["department_tasks"] = guide_state(db, user, department_key, department_version)
+        if has_active_owned_or_execution_sub_task(db, user):
+            sub_key, sub_version = TASK_OWNER_SUB_TASKS_GUIDE
+            modules["sub_tasks"] = guide_state(db, user, sub_key, sub_version)
+        return {
+            "profile": profile,
+            "system": guide_state(db, user, framework_key, framework_version),
+            "modules": modules,
+        }
+    if profile == "executor":
+        framework_key, framework_version = EXECUTOR_FRAMEWORK_GUIDE
+        if has_active_execution_task(db, user):
+            sub_key, sub_version = EXECUTOR_SUB_TASKS_GUIDE
+            modules["sub_tasks"] = guide_state(db, user, sub_key, sub_version)
+        return {
+            "profile": profile,
+            "system": guide_state(db, user, framework_key, framework_version),
+            "modules": modules,
+        }
+    if profile == "observer":
+        framework_key, framework_version = OBSERVER_FRAMEWORK_GUIDE
+        meeting_key, meeting_version = OBSERVER_MEETING_GUIDE
+        parent_key, parent_version = OBSERVER_PARENT_TASKS_GUIDE
+        department_key, department_version = OBSERVER_DEPARTMENT_TASKS_GUIDE
+        timeline_key, timeline_version = OBSERVER_TIMELINE_GUIDE
+        modules["meeting_board"] = guide_state(db, user, meeting_key, meeting_version)
+        modules["parent_tasks"] = guide_state(db, user, parent_key, parent_version)
+        modules["department_tasks"] = guide_state(db, user, department_key, department_version)
+        modules["timeline"] = guide_state(db, user, timeline_key, timeline_version)
+        if has_active_execution_task(db, user):
+            sub_key, sub_version = OBSERVER_SUB_TASKS_GUIDE
+            modules["sub_tasks"] = guide_state(db, user, sub_key, sub_version)
+        return {
+            "profile": profile,
+            "system": guide_state(db, user, framework_key, framework_version),
+            "modules": modules,
+        }
     return {"profile": profile, "system": None, "modules": {}}
 
 
@@ -269,6 +356,30 @@ def allowed_guides(db: Session, user: User) -> set[tuple[str, str]]:
         }
         if has_active_execution_task(db, user):
             allowed.add(DEPARTMENT_OWNER_SUB_TASKS_GUIDE)
+        return allowed
+    if profile == "task_owner":
+        allowed = {
+            TASK_OWNER_FRAMEWORK_GUIDE,
+            TASK_OWNER_DEPARTMENT_TASKS_GUIDE,
+        }
+        if has_active_owned_or_execution_sub_task(db, user):
+            allowed.add(TASK_OWNER_SUB_TASKS_GUIDE)
+        return allowed
+    if profile == "executor":
+        allowed = {EXECUTOR_FRAMEWORK_GUIDE}
+        if has_active_execution_task(db, user):
+            allowed.add(EXECUTOR_SUB_TASKS_GUIDE)
+        return allowed
+    if profile == "observer":
+        allowed = {
+            OBSERVER_FRAMEWORK_GUIDE,
+            OBSERVER_MEETING_GUIDE,
+            OBSERVER_PARENT_TASKS_GUIDE,
+            OBSERVER_DEPARTMENT_TASKS_GUIDE,
+            OBSERVER_TIMELINE_GUIDE,
+        }
+        if has_active_execution_task(db, user):
+            allowed.add(OBSERVER_SUB_TASKS_GUIDE)
         return allowed
     return set()
 
@@ -391,6 +502,67 @@ def default_update_assignee(current_user: User, sub_task: SubTask, assignee_id: 
     if not assignee:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Assignee not found")
     return assignee
+
+
+def attachment_storage_root() -> Path:
+    root = Path(settings.attachment_root)
+    if not root.is_absolute():
+        root = (Path(__file__).resolve().parents[3] / root).resolve()
+    return root.resolve()
+
+
+def sanitize_filename(filename: str) -> str:
+    name = Path(filename or "attachment").name
+    name = re.sub(r"[\x00-\x1f/\\]+", "_", name).strip().strip(".")
+    return name[:180] or "attachment"
+
+
+def serialize_attachment_for_user(attachment: Attachment, user: User) -> dict:
+    return {
+        "id": attachment.id,
+        "filename": attachment.filename,
+        "download_url": f"/api/attachments/{attachment.id}/download",
+        "can_delete": can_delete_attachment(user, attachment),
+        "created_at": attachment.created_at.isoformat() if attachment.created_at else None,
+        "uploader_id": attachment.uploader_id,
+    }
+
+
+def weekly_update_attachments(db: Session, update_id: int | None) -> list[Attachment]:
+    if not update_id:
+        return []
+    return list(
+        db.scalars(
+            select(Attachment)
+            .where(Attachment.related_type == "weekly_update", Attachment.related_id == update_id)
+            .order_by(Attachment.id)
+        ).all()
+    )
+
+
+def is_path_inside(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def attachment_file_exists(attachment: Attachment) -> bool:
+    root = attachment_storage_root()
+    file_path = (root / attachment.storage_path).resolve()
+    return is_path_inside(file_path, root) and file_path.exists() and file_path.is_file()
+
+
+def serialize_weekly_update_for_user(db: Session, update: WeeklyUpdate, user: User) -> dict:
+    return {
+        **serialize_weekly_update(update),
+        "attachments": [
+            serialize_attachment_for_user(attachment, user)
+            for attachment in weekly_update_attachments(db, update.id)
+            if attachment_file_exists(attachment)
+        ],
+    }
 
 
 def lark_login_error_redirect(message: str) -> RedirectResponse:
@@ -628,6 +800,7 @@ def serialize_sub_task_for_execution(task: SubTask, user: User, current_update: 
         **serialize_sub_task(task, current_update),
         "viewer_relation": relation,
         "can_update_weekly": can_update_sub_task_weekly(user, task, assignee_id),
+        "can_reopen": can_reopen_sub_task(user, task),
         "current_assignee_id": assignee_id,
         "can_create_risk": can_create_risk_item(user, task),
         "risk_owner_options": owner_options,
@@ -941,9 +1114,10 @@ def build_timeline_matrix_payload(db: Session, user: User) -> dict:
                 Attachment.related_id.in_(update_ids),
             )
         ).all():
-            attachments_by_update[attachment.related_id].append(
-                {"id": attachment.id, "filename": attachment.filename}
-            )
+            if attachment_file_exists(attachment):
+                attachments_by_update[attachment.related_id].append(
+                    {"id": attachment.id, "filename": attachment.filename}
+                )
     tree: dict[int, dict] = {}
     for task in sub_tasks:
         department_task = task.department_task
@@ -1071,9 +1245,7 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(get_d
     response.set_cookie(
         SESSION_COOKIE,
         token,
-        max_age=SESSION_DAYS * 24 * 60 * 60,
-        httponly=True,
-        samesite="lax",
+        **session_cookie_kwargs(),
     )
     db.refresh(user)
     return {
@@ -1122,9 +1294,7 @@ def openid_login(payload: OpenIdLoginRequest, response: Response, db: Session = 
     response.set_cookie(
         SESSION_COOKIE,
         token,
-        max_age=SESSION_DAYS * 24 * 60 * 60,
-        httponly=True,
-        samesite="lax",
+        **session_cookie_kwargs(),
     )
     return {
         "user": serialize_user(user),
@@ -1154,9 +1324,7 @@ def lark_link_login(token: str, db: Session = Depends(get_db)) -> RedirectRespon
     redirect.set_cookie(
         SESSION_COOKIE,
         session_token,
-        max_age=SESSION_DAYS * 24 * 60 * 60,
-        httponly=True,
-        samesite="lax",
+        **session_cookie_kwargs(),
     )
     return redirect
 
@@ -1221,9 +1389,7 @@ async def lark_oauth_callback(
     redirect.set_cookie(
         SESSION_COOKIE,
         session_token,
-        max_age=SESSION_DAYS * 24 * 60 * 60,
-        httponly=True,
-        samesite="lax",
+        **session_cookie_kwargs(),
     )
     return redirect
 
@@ -2072,6 +2238,44 @@ def complete_sub_task(
     return serialize_sub_task(task)
 
 
+@router.post("/sub-tasks/{sub_task_id}/reopen")
+def reopen_sub_task(
+    sub_task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    task = db.get(SubTask, sub_task_id)
+    if not task or not task.department_task or task.department_task.status == "archived":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Sub task not found")
+    if not can_reopen_sub_task(current_user, task):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No reopen access to this sub task")
+    if task.status != "completed":
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="Only completed tasks can be reopened")
+    task.status = "in_progress"
+    task.progress = 0
+    db.execute(
+        update(WeeklyUpdate)
+        .where(
+            WeeklyUpdate.sub_task_id == task.id,
+            WeeklyUpdate.week_key == current_week_key(),
+        )
+        .values(progress=0)
+    )
+    db.add(
+        TaskEvent(
+            object_type="sub_task",
+            object_id=task.id,
+            event_type="reopened",
+            title="撤回子任务完成",
+            content=task.title,
+            actor_id=current_user.id,
+        )
+    )
+    db.commit()
+    db.refresh(task)
+    return serialize_sub_task_for_execution(task, current_user)
+
+
 @router.get("/weekly-updates")
 def list_weekly_updates(
     week_key: str | None = None,
@@ -2083,7 +2287,7 @@ def list_weekly_updates(
         stmt = stmt.where(WeeklyUpdate.week_key == week_key)
     updates = db.scalars(stmt).all()
     return [
-        serialize_weekly_update(update)
+        serialize_weekly_update_for_user(db, update, current_user)
         for update in updates
         if can_access_sub_task(db, current_user, update.sub_task)
     ]
@@ -2100,9 +2304,9 @@ def current_weekly_update(
     sub_task = db.get(SubTask, sub_task_id)
     if not sub_task or not sub_task.department_task or sub_task.department_task.status == "archived":
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Sub task not found")
+    if not can_access_sub_task(db, current_user, sub_task):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to this sub task")
     assignee = default_update_assignee(current_user, sub_task, assignee_id)
-    if not can_update_sub_task_weekly(current_user, sub_task, assignee.id):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No update access to this sub task")
     target_week = week_key or current_week_key()
     update = db.scalar(
         select(WeeklyUpdate).where(
@@ -2112,7 +2316,7 @@ def current_weekly_update(
         )
     )
     if update:
-        return serialize_weekly_update(update)
+        return serialize_weekly_update_for_user(db, update, current_user)
     return {
         "id": None,
         "sub_task_id": sub_task.id,
@@ -2129,6 +2333,7 @@ def current_weekly_update(
         "submitter_id": current_user.id,
         "submitter": current_user.name,
         "submitted_at": None,
+        "attachments": [],
     }
 
 
@@ -2162,7 +2367,86 @@ def save_weekly_update(
         needs_coordination=payload.needs_coordination,
         submit=payload.submit,
     )
-    return serialize_weekly_update(update)
+    return serialize_weekly_update_for_user(db, update, current_user)
+
+
+@router.post("/weekly-updates/{weekly_update_id}/attachments")
+async def upload_weekly_update_attachment(
+    weekly_update_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("weekly_update.submit")),
+) -> dict:
+    update = db.get(WeeklyUpdate, weekly_update_id)
+    if not update or not update.sub_task:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Weekly update not found")
+    if not can_upload_weekly_update_attachment(current_user, update):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No upload access to this weekly update")
+    content = await file.read(MAX_ATTACHMENT_BYTES + 1)
+    if len(content) > MAX_ATTACHMENT_BYTES:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Attachment exceeds 20MB limit")
+    filename = sanitize_filename(file.filename or "attachment")
+    suffix = Path(filename).suffix[:20]
+    if suffix.lower() not in ALLOWED_ATTACHMENT_EXTENSIONS:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Unsupported attachment file type")
+    storage_dir = Path("weekly_updates") / str(update.id)
+    stored_name = f"{uuid.uuid4().hex}{suffix}"
+    root = attachment_storage_root()
+    target_dir = (root / storage_dir).resolve()
+    if not is_path_inside(target_dir, root):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Invalid attachment path")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / stored_name
+    target_path.write_bytes(content)
+    attachment = Attachment(
+        filename=filename,
+        storage_path=str(storage_dir / stored_name),
+        related_type="weekly_update",
+        related_id=update.id,
+        uploader_id=current_user.id,
+    )
+    db.add(attachment)
+    db.commit()
+    db.refresh(attachment)
+    return serialize_attachment_for_user(attachment, current_user)
+
+
+@router.get("/attachments/{attachment_id}/download")
+def download_attachment(
+    attachment_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> FileResponse:
+    attachment = db.get(Attachment, attachment_id)
+    if not attachment:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Attachment not found")
+    if not can_access_attachment(db, current_user, attachment):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No download access to this attachment")
+    root = attachment_storage_root()
+    file_path = (root / attachment.storage_path).resolve()
+    if not is_path_inside(file_path, root) or not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Attachment file not found")
+    return FileResponse(file_path, media_type="application/octet-stream", filename=attachment.filename)
+
+
+@router.delete("/attachments/{attachment_id}")
+def delete_attachment(
+    attachment_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    attachment = db.get(Attachment, attachment_id)
+    if not attachment:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Attachment not found")
+    if not can_delete_attachment(current_user, attachment):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No delete access to this attachment")
+    root = attachment_storage_root()
+    file_path = (root / attachment.storage_path).resolve()
+    if is_path_inside(file_path, root) and file_path.exists() and file_path.is_file():
+        file_path.unlink()
+    db.delete(attachment)
+    db.commit()
+    return {"ok": True}
 
 
 @router.get("/timeline")
@@ -2397,8 +2681,21 @@ def export_meeting_board(
 
 
 @router.get("/notifications")
-def list_notifications(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> list[dict]:
-    records = db.scalars(select(NotificationRecord).order_by(NotificationRecord.id.desc())).all()
+def list_notifications(
+    include_historical: bool = False,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> list[dict]:
+    stmt = select(NotificationRecord)
+    if not include_historical:
+        stmt = stmt.where(
+            NotificationRecord.notification_type.not_in(["lark_test_message", "weekly_update_reminder"]),
+            or_(
+                NotificationRecord.related_type.is_(None),
+                NotificationRecord.related_type != "card_preview",
+            ),
+        )
+    records = db.scalars(stmt.order_by(NotificationRecord.id.desc())).all()
     return [
         {
             "id": item.id,
@@ -2419,15 +2716,6 @@ def list_notifications(db: Session = Depends(get_db), _: User = Depends(get_curr
         }
         for item in records
     ]
-
-
-@router.post("/notifications/mock-reminders")
-def mock_reminders(
-    payload: MockNotificationRequest,
-    db: Session = Depends(get_db),
-    _: User = Depends(require_permission("notification.nudge")),
-) -> dict:
-    return {"created": create_mock_notifications(db, payload.week_key)}
 
 
 @router.get("/lark/diagnostics")
@@ -2550,7 +2838,7 @@ async def resolve_lark_open_ids(
 
 @router.post("/notifications/lark-weekly-reminders")
 async def lark_weekly_reminders(
-    payload: MockNotificationRequest,
+    payload: WeeklyReminderRequest,
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("notification.nudge")),
 ) -> dict:
@@ -2578,24 +2866,6 @@ async def risk_overdue_notifications(
     _: User = Depends(require_permission("notification.nudge")),
 ) -> dict:
     return await send_risk_overdue_reminders(db)
-
-
-@router.post("/notifications/lark-card-preview-suite")
-async def lark_card_preview_suite(
-    payload: LarkCardPreviewRequest,
-    db: Session = Depends(get_db),
-    _: User = Depends(require_permission("notification.nudge")),
-) -> dict:
-    return await send_lark_card_preview_suite(db, payload.target_user_id)
-
-
-@router.post("/notifications/lark-test-message")
-async def lark_test_message(
-    payload: LarkTestMessageRequest,
-    db: Session = Depends(get_db),
-    _: User = Depends(require_permission("notification.nudge")),
-) -> dict:
-    return await send_lark_test_message(db, payload.target_user_id)
 
 
 @router.get("/attachments")

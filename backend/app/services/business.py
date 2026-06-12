@@ -1,6 +1,5 @@
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
-from types import SimpleNamespace
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -452,29 +451,6 @@ def build_meeting_board(db: Session, week_key: str) -> dict:
     }
 
 
-def create_mock_notifications(db: Session, week_key: str) -> int:
-    created = 0
-    for task, assignee in missing_update_assignments(db, week_key):
-        db.add(
-            NotificationRecord(
-                target_user_id=assignee.id,
-                notification_type="weekly_update_reminder",
-                related_type="sub_task",
-                related_id=task.id,
-                title=f"{week_key} 周更新提醒",
-                web_url=f"{settings.web_base_url}/weekly-updates?subTaskId={task.id}&assigneeId={assignee.id}",
-                result="模拟发送，等待用户处理",
-            )
-        )
-        created += 1
-    db.commit()
-    return created
-
-
-def _card_title(title: str, *, preview: bool = False) -> str:
-    return f"[验收示例] {title}" if preview else title
-
-
 def _card_field(label: str, value: str) -> dict:
     return {
         "is_short": True,
@@ -491,7 +467,6 @@ def _business_card(
     note: str,
     action_text: str,
     web_url: str,
-    preview: bool = False,
 ) -> dict:
     elements: list[dict] = [
         {"tag": "div", "text": {"tag": "lark_md", "content": summary}},
@@ -519,7 +494,7 @@ def _business_card(
         "config": {"wide_screen_mode": True, "enable_forward": False},
         "header": {
             "template": template,
-            "title": {"tag": "plain_text", "content": _card_title(title, preview=preview)},
+            "title": {"tag": "plain_text", "content": title},
         },
         "elements": elements,
     }
@@ -580,8 +555,6 @@ def build_weekly_update_digest_card(
     tasks: list[SubTask],
     week_key: str,
     web_url: str,
-    *,
-    preview: bool = False,
 ) -> dict:
     visible = tasks[:8]
     lines = [f"{index}. **{task.code}** {task.title}" for index, task in enumerate(visible, start=1)]
@@ -595,11 +568,10 @@ def build_weekly_update_digest_card(
         note="请补充本周完成内容、遗留事项和下一步计划。",
         action_text="填写本周更新",
         web_url=web_url,
-        preview=preview,
     )
 
 
-def build_department_task_split_card(task: DepartmentTask, web_url: str, *, preview: bool = False) -> dict:
+def build_department_task_split_card(task: DepartmentTask, web_url: str) -> dict:
     parent = task.parent_task
     return _business_card(
         template="blue",
@@ -612,7 +584,6 @@ def build_department_task_split_card(task: DepartmentTask, web_url: str, *, prev
         note="拆解后请确认每个子任务均有明确执行人和截止时间。",
         action_text="前往拆解子任务",
         web_url=web_url,
-        preview=preview,
     )
 
 
@@ -620,8 +591,6 @@ def build_department_task_due_card(
     task: DepartmentTask,
     days_left: int,
     web_url: str,
-    *,
-    preview: bool = False,
 ) -> dict:
     deadline_text = "今天截止" if days_left == 0 else f"距离截止还有 **{days_left} 天**"
     parent = task.parent_task
@@ -638,11 +607,10 @@ def build_department_task_due_card(
         note="如存在阻塞或交付风险，请及时登记风险项并推动处理。",
         action_text="查看部门任务",
         web_url=web_url,
-        preview=preview,
     )
 
 
-def build_risk_item_card(risk: RiskItem, trigger: str, web_url: str, *, preview: bool = False) -> dict:
+def build_risk_item_card(risk: RiskItem, trigger: str, web_url: str) -> dict:
     sub_task = risk.sub_task
     department_task = sub_task.department_task if sub_task else None
     owner_name = risk.owner.name if risk.owner else "-"
@@ -662,38 +630,7 @@ def build_risk_item_card(risk: RiskItem, trigger: str, web_url: str, *, preview:
         note="请由风险责任人牵头处理，并在系统中持续更新状态和关闭说明。",
         action_text="查看并处理风险",
         web_url=web_url,
-        preview=preview,
     )
-
-
-def build_lark_test_card(web_url: str) -> dict:
-    return {
-        "config": {"wide_screen_mode": True, "enable_forward": False},
-        "header": {
-            "template": "blue",
-            "title": {"tag": "plain_text", "content": "2.3.1 飞书测试卡片"},
-        },
-        "elements": [
-            {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": "这是一条公司任务跟踪系统的本地联调消息。",
-                },
-            },
-            {
-                "tag": "action",
-                "actions": [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "打开任务系统"},
-                        "url": web_url,
-                        "type": "primary",
-                    }
-                ],
-            },
-        ],
-    }
 
 
 def lark_entry_url(
@@ -731,7 +668,7 @@ def notification_delivery_block(target: User) -> tuple[str, str] | None:
     if settings.notification_delivery_mode == "allowlist":
         email = (target.email or "").strip().lower()
         if email not in settings.notification_allowlist_emails:
-            return "suppressed", "调试白名单模式：未向该用户真实发送"
+            return "suppressed", "白名单试运行模式：未向该用户真实发送"
     return None
 
 
@@ -856,145 +793,6 @@ async def send_risk_overdue_reminders(db: Session, *, today: date | None = None)
             totals[key] += result[key]
         results.append({"risk_id": risk.id, "risk": risk.title, "result": result})
     return {**totals, "results": results}
-
-
-async def send_lark_card_preview_suite(db: Session, target_user_id: int) -> dict:
-    target = db.get(User, target_user_id)
-    if not target:
-        return {"ok": False, "send_status": "blocked", "message": "目标用户不存在"}
-
-    parent = SimpleNamespace(code="PT-2026-001", title="年度重点产品交付")
-    department_task = SimpleNamespace(
-        id=0,
-        code="DT-2026-001",
-        title="完成核心模块联调与交付准备",
-        parent_task=parent,
-        due_date=date.today() + timedelta(days=3),
-        progress=72,
-    )
-    sub_tasks = [
-        SimpleNamespace(code=f"ST-2026-{index:03d}", title=title, department_task=department_task)
-        for index, title in enumerate(
-            ["接口联调与异常场景验证", "用户验收问题收敛", "上线材料与操作手册完善"],
-            start=1,
-        )
-    ]
-    risk_owner = SimpleNamespace(name=target.name)
-    risk = SimpleNamespace(
-        id=0,
-        code="RI-2026-001",
-        title="关键接口稳定性尚未达到交付标准",
-        description="高并发场景仍存在偶发超时，需要在验收前完成定位和复测。",
-        impact_score=4,
-        likelihood_score=4,
-        score=16,
-        level="high",
-        owner=risk_owner,
-        due_date=date.today() + timedelta(days=2),
-        sub_task=sub_tasks[0],
-    )
-    preview_specs = [
-        (
-            "weekly_update_digest",
-            "周更新汇总提醒（验收示例）",
-            "/weekly-updates",
-            lambda url: build_weekly_update_digest_card(
-                sub_tasks,
-                current_week_key(),
-                url,
-                preview=True,
-            ),
-        ),
-        (
-            "department_task_split_required",
-            "部门任务拆解提醒（验收示例）",
-            "/department-tasks",
-            lambda url: build_department_task_split_card(department_task, url, preview=True),
-        ),
-        (
-            "department_task_due_soon",
-            "部门任务临期提醒（验收示例）",
-            "/department-tasks",
-            lambda url: build_department_task_due_card(department_task, 3, url, preview=True),
-        ),
-        (
-            "risk_item_alert",
-            "风险项提醒（验收示例）",
-            "/sub-tasks",
-            lambda url: build_risk_item_card(risk, "新增高风险", url, preview=True),
-        ),
-    ]
-    sent = failed = blocked = suppressed = 0
-    results = []
-    for notification_type, title, next_path, card_builder in preview_specs:
-        record = NotificationRecord(
-            target_user_id=target.id,
-            notification_type=notification_type,
-            related_type="card_preview",
-            related_id=None,
-            title=title,
-            send_status="pending",
-        )
-        web_url = prepare_notification_link(db, record, target, next_path)
-        ok, delivery_status, message = await deliver_notification(target, card=card_builder(web_url))
-        record.send_status = delivery_status
-        record.result = message[:200]
-        sent += 1 if ok else 0
-        failed += 1 if delivery_status == "failed" else 0
-        blocked += 1 if delivery_status == "blocked" else 0
-        suppressed += 1 if delivery_status == "suppressed" else 0
-        results.append(
-            {
-                "record_id": record.id,
-                "notification_type": notification_type,
-                "send_status": delivery_status,
-                "result": record.result,
-            }
-        )
-    db.commit()
-    return {
-        "ok": sent == len(preview_specs),
-        "target_user": target.name,
-        "created": len(preview_specs),
-        "sent": sent,
-        "failed": failed,
-        "blocked": blocked,
-        "suppressed": suppressed,
-        "results": results,
-    }
-
-
-async def send_lark_test_message(db: Session, target_user_id: int) -> dict:
-    target = db.get(User, target_user_id)
-    if not target:
-        return {"ok": False, "send_status": "blocked", "message": "目标用户不存在"}
-
-    record = NotificationRecord(
-        target_user_id=target.id,
-        notification_type="lark_test_message",
-        related_type="user",
-        related_id=target.id,
-        title="2.3.1 飞书测试卡片",
-        send_status="pending",
-    )
-    web_url = prepare_notification_link(db, record, target, "/meeting-board/overview")
-
-    _ok, delivery_status, message = await deliver_notification(
-        target,
-        card=build_lark_test_card(web_url),
-    )
-    record.send_status = delivery_status
-    record.result = message[:200]
-
-    db.commit()
-    db.refresh(record)
-    return {
-        "ok": record.send_status == "sent",
-        "record_id": record.id,
-        "target_user": target.name,
-        "send_status": record.send_status,
-        "message": record.result,
-    }
 
 
 async def send_weekly_update_reminders(db: Session, week_key: str) -> dict:
