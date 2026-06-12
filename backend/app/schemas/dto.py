@@ -109,6 +109,14 @@ class RolePermissionUpdate(BaseModel):
     permission_codes: list[str]
 
 
+class DepartmentCreate(BaseModel):
+    name: str
+
+
+class DepartmentUpdate(BaseModel):
+    name: str
+
+
 class WeeklyReminderRequest(BaseModel):
     week_key: str
 

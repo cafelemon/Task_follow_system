@@ -40,8 +40,10 @@ from app.models.entities import (
     WeeklyUpdate,
 )
 from app.schemas.dto import (
+    DepartmentCreate,
     DepartmentTaskCreate,
     DepartmentTaskUpdate,
+    DepartmentUpdate,
     GoalCreate,
     GuideProgressUpdate,
     LoginRequest,
@@ -1522,6 +1524,56 @@ def parse_email_import(content: bytes, filename: str) -> list[dict[str, str]]:
     raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="仅支持 CSV 或 XLSX 邮箱导入文件")
 
 
+def normalize_department_name(name: str) -> str:
+    normalized = re.sub(r"\s+", " ", (name or "").strip())
+    if not normalized:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="部门名称不能为空")
+    if len(normalized) > 120:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="部门名称不能超过 120 个字符")
+    return normalized
+
+
+def department_reference_counts(db: Session, department_id: int) -> dict[str, int]:
+    return {
+        "users": db.scalar(select(func.count()).select_from(User).where(User.department_id == department_id)) or 0,
+        "parent_tasks": db.scalar(select(func.count()).select_from(ParentTask).where(ParentTask.department_id == department_id)) or 0,
+        "department_tasks": db.scalar(select(func.count()).select_from(DepartmentTask).where(DepartmentTask.department_id == department_id)) or 0,
+        "department_task_departments": db.scalar(
+            select(func.count()).select_from(DepartmentTaskDepartment).where(DepartmentTaskDepartment.department_id == department_id)
+        )
+        or 0,
+        "child_departments": db.scalar(select(func.count()).select_from(Department).where(Department.parent_id == department_id)) or 0,
+    }
+
+
+def serialize_department_item(item: Department, reference_counts: dict[str, int] | None = None) -> dict:
+    payload = {
+        "id": item.id,
+        "name": item.name,
+        "manager_id": item.manager_id,
+        "manager": item.manager.name if item.manager else None,
+        "status": item.status,
+    }
+    if reference_counts is not None:
+        blocking = {
+            "人员": reference_counts["users"],
+            "母任务": reference_counts["parent_tasks"],
+            "部门任务": reference_counts["department_tasks"],
+            "部门任务多部门关联": reference_counts["department_task_departments"],
+            "子部门": reference_counts["child_departments"],
+        }
+        blocking_reasons = [f"{label} {count} 项" for label, count in blocking.items() if count]
+        payload.update(
+            {
+                "reference_counts": reference_counts,
+                "reference_total": sum(reference_counts.values()),
+                "can_delete": not blocking_reasons,
+                "delete_blocking_reasons": blocking_reasons,
+            }
+        )
+    return payload
+
+
 @router.post("/lark/import-user-emails")
 async def import_user_emails(
     file: UploadFile = File(...),
@@ -1549,16 +1601,100 @@ async def import_user_emails(
 @router.get("/departments")
 def list_departments(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> list[dict]:
     departments = db.scalars(select(Department).order_by(Department.id)).all()
-    return [
-        {
-            "id": item.id,
-            "name": item.name,
-            "manager_id": item.manager_id,
-            "manager": item.manager.name if item.manager else None,
-            "status": item.status,
-        }
-        for item in departments
-    ]
+    return [serialize_department_item(item) for item in departments]
+
+
+@router.get("/departments/manage")
+def manage_departments(db: Session = Depends(get_db), _: User = Depends(require_admin)) -> list[dict]:
+    departments = db.scalars(select(Department).order_by(Department.id)).all()
+    return [serialize_department_item(item, department_reference_counts(db, item.id)) for item in departments]
+
+
+@router.post("/departments", status_code=201)
+def create_department(
+    payload: DepartmentCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+) -> dict:
+    name = normalize_department_name(payload.name)
+    if db.scalar(select(Department).where(Department.name == name)):
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="部门名称已存在")
+    department = Department(name=name, status="active")
+    db.add(department)
+    db.flush()
+    db.add(
+        TaskEvent(
+            object_type="department",
+            object_id=department.id,
+            event_type="department_created",
+            title="新增部门",
+            content=name,
+            actor_id=current_user.id,
+        )
+    )
+    db.commit()
+    db.refresh(department)
+    return serialize_department_item(department, department_reference_counts(db, department.id))
+
+
+@router.put("/departments/{department_id}")
+def update_department(
+    department_id: int,
+    payload: DepartmentUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+) -> dict:
+    department = db.get(Department, department_id)
+    if not department:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Department not found")
+    name = normalize_department_name(payload.name)
+    existing = db.scalar(select(Department).where(Department.name == name, Department.id != department_id))
+    if existing:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="部门名称已存在")
+    old_name = department.name
+    department.name = name
+    db.add(
+        TaskEvent(
+            object_type="department",
+            object_id=department.id,
+            event_type="department_renamed",
+            title="编辑部门",
+            content=f"{old_name} -> {name}",
+            actor_id=current_user.id,
+        )
+    )
+    db.commit()
+    db.refresh(department)
+    return serialize_department_item(department, department_reference_counts(db, department.id))
+
+
+@router.delete("/departments/{department_id}")
+def delete_department(
+    department_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+) -> dict:
+    department = db.get(Department, department_id)
+    if not department:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Department not found")
+    reference_counts = department_reference_counts(db, department.id)
+    if sum(reference_counts.values()):
+        detail = serialize_department_item(department, reference_counts)
+        detail["message"] = "该部门仍有引用，不能删除"
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=detail)
+    db.add(
+        TaskEvent(
+            object_type="department",
+            object_id=department.id,
+            event_type="department_deleted",
+            title="删除部门",
+            content=department.name,
+            actor_id=current_user.id,
+        )
+    )
+    db.delete(department)
+    db.commit()
+    return {"ok": True, "id": department_id}
 
 
 @router.get("/roles")

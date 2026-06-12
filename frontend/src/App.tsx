@@ -308,6 +308,7 @@ const baseMenuItems = [
 
 const adminMenuItems = [
   { key: '/people', title: '人员', icon: <TeamOutlined />, label: <Link to="/people">人员</Link> },
+  { key: '/department-management', title: '部门管理', icon: <ApartmentOutlined />, label: <Link to="/department-management">部门管理</Link> },
   { key: '/permissions', title: '角色权限', icon: <SafetyOutlined />, label: <Link to="/permissions">角色权限</Link> },
   { key: '/base-sync', title: 'Base同步', icon: <DatabaseOutlined />, label: <Link to="/base-sync">Base同步</Link> }
 ];
@@ -1383,6 +1384,7 @@ function AppLayout() {
             <Route path="/notifications" element={<Notifications />} />
             <Route path="/permissions" element={<Permissions />} />
             <Route path="/people" element={<People />} />
+            <Route path="/department-management" element={<DepartmentManagement />} />
             <Route path="/base-sync" element={<BaseSync />} />
             <Route path="/task-detail" element={<TaskDetail />} />
           </Routes>
@@ -3788,6 +3790,166 @@ function People() {
                 { value: 'disabled', label: '停用' }
               ]}
             />
+          </Form.Item>
+        </Form>
+      </Modal>
+    </PageShell>
+  );
+}
+
+function DepartmentManagement() {
+  const mobileLayout = useIsMobileLayout();
+  const { data, reload, loading } = useApi<AnyRecord[]>('/departments/manage', []);
+  const [form] = Form.useForm();
+  const [editing, setEditing] = useState<AnyRecord | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
+  const departments = data || [];
+  const referenceLabels: Record<string, string> = {
+    users: '人员',
+    parent_tasks: '母任务',
+    department_tasks: '部门任务',
+    department_task_departments: '部门任务多部门关联',
+    child_departments: '子部门'
+  };
+  const referenceSummary = (department: AnyRecord) => {
+    const counts = department.reference_counts || {};
+    const items = Object.entries(referenceLabels)
+      .map(([key, label]) => ({ key, label, count: Number(counts[key] || 0) }))
+      .filter((item) => item.count > 0);
+    return items.length ? items.map((item) => `${item.label} ${item.count} 项`).join('，') : '无引用';
+  };
+  const openCreate = () => {
+    setEditing(null);
+    form.resetFields();
+    setModalOpen(true);
+  };
+  const openEdit = (department: AnyRecord) => {
+    setEditing(department);
+    form.setFieldsValue({ name: department.name });
+    setModalOpen(true);
+  };
+  const submitDepartment = async () => {
+    const values = await form.validateFields();
+    if (editing) {
+      await putJson(`/departments/${editing.id}`, values);
+      message.success('部门已更新');
+    } else {
+      await postJson('/departments', values);
+      message.success('部门已新增');
+    }
+    setModalOpen(false);
+    setEditing(null);
+    form.resetFields();
+    await reload();
+  };
+  const deleteDepartment = (department: AnyRecord) => {
+    if (!department.can_delete) {
+      message.warning(`该部门仍有引用，不能删除：${referenceSummary(department)}`);
+      return;
+    }
+    Modal.confirm({
+      title: `确认删除部门“${department.name}”？`,
+      content: '删除后该部门会从所有部门选择器中移除。该操作只允许无任何引用的错字或误建部门使用。',
+      okText: '确认删除',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await deleteJson(`/departments/${department.id}`);
+          message.success('部门已删除');
+          await reload();
+        } catch (error: any) {
+          const detail = error?.response?.data?.detail;
+          const reasons = Array.isArray(detail?.delete_blocking_reasons) ? detail.delete_blocking_reasons.join('，') : '';
+          message.error(reasons ? `该部门仍有引用，不能删除：${reasons}` : '部门删除失败');
+          throw error;
+        }
+      }
+    });
+  };
+  const columns: ColumnsType<AnyRecord> = [
+    { title: '部门名称', dataIndex: 'name', width: 220, ellipsis: true, render: renderEllipsis },
+    { title: '状态', dataIndex: 'status', width: 100, render: (value) => <Tag>{value || '-'}</Tag> },
+    { title: '引用情况', width: 340, render: (_, row) => renderEllipsis(referenceSummary(row)) },
+    {
+      title: '是否可删除',
+      dataIndex: 'can_delete',
+      width: 120,
+      render: (value) => value ? <Tag color="green">可删除</Tag> : <Tag color="orange">有引用</Tag>
+    },
+    {
+      title: '操作',
+      width: 180,
+      render: (_, row) => (
+        <Space>
+          <Button size="small" onClick={() => openEdit(row)}>编辑</Button>
+          <Tooltip title={row.can_delete ? '删除无引用部门' : `请先清理引用：${referenceSummary(row)}`}>
+            <Button size="small" danger disabled={!row.can_delete} onClick={() => deleteDepartment(row)}>删除</Button>
+          </Tooltip>
+        </Space>
+      )
+    }
+  ];
+  return (
+    <PageShell
+      title="部门管理"
+      subtitle="维护部门基础数据；只有无任何引用的部门可以删除"
+      extra={<Button type="primary" onClick={openCreate}>新增部门</Button>}
+    >
+      <Alert
+        type="info"
+        showIcon
+        className="mb16"
+        message="改名会同步影响任务和人员中显示的部门名称；删除只用于处理误创建或错字部门。"
+      />
+      <Card className="business-card">
+        {mobileLayout ? (
+          <div className="mobile-people-list">
+            <div>{renderTableHeader('部门列表', departments.length, '查看引用情况并维护部门名称')}</div>
+            {departments.map((department) => (
+              <div className="mobile-person-card" key={department.id}>
+                <div className="mobile-board-card-head">
+                  <Typography.Title level={5}>{department.name}</Typography.Title>
+                  {department.can_delete ? <Tag color="green">可删除</Tag> : <Tag color="orange">有引用</Tag>}
+                </div>
+                <div className="mobile-task-meta compact">
+                  <span>状态</span><Typography.Text>{department.status || '-'}</Typography.Text>
+                  <span>引用情况</span><Typography.Text>{referenceSummary(department)}</Typography.Text>
+                </div>
+                <Space className="full-width mobile-action-stack" direction="vertical">
+                  <Button onClick={() => openEdit(department)}>编辑部门</Button>
+                  <Button danger disabled={!department.can_delete} onClick={() => deleteDepartment(department)}>删除部门</Button>
+                </Space>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <Table
+            rowKey="id"
+            dataSource={departments}
+            loading={loading}
+            className="business-table"
+            tableLayout="fixed"
+            scroll={{ x: 960 }}
+            title={() => renderTableHeader('部门列表', departments.length, '查看引用情况并维护部门名称')}
+            columns={columns}
+          />
+        )}
+      </Card>
+      <Modal
+        className={mobileLayout ? 'mobile-form-modal' : undefined}
+        title={editing ? '编辑部门' : '新增部门'}
+        open={modalOpen}
+        onOk={submitDepartment}
+        onCancel={() => {
+          setModalOpen(false);
+          setEditing(null);
+        }}
+        destroyOnClose
+      >
+        <Form form={form} layout="vertical">
+          <Form.Item name="name" label="部门名称" rules={[{ required: true, message: '请输入部门名称' }]}>
+            <Input maxLength={120} placeholder="例如：产品运营中心" />
           </Form.Item>
         </Form>
       </Modal>
