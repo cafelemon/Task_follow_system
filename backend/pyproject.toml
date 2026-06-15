@@ -1,6 +1,6 @@
 [project]
 name = "task-follow-system-backend"
-version = "4.3.0"
+version = "4.3.1"
 description = "Company task follow system backend"
 requires-python = ">=3.11"
 dependencies = [

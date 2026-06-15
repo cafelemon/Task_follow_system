@@ -29,6 +29,7 @@ import type { TourProps } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
   ApartmentOutlined,
+  AppstoreOutlined,
   ArrowLeftOutlined,
   BellOutlined,
   CheckCircleOutlined,
@@ -63,6 +64,8 @@ import { api, deleteJson, getJson, postJson, putJson } from './api/client';
 import type { AnyRecord } from './api/client';
 import { PageShell } from './components/PageShell';
 import { StatusTag } from './components/StatusTag';
+import { Workbench } from './pages/Workbench';
+import { buildSubTaskUpdatePath, relationLabels, renderPeople } from './ui/taskDisplay';
 import companyLogoCompact from './assets/brand/company-logo-compact-light.png';
 import companyLogoFullname from './assets/brand/company-logo-fullname-light.png';
 import taskFollowIcon from './assets/brand/task-follow-icon.png';
@@ -194,27 +197,6 @@ function renderBlankEllipsis(value?: unknown) {
   return renderEllipsis(value);
 }
 
-function renderPeople(value?: AnyRecord[] | string | null) {
-  if (Array.isArray(value)) {
-    const names = value.map((item) => item.name).join('、');
-    return (
-      <Tooltip title={names || undefined}>
-        <Space wrap size={[4, 4]} className="people-cell">
-          {value.length ? value.map((item) => <Tag className="person-tag" title={item.name} key={item.id}>{item.name}</Tag>) : <Typography.Text type="secondary">-</Typography.Text>}
-        </Space>
-      </Tooltip>
-    );
-  }
-  if (value) {
-    return (
-      <Tooltip title={value}>
-        <Tag className="person-tag person-tag-single" title={value}>{value}</Tag>
-      </Tooltip>
-    );
-  }
-  return <Typography.Text type="secondary">-</Typography.Text>;
-}
-
 function renderDepartments(value?: AnyRecord[] | string | null) {
   if (Array.isArray(value)) {
     const names = value.map((item) => item.name).join('、');
@@ -297,6 +279,7 @@ function renderEmail(value?: string | null) {
 }
 
 const baseMenuItems = [
+  { key: '/workbench', title: '工作台', icon: <AppstoreOutlined />, label: <Link to="/workbench">工作台</Link> },
   { key: '/meeting-board', title: '会议看板', icon: <ScheduleOutlined />, label: <Link to="/meeting-board/overview">会议看板</Link> },
   { key: '/goals', title: '战略目标', icon: <NodeIndexOutlined />, label: <Link to="/goals">战略目标</Link> },
   { key: '/parent-tasks', title: '母任务管理', icon: <FolderOutlined />, label: <Link to="/parent-tasks">母任务管理</Link> },
@@ -323,7 +306,7 @@ function Login() {
     try {
       await postJson('/auth/login', values);
       message.success('登录成功');
-      navigate('/meeting-board/overview');
+      navigate('/workbench');
     } catch {
       message.error('用户名或密码错误');
     } finally {
@@ -331,7 +314,7 @@ function Login() {
     }
   };
   const larkLogin = () => {
-    window.location.href = `/api/auth/lark-oauth/start?next_path=${encodeURIComponent('/meeting-board/overview')}`;
+    window.location.href = `/api/auth/lark-oauth/start?next_path=${encodeURIComponent('/workbench')}`;
   };
   return (
     <div className="login-page">
@@ -574,7 +557,8 @@ function AppLayout() {
   const [activeGuideKey, setActiveGuideKey] = useState<string | null>(null);
   const [tourTracksProgress, setTourTracksProgress] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const selectedKey = `/${location.pathname.split('/')[1] || 'meeting-board'}`;
+  const [workbenchRiskTarget, setWorkbenchRiskTarget] = useState<AnyRecord | null>(null);
+  const selectedKey = `/${location.pathname.split('/')[1] || 'workbench'}`;
   const isAdmin = Boolean(auth?.user?.is_admin || (auth?.permission_codes || []).includes('permission.manage'));
   const guideProfile = auth?.guide_profile as string | null | undefined;
   const guideProfileLabels: Record<string, string> = {
@@ -1365,8 +1349,9 @@ function AppLayout() {
         ) : null}
         <Content ref={contentRef} className="app-content">
           <Routes>
-            <Route path="/" element={<Navigate to="/meeting-board/overview" />} />
-            <Route path="/dashboard" element={<Navigate to="/meeting-board/overview" replace />} />
+            <Route path="/" element={<Navigate to="/workbench" replace />} />
+            <Route path="/dashboard" element={<Navigate to="/workbench" replace />} />
+            <Route path="/workbench" element={<Workbench auth={auth} onCreateRisk={setWorkbenchRiskTarget} />} />
             <Route path="/goals" element={<Goals />} />
             <Route path="/goals/:goalId" element={<GoalDetail />} />
             <Route path="/parent-tasks" element={<ParentTasks />} />
@@ -1395,6 +1380,11 @@ function AppLayout() {
         steps={tourSteps}
         onClose={handleTourClose}
         onFinish={handleTourFinish}
+      />
+      <RiskItemModal
+        open={Boolean(workbenchRiskTarget)}
+        subTask={workbenchRiskTarget}
+        onClose={() => setWorkbenchRiskTarget(null)}
       />
     </Layout>
   );
@@ -2299,12 +2289,6 @@ function SubTasks() {
   const executionTasks = tasks.filter((task) => task.viewer_relation === 'executor' || task.viewer_relation === 'both');
   const ownerTasks = tasks.filter((task) => task.viewer_relation === 'owner');
   const managementTasks = tasks.filter((task) => task.viewer_relation === 'management');
-  const relationLabels: Record<string, { label: string; color: string }> = {
-    executor: { label: '我执行', color: 'blue' },
-    owner: { label: '我负责', color: 'gold' },
-    both: { label: '负责+执行', color: 'purple' },
-    management: { label: '管理查看', color: 'default' }
-  };
   const columns: ColumnsType<AnyRecord> = [
     { title: '编号', dataIndex: 'code', width: 124 },
     { title: '子任务', dataIndex: 'title', width: 240, ellipsis: true, render: renderEllipsis },
@@ -2329,7 +2313,7 @@ function SubTasks() {
       render: (_, row) => (
         <Space size={4}>
           {row.can_update_weekly
-            ? <Link className="table-action-link" to={`/sub-tasks/${row.id}/update${row.current_assignee_id ? `?assigneeId=${row.current_assignee_id}` : ''}`}>更新</Link>
+            ? <Link className="table-action-link" to={buildSubTaskUpdatePath(row)}>更新</Link>
             : row.can_reopen && row.status === 'completed'
               ? <Link className="table-action-link" to={`/sub-tasks/${row.id}/update`}>处理</Link>
             : <Typography.Text type="secondary">只读</Typography.Text>}
@@ -2369,7 +2353,7 @@ function SubTasks() {
           <Space wrap className="mobile-card-actions">
             {row.can_update_weekly
               ? (
-                <Link className="mobile-primary-link" to={`/sub-tasks/${row.id}/update${row.current_assignee_id ? `?assigneeId=${row.current_assignee_id}` : ''}`}>
+                <Link className="mobile-primary-link" to={buildSubTaskUpdatePath(row)}>
                   更新
                 </Link>
               )
