@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Modal, Space, Typography, message } from 'antd';
+import { Alert, Button, Card, Input, Modal, Space, Typography, message } from 'antd';
 import { useEffect, useState } from 'react';
 import { getJson, postJson } from '../api/client';
 import type { AnyRecord } from '../api/client';
@@ -11,6 +11,7 @@ export function WeeklyReport() {
   const [reports, setReports] = useState<AnyRecord[]>([]);
   const [selectedReport, setSelectedReport] = useState<AnyRecord | null>(null);
   const [copyText, setCopyText] = useState('');
+  const [copyMeta, setCopyMeta] = useState<AnyRecord | null>(null);
   const [loading, setLoading] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -44,17 +45,31 @@ export function WeeklyReport() {
     }
   };
 
+  const copyRawText = async (text: string, meta?: AnyRecord) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      message.success(meta?.source === 'draft' ? '当前草稿文本已复制' : '周报文本已复制');
+    } catch {
+      message.warning('浏览器未允许自动复制，请在弹窗中手动复制');
+      setCopyText(text);
+      setCopyMeta(meta || null);
+    }
+  };
+
+  const copyDraft = async () => {
+    try {
+      const result = await getJson<AnyRecord>(`/weekly-reports/draft/copy-text${draft?.week_key ? `?week_key=${encodeURIComponent(String(draft.week_key))}` : ''}`);
+      await copyRawText(result.text || '', { week_key: result.week_key || draft?.week_key, source: 'draft' });
+    } catch {
+      message.error('草稿文本生成失败，请刷新后重试');
+    }
+  };
+
   const copyReport = async (report: AnyRecord) => {
     try {
       const result = await getJson<AnyRecord>(`/weekly-reports/${report.id}/copy-text`);
       const text = result.text || '';
-      try {
-        await navigator.clipboard.writeText(text);
-        message.success('周报文本已复制');
-      } catch {
-        message.warning('浏览器未允许自动复制，请在弹窗中手动复制');
-        setCopyText(text);
-      }
+      await copyRawText(text, { week_key: result.week_key || report.week_key, source: 'confirmed' });
     } catch {
       message.error('复制文本生成失败，请刷新周报历史后重试');
     }
@@ -92,7 +107,7 @@ export function WeeklyReport() {
   return (
     <PageShell
       title="周报中心"
-      subtitle="聚合本人周报材料；他人待归类事项请回到工作台处理"
+      subtitle="聚合本人周报材料；支持复制草稿和确认快照，不做文档导出或飞书原生汇报回写"
       extra={<Button onClick={reload} loading={loading}>刷新</Button>}
     >
       <Space direction="vertical" size={16} className="full-width">
@@ -114,9 +129,10 @@ export function WeeklyReport() {
             </Space>
             <Space wrap className="weekly-report-actions">
               <Button type="primary" onClick={confirmReport} loading={confirming} disabled={!draft}>确认本周周报</Button>
-              <Button onClick={() => confirmedReport ? copyReport(confirmedReport) : message.warning('请先确认本周周报后再复制文本')}>
-                复制周报文本
-              </Button>
+              <Button onClick={copyDraft} disabled={!draft}>复制当前草稿</Button>
+              {confirmedReport ? (
+                <Button onClick={() => copyReport(confirmedReport)}>复制已确认版本</Button>
+              ) : null}
             </Space>
           </div>
         </Card>
@@ -124,7 +140,7 @@ export function WeeklyReport() {
           type="info"
           showIcon
           message="周报快照说明"
-          description="确认后的历史快照不会随任务或事项变化自动改变；如需要修正，同一周再次确认会覆盖本周快照。"
+          description="复制当前草稿不会生成历史快照；只有确认周报才会生成或覆盖本人历史快照。确认后的快照不会随任务或事项变化自动改变，如需要修正，同一周再次确认会覆盖本周快照。"
         />
         {error ? <Alert type="warning" showIcon message="周报草稿加载失败，请刷新重试。" /> : null}
         {draft ? (
@@ -154,14 +170,23 @@ export function WeeklyReport() {
         </Modal>
         <Modal
           open={Boolean(copyText)}
-          title="复制周报文本"
+          title={copyMeta?.source === 'draft' ? '复制当前草稿' : '复制周报文本'}
           okText="关闭"
           cancelButtonProps={{ style: { display: 'none' } }}
-          onOk={() => setCopyText('')}
-          onCancel={() => setCopyText('')}
+          width={760}
+          onOk={() => {
+            setCopyText('');
+            setCopyMeta(null);
+          }}
+          onCancel={() => {
+            setCopyText('');
+            setCopyMeta(null);
+          }}
         >
-          <Typography.Paragraph type="secondary">浏览器未允许自动复制，请手动复制以下内容。</Typography.Paragraph>
-          <Typography.Paragraph className="weekly-report-copy-text" copyable>{copyText}</Typography.Paragraph>
+          <Typography.Paragraph type="secondary">
+            浏览器未允许自动复制，请手动复制以下内容。周次：{copyMeta?.week_key || '-'}，字数：{copyText.length}
+          </Typography.Paragraph>
+          <Input.TextArea value={copyText} rows={16} readOnly className="weekly-report-copy-text" />
         </Modal>
       </Space>
     </PageShell>

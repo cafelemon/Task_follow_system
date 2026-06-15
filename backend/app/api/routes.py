@@ -68,7 +68,6 @@ from app.schemas.dto import (
     WorkItemConvertToSubTask,
     WorkItemCrossDepartmentApprove,
     WorkItemCreate,
-    WorkItemEscalate,
 )
 from app.services.business import (
     build_meeting_board,
@@ -425,6 +424,13 @@ WORK_ITEM_DEPARTMENT_ROUTINE_STATUSES = {
     WORK_ITEM_STATUS_REJECTED,
     WORK_ITEM_STATUS_CLOSED,
 }
+WORK_ITEM_DEPARTMENT_TASK_SUPPLEMENT_STATUSES = {
+    WORK_ITEM_STATUS_PENDING,
+    WORK_ITEM_STATUS_APPROVED,
+    WORK_ITEM_STATUS_REJECTED,
+    WORK_ITEM_STATUS_CLOSED,
+    WORK_ITEM_STATUS_CONVERTED_TO_SUB_TASK,
+}
 WORK_ITEM_STATUS_LABELS = {
     "pending": "待确认",
     "withdrawn": "已撤回",
@@ -432,8 +438,8 @@ WORK_ITEM_STATUS_LABELS = {
     "rejected": "已退回",
     "closed": "已关闭",
     "converted_to_sub_task": "已转子任务",
-    "escalated_department_task": "缺部门任务诉求",
-    "escalated_parent_task": "缺母任务诉求",
+    "escalated_department_task": "历史记录",
+    "escalated_parent_task": "历史记录",
 }
 WORK_ITEM_EVENT_LABELS = {
     "created": "已提交",
@@ -444,13 +450,11 @@ WORK_ITEM_EVENT_LABELS = {
     "converted_to_sub_task": "已转子任务",
     "cross_submitter_department_approved": "提交部门已确认",
     "cross_collaboration_department_approved": "协作部门已确认",
-    "escalated_department_task": "已上提缺部门任务",
-    "escalated_parent_task": "已上提缺母任务",
+    "escalated_department_task": "历史上提记录",
+    "escalated_parent_task": "历史上提记录",
 }
 WORK_ITEM_CROSS_SUBMITTER_SIDE = "submitter_department"
 WORK_ITEM_CROSS_COLLABORATION_SIDE = "collaboration_department"
-WORK_ITEM_ESCALATION_TARGET_DEPARTMENT_TASK = "department_task"
-WORK_ITEM_ESCALATION_TARGET_PARENT_TASK = "parent_task"
 WORK_ITEM_CATEGORY_DEPARTMENT_TASK = "department_task_supplement"
 WORK_ITEM_CATEGORY_DEPARTMENT_ROUTINE = "department_routine"
 WORK_ITEM_CATEGORY_CROSS_DEPARTMENT = "cross_department_collaboration"
@@ -835,6 +839,10 @@ def serialize_department_task_tree_for_user(db: Session, user: User, task: Depar
     updates = updates_by_sub_task(db, [sub_task.id for sub_task in task.sub_tasks], current_week)
     return {
         **serialize_department_task_for_user(db, user, task),
+        "work_item_supplements": [
+            serialize_work_item(item, user)
+            for item in department_task_supplement_items(db, [task.id])
+        ],
         "sub_tasks": [
             serialize_sub_task_with_weekly_summary(sub_task, updates.get(sub_task.id, []))
             for sub_task in sorted(task.sub_tasks, key=lambda item: item.code)
@@ -968,11 +976,6 @@ def can_manage_any_work_item(user: User) -> bool:
     return user.is_admin or "permission.manage" in user_permission_codes(user)
 
 
-def can_view_parent_task_escalations(user: User) -> bool:
-    roles = user_role_codes(user)
-    return can_manage_any_work_item(user) or bool({"general_manager", "secretary"} & roles)
-
-
 def cross_department_missing_sides(item: WorkItem) -> list[str]:
     if item.category != WORK_ITEM_CATEGORY_CROSS_DEPARTMENT:
         return []
@@ -1101,11 +1104,6 @@ def serialize_cross_department_approval(item: WorkItem, viewer: User | None = No
 def serialize_work_item(item: WorkItem, viewer: User | None = None) -> dict:
     can_manage = bool(viewer and can_manage_work_item(viewer, item))
     is_pending = item.status == WORK_ITEM_STATUS_PENDING
-    can_escalate = bool(
-        can_manage
-        and item.status in {WORK_ITEM_STATUS_PENDING, WORK_ITEM_STATUS_APPROVED}
-        and item.category != WORK_ITEM_CATEGORY_WEEKLY_SUPPLEMENT
-    )
     cross_approval_sides = cross_department_approval_sides_for_user(viewer, item) if viewer else []
     can_convert = bool(
         can_manage
@@ -1143,7 +1141,6 @@ def serialize_work_item(item: WorkItem, viewer: User | None = None) -> dict:
         "can_reject": bool(can_manage and is_pending),
         "can_close": bool(can_manage and is_pending),
         "can_convert_to_sub_task": can_convert,
-        "can_escalate": can_escalate,
         "can_cross_department_approve": bool(cross_approval_sides),
         "cross_department_approval_sides": cross_approval_sides,
         "cross_department_approval": serialize_cross_department_approval(item, viewer),
@@ -1155,6 +1152,211 @@ def serialize_work_item(item: WorkItem, viewer: User | None = None) -> dict:
         "escalated_by": serialize_user_brief(item.escalated_by),
         "escalated_at": item.escalated_at.isoformat() if item.escalated_at else None,
         "escalation_comment": item.escalation_comment,
+    }
+
+
+def department_task_supplement_items(db: Session, task_ids: list[int]) -> list[WorkItem]:
+    if not task_ids:
+        return []
+    return list(
+        db.scalars(
+            select(WorkItem)
+            .where(
+                WorkItem.category == WORK_ITEM_CATEGORY_DEPARTMENT_TASK,
+                WorkItem.status.in_(WORK_ITEM_DEPARTMENT_TASK_SUPPLEMENT_STATUSES),
+                WorkItem.related_department_task_id.in_(task_ids),
+            )
+            .order_by(WorkItem.created_at.desc(), WorkItem.id.desc())
+        ).all()
+    )
+
+
+def department_work_item_materials(
+    db: Session,
+    viewer: User,
+    department_id: int,
+    week_key: str,
+    related_department_task_ids: set[int],
+) -> dict:
+    status_order = [
+        WORK_ITEM_STATUS_PENDING,
+        WORK_ITEM_STATUS_APPROVED,
+        WORK_ITEM_STATUS_REJECTED,
+        WORK_ITEM_STATUS_CLOSED,
+        WORK_ITEM_STATUS_CONVERTED_TO_SUB_TASK,
+    ]
+
+    def fetch_items(*filters) -> list[WorkItem]:
+        return list(
+            db.scalars(
+                select(WorkItem)
+                .where(
+                    WorkItem.week_key == week_key,
+                    WorkItem.status.in_(status_order),
+                    *filters,
+                )
+                .order_by(WorkItem.created_at.desc(), WorkItem.id.desc())
+            ).all()
+        )
+
+    task_items = (
+        fetch_items(
+            WorkItem.category == WORK_ITEM_CATEGORY_DEPARTMENT_TASK,
+            WorkItem.related_department_task_id.in_(sorted(related_department_task_ids)),
+        )
+        if related_department_task_ids else []
+    )
+    routine_items = fetch_items(
+        WorkItem.category == WORK_ITEM_CATEGORY_DEPARTMENT_ROUTINE,
+        WorkItem.department_id == department_id,
+    )
+    cross_items = fetch_items(
+        WorkItem.category == WORK_ITEM_CATEGORY_CROSS_DEPARTMENT,
+        or_(
+            WorkItem.department_id == department_id,
+            WorkItem.collaboration_department_id == department_id,
+        ),
+    )
+    weekly_items = fetch_items(
+        WorkItem.category == WORK_ITEM_CATEGORY_WEEKLY_SUPPLEMENT,
+        WorkItem.department_id == department_id,
+    )
+    category_items = {
+        WORK_ITEM_CATEGORY_DEPARTMENT_TASK: task_items,
+        WORK_ITEM_CATEGORY_DEPARTMENT_ROUTINE: routine_items,
+        WORK_ITEM_CATEGORY_CROSS_DEPARTMENT: cross_items,
+        WORK_ITEM_CATEGORY_WEEKLY_SUPPLEMENT: weekly_items,
+    }
+
+    def category_payload(category: str, items: list[WorkItem]) -> dict:
+        status_counts = {status_value: 0 for status_value in status_order}
+        for item in items:
+            if item.status not in status_counts:
+                status_counts[item.status] = 0
+            status_counts[item.status] += 1
+        payload = {
+            "category": category,
+            "category_label": WORK_ITEM_CATEGORY_LABELS.get(category, category),
+            "total": len(items),
+            "status_counts": status_counts,
+            "items": [serialize_work_item(item, viewer) for item in items[:8]],
+        }
+        if category == WORK_ITEM_CATEGORY_CROSS_DEPARTMENT:
+            payload["submitted_by_department_count"] = len([item for item in items if item.department_id == department_id])
+            payload["collaboration_to_department_count"] = len([
+                item for item in items if item.collaboration_department_id == department_id
+            ])
+        return payload
+
+    categories = [
+        category_payload(category, category_items.get(category, []))
+        for category in [
+            WORK_ITEM_CATEGORY_DEPARTMENT_TASK,
+            WORK_ITEM_CATEGORY_DEPARTMENT_ROUTINE,
+            WORK_ITEM_CATEGORY_CROSS_DEPARTMENT,
+            WORK_ITEM_CATEGORY_WEEKLY_SUPPLEMENT,
+        ]
+    ]
+    summary_status_counts = {status_value: 0 for status_value in status_order}
+    total = 0
+    for item_list in category_items.values():
+        total += len(item_list)
+        for item in item_list:
+            if item.status not in summary_status_counts:
+                summary_status_counts[item.status] = 0
+            summary_status_counts[item.status] += 1
+    return {
+        "week_key": week_key,
+        "summary": {
+            "total": total,
+            "pending": summary_status_counts.get(WORK_ITEM_STATUS_PENDING, 0),
+            "approved": summary_status_counts.get(WORK_ITEM_STATUS_APPROVED, 0),
+            "rejected": summary_status_counts.get(WORK_ITEM_STATUS_REJECTED, 0),
+            "closed": summary_status_counts.get(WORK_ITEM_STATUS_CLOSED, 0),
+            "converted_to_sub_task": summary_status_counts.get(WORK_ITEM_STATUS_CONVERTED_TO_SUB_TASK, 0),
+            "status_counts": summary_status_counts,
+        },
+        "categories": categories,
+    }
+
+
+def serialize_workbench_parent_task(task: ParentTask) -> dict:
+    return serialize_parent_task(task)
+
+
+def serialize_workbench_department_task(task: DepartmentTask) -> dict:
+    active_sub_tasks = [sub_task for sub_task in task.sub_tasks if sub_task.status != "archived"]
+    return {
+        **serialize_department_task(task),
+        "parent_task_code": task.parent_task.code if task.parent_task else None,
+        "parent_task_title": task.parent_task.title if task.parent_task else None,
+        "active_sub_task_count": len(active_sub_tasks),
+        "needs_split": bool((task.pending_split_count or 0) > 0 or not active_sub_tasks),
+    }
+
+
+def serialize_workbench_sub_task(
+    task: SubTask,
+    updates: list[WeeklyUpdate] | None = None,
+    missing_assignees: list[User] | None = None,
+) -> dict:
+    department_task = task.department_task
+    parent_task = department_task.parent_task if department_task else None
+    submitted_updates = [update for update in (updates or []) if update.status == "submitted"]
+    draft_updates = [update for update in (updates or []) if update.status == "draft"]
+    return {
+        **serialize_sub_task(task),
+        "department_task_id": department_task.id if department_task else None,
+        "department_task_code": department_task.code if department_task else None,
+        "department_task_title": department_task.title if department_task else None,
+        "parent_task_id": parent_task.id if parent_task else None,
+        "parent_task_code": parent_task.code if parent_task else None,
+        "parent_task_title": parent_task.title if parent_task else None,
+        "submitted_update_count": len(submitted_updates),
+        "draft_update_count": len(draft_updates),
+        "missing_assignees": people_payload(missing_assignees or [])[1],
+    }
+
+
+def empty_department_owner_workbench_payload(user: User, week_key: str | None = None) -> dict:
+    week_key = validate_week_key(week_key) if week_key else current_week_key()
+    return {
+        "can_view": False,
+        "department": serialize_department_brief(user.department),
+        "week_key": week_key,
+        "summary": {
+            "parent_task_count": 0,
+            "department_task_count": 0,
+            "pending_split_count": 0,
+            "unsubmitted_count": 0,
+            "risk_count": 0,
+            "overdue_count": 0,
+            "routine_count": 0,
+            "department_task_supplement_count": 0,
+            "work_item_material_count": 0,
+        },
+        "leading_parent_tasks": [],
+        "related_department_tasks": [],
+        "pending_split_department_tasks": [],
+        "unsubmitted_sub_tasks": [],
+        "risk_items": [],
+        "overdue_sub_tasks": [],
+        "department_routine_items": [],
+        "department_task_supplements": [],
+        "work_item_materials": {
+            "week_key": week_key,
+            "summary": {
+                "total": 0,
+                "pending": 0,
+                "approved": 0,
+                "rejected": 0,
+                "closed": 0,
+                "converted_to_sub_task": 0,
+                "status_counts": {},
+            },
+            "categories": [],
+        },
+        "message": "当前账号没有所属部门，暂无法生成部门负责人工作台。",
     }
 
 
@@ -1333,7 +1535,21 @@ def work_items_for_category(groups: list[dict], category: str) -> list[dict]:
     return []
 
 
+def weekly_report_datetime_text(value: str | None) -> str:
+    if not value:
+        return "-"
+    return str(value)[:16].replace("T", " ")
+
+
 def build_weekly_report_export_text(draft: dict) -> str:
+    user = draft.get("user") or {}
+    generated_at = draft.get("confirmed_at") or draft.get("generated_at")
+    header_lines = [
+        f"人员：{user.get('name') or '-'}",
+        f"周次：{draft.get('week_key') or '-'}",
+        f"生成时间：{weekly_report_datetime_text(generated_at)}",
+    ]
+
     task_lines = []
     for item in draft.get("task_updates") or []:
         task = item.get("sub_task") or {}
@@ -1352,11 +1568,12 @@ def build_weekly_report_export_text(draft: dict) -> str:
                 ]
             )
         )
-    department_task_items = work_items_for_category(draft.get("work_items_by_category") or [], WORK_ITEM_CATEGORY_DEPARTMENT_TASK)
-    for item in department_task_items:
+
+    department_task_lines = []
+    for item in work_items_for_category(draft.get("work_items_by_category") or [], WORK_ITEM_CATEGORY_DEPARTMENT_TASK):
         related_task = item.get("related_department_task") or {}
-        task_lines.append(
-            f"- 【部门任务补充】{weekly_report_item_text(item.get('content'))}（关联：{weekly_report_task_label(related_task)}，状态：{item.get('status_label') or item.get('status') or '-'}）"
+        department_task_lines.append(
+            f"- {weekly_report_item_text(item.get('content'))}（关联部门任务：{weekly_report_task_label(related_task)}，状态：{item.get('status_label') or item.get('status') or '-'}）"
         )
 
     cross_lines = [
@@ -1387,15 +1604,37 @@ def build_weekly_report_export_text(draft: dict) -> str:
     ]
     return "\n\n".join(
         [
-            f"{draft.get('week_key') or '-'} 个人周报",
+            "\n".join(header_lines),
             weekly_report_section("一、本周正式任务进展", task_lines),
-            weekly_report_section("二、本周跨部门协作任务补充事项", cross_lines),
-            weekly_report_section("三、本周部门常态化工作", routine_lines),
-            weekly_report_section("四、本周周报补充记录", supplement_lines),
-            weekly_report_section("五、本周风险与问题", risk_lines),
-            weekly_report_section("六、下周计划", next_plan_lines),
+            weekly_report_section("二、本周部门任务补充", department_task_lines),
+            weekly_report_section("三、本周跨部门协作", cross_lines),
+            weekly_report_section("四、本周部门常态化工作", routine_lines),
+            weekly_report_section("五、本周周报补充记录", supplement_lines),
+            weekly_report_section("六、本周风险与卡点", risk_lines),
+            weekly_report_section("七、下周计划", next_plan_lines),
         ]
     )
+
+
+def weekly_report_snapshot_payload(report: WeeklyReport) -> dict:
+    risk_snapshot = report.risk_snapshot or {}
+    return {
+        "user": serialize_user_brief(report.user),
+        "week_key": report.week_key,
+        "generated_at": report.confirmed_at.isoformat() if report.confirmed_at else None,
+        "confirmed_at": report.confirmed_at.isoformat() if report.confirmed_at else None,
+        "task_updates": report.task_update_snapshot or [],
+        "work_items_by_category": report.work_item_snapshot or [],
+        "risk_texts": risk_snapshot.get("risk_texts") or [],
+        "risk_items": risk_snapshot.get("risk_items") or [],
+        "next_plans": report.next_plan_snapshot or [],
+    }
+
+
+def weekly_report_copy_text_payload(report: WeeklyReport) -> str:
+    if report.task_update_snapshot is not None and report.work_item_snapshot is not None:
+        return build_weekly_report_export_text(weekly_report_snapshot_payload(report))
+    return report.export_text or build_weekly_report_export_text(weekly_report_snapshot_payload(report))
 
 
 def weekly_report_summary_from_snapshots(report: WeeklyReport) -> dict:
@@ -2219,6 +2458,129 @@ def list_departments(db: Session = Depends(get_db), _: User = Depends(get_curren
     return [serialize_department_item(item) for item in departments]
 
 
+@router.get("/workbench/department-owner")
+def department_owner_workbench(
+    week_key: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    if "department_owner" not in user_role_codes(current_user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="无权查看部门负责人工作台")
+    if not current_user.department_id:
+        return empty_department_owner_workbench_payload(current_user, week_key)
+
+    department_id = current_user.department_id
+    today = date.today()
+    target_week = validate_week_key(week_key) if week_key else current_week_key(today)
+    related_department_tasks = [
+        task
+        for task in visible_department_tasks(db, current_user)
+        if department_id in department_ids_for_task(task)
+    ]
+    related_department_task_ids = {task.id for task in related_department_tasks}
+    leading_parent_tasks = [
+        task
+        for task in db.scalars(
+            select(ParentTask)
+            .where(ParentTask.department_id == department_id, ParentTask.status != "archived")
+            .order_by(ParentTask.code)
+        ).all()
+        if can_access_parent_task(db, current_user, task)
+    ]
+    active_sub_tasks = [
+        sub_task
+        for task in related_department_tasks
+        for sub_task in task.sub_tasks
+        if sub_task.status != "archived"
+    ]
+    updates = updates_by_sub_task(db, [task.id for task in active_sub_tasks], target_week)
+    unsubmitted_sub_tasks = []
+    for sub_task in active_sub_tasks:
+        if sub_task.status == "completed":
+            continue
+        submitted_assignee_ids = {
+            update.assignee_id
+            for update in updates.get(sub_task.id, [])
+            if update.status == "submitted"
+        }
+        missing_assignees = [
+            assignee
+            for assignee in executor_people(sub_task)
+            if assignee.id not in submitted_assignee_ids
+        ]
+        if missing_assignees:
+            unsubmitted_sub_tasks.append(
+                serialize_workbench_sub_task(sub_task, updates.get(sub_task.id, []), missing_assignees)
+            )
+
+    risk_items = active_risk_items_for_tasks(db, active_sub_tasks)
+    overdue_sub_tasks = [
+        serialize_workbench_sub_task(sub_task, updates.get(sub_task.id, []))
+        for sub_task in active_sub_tasks
+        if sub_task.status != "completed" and sub_task.due_date and sub_task.due_date < today
+    ]
+    pending_split_department_tasks = [
+        task
+        for task in related_department_tasks
+        if (task.pending_split_count or 0) > 0
+        or not [sub_task for sub_task in task.sub_tasks if sub_task.status != "archived"]
+    ]
+    department_routine_items = db.scalars(
+        select(WorkItem)
+        .where(
+            WorkItem.category == WORK_ITEM_CATEGORY_DEPARTMENT_ROUTINE,
+            WorkItem.status.in_(WORK_ITEM_DEPARTMENT_ROUTINE_STATUSES),
+            WorkItem.department_id == department_id,
+        )
+        .order_by(WorkItem.created_at.desc(), WorkItem.id.desc())
+    ).all()
+    department_task_supplements = department_task_supplement_items(db, sorted(related_department_task_ids))
+    work_item_materials = department_work_item_materials(
+        db,
+        current_user,
+        department_id,
+        target_week,
+        related_department_task_ids,
+    )
+    risk_summaries = [risk_item_detail_summary(item, current_user) for item in risk_items]
+    return {
+        "can_view": True,
+        "department": serialize_department_brief(current_user.department),
+        "week_key": target_week,
+        "summary": {
+            "parent_task_count": len(leading_parent_tasks),
+            "department_task_count": len(related_department_tasks),
+            "pending_split_count": len(pending_split_department_tasks),
+            "unsubmitted_count": len(unsubmitted_sub_tasks),
+            "risk_count": len(risk_summaries),
+            "overdue_count": len(overdue_sub_tasks),
+            "routine_count": len(department_routine_items),
+            "department_task_supplement_count": len(department_task_supplements),
+            "work_item_material_count": work_item_materials["summary"]["total"],
+        },
+        "leading_parent_tasks": [
+            serialize_workbench_parent_task(task) for task in leading_parent_tasks[:8]
+        ],
+        "related_department_tasks": [
+            serialize_workbench_department_task(task) for task in related_department_tasks[:12]
+        ],
+        "pending_split_department_tasks": [
+            serialize_workbench_department_task(task) for task in pending_split_department_tasks[:8]
+        ],
+        "unsubmitted_sub_tasks": unsubmitted_sub_tasks[:10],
+        "risk_items": risk_summaries[:10],
+        "overdue_sub_tasks": overdue_sub_tasks[:10],
+        "department_routine_items": [
+            serialize_work_item(item, current_user) for item in department_routine_items[:8]
+        ],
+        "department_task_supplements": [
+            serialize_work_item(item, current_user) for item in department_task_supplements[:8]
+        ],
+        "work_item_materials": work_item_materials,
+        "related_department_task_ids": sorted(related_department_task_ids),
+    }
+
+
 @router.get("/work-items/options")
 def work_item_options(
     db: Session = Depends(get_db),
@@ -2248,9 +2610,9 @@ def list_work_items(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[dict]:
-    supported_scopes = {"submitted", "received", "department-routine", "department-escalations", "parent-escalations"}
+    supported_scopes = {"submitted", "received", "department-routine"}
     if scope not in supported_scopes:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="scope 仅支持 submitted、received、department-routine、department-escalations 或 parent-escalations")
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="scope 仅支持 submitted、received 或 department-routine")
     if scope == "submitted":
         items = db.scalars(
             select(WorkItem)
@@ -2287,28 +2649,6 @@ def list_work_items(
             select(WorkItem)
             .where(*filters)
             .order_by(WorkItem.created_at.desc(), WorkItem.id.desc())
-        ).all()
-    elif scope == "department-escalations":
-        can_view_all_departments = can_manage_any_work_item(current_user)
-        if not can_view_all_departments and "department_owner" not in user_role_codes(current_user):
-            raise HTTPException(status.HTTP_403_FORBIDDEN, detail="无权查看缺部门任务诉求")
-        filters = [WorkItem.status == WORK_ITEM_STATUS_ESCALATED_DEPARTMENT_TASK]
-        if not can_view_all_departments:
-            if not current_user.department_id:
-                return []
-            filters.append(WorkItem.department_id == current_user.department_id)
-        items = db.scalars(
-            select(WorkItem)
-            .where(*filters)
-            .order_by(WorkItem.escalated_at.desc(), WorkItem.id.desc())
-        ).all()
-    else:
-        if not can_view_parent_task_escalations(current_user):
-            raise HTTPException(status.HTTP_403_FORBIDDEN, detail="无权查看缺母任务诉求")
-        items = db.scalars(
-            select(WorkItem)
-            .where(WorkItem.status == WORK_ITEM_STATUS_ESCALATED_PARENT_TASK)
-            .order_by(WorkItem.escalated_at.desc(), WorkItem.id.desc())
         ).all()
     return [serialize_work_item(item, current_user) for item in items]
 
@@ -2586,55 +2926,6 @@ def close_work_item(
     )
 
 
-@router.post("/work-items/{work_item_id}/escalate")
-def escalate_work_item(
-    work_item_id: int,
-    payload: WorkItemEscalate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> dict:
-    item = db.get(WorkItem, work_item_id)
-    if not item:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Work item not found")
-    if not can_manage_work_item(current_user, item):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="无权处理该待归类事项")
-    if item.status not in {WORK_ITEM_STATUS_PENDING, WORK_ITEM_STATUS_APPROVED}:
-        raise HTTPException(status.HTTP_409_CONFLICT, detail="只有待确认或已确认事项可以上提诉求")
-    if item.category == WORK_ITEM_CATEGORY_WEEKLY_SUPPLEMENT:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="周报补充记录不支持上提为任务诉求")
-    target = payload.target.strip() if payload.target else ""
-    if target not in {WORK_ITEM_ESCALATION_TARGET_DEPARTMENT_TASK, WORK_ITEM_ESCALATION_TARGET_PARENT_TASK}:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="上提类型仅支持 department_task 或 parent_task")
-    comment = payload.comment.strip() if payload.comment else ""
-    if not comment:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="请填写上提说明")
-    if target == WORK_ITEM_ESCALATION_TARGET_DEPARTMENT_TASK and not item.department_id:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="提交人缺少所属部门，无法形成缺部门任务诉求")
-
-    now = datetime.now(timezone.utc)
-    status_value = (
-        WORK_ITEM_STATUS_ESCALATED_DEPARTMENT_TASK
-        if target == WORK_ITEM_ESCALATION_TARGET_DEPARTMENT_TASK
-        else WORK_ITEM_STATUS_ESCALATED_PARENT_TASK
-    )
-    item.status = status_value
-    item.escalated_by_id = current_user.id
-    item.escalated_at = now
-    item.escalation_comment = comment
-    item.updated_at = now
-    db.add(
-        WorkItemEvent(
-            work_item_id=item.id,
-            actor_id=current_user.id,
-            action=status_value,
-            comment=comment,
-        )
-    )
-    db.commit()
-    db.refresh(item)
-    return serialize_work_item(item, current_user)
-
-
 @router.post("/work-items/{work_item_id}/convert-to-sub-task")
 def convert_work_item_to_sub_task(
     work_item_id: int,
@@ -2727,6 +3018,20 @@ def weekly_report_draft(
     return weekly_report_draft_payload(db, current_user, week_key or current_week_key())
 
 
+@router.get("/weekly-reports/draft/copy-text")
+def weekly_report_draft_copy_text(
+    week_key: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    draft = weekly_report_draft_payload(db, current_user, week_key or current_week_key())
+    return {
+        "week_key": draft["week_key"],
+        "source": "draft",
+        "text": build_weekly_report_export_text(draft),
+    }
+
+
 @router.post("/weekly-reports/confirm")
 def confirm_weekly_report(
     payload: WeeklyReportConfirm,
@@ -2809,7 +3114,12 @@ def weekly_report_copy_text(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Weekly report not found")
     if report.user_id != current_user.id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to this weekly report")
-    return {"id": report.id, "week_key": report.week_key, "text": report.export_text}
+    return {
+        "id": report.id,
+        "week_key": report.week_key,
+        "source": "confirmed",
+        "text": weekly_report_copy_text_payload(report),
+    }
 
 
 @router.get("/departments/manage")
@@ -3262,6 +3572,25 @@ def department_tasks_overview(
         "department_tasks": [serialize_department_task_tree_for_user(db, current_user, task) for task in all_tasks],
         "parent_tasks": parent_groups,
     }
+
+
+@router.get("/department-tasks/{department_task_id}/work-items")
+def department_task_work_item_supplements(
+    department_task_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[dict]:
+    task = db.get(DepartmentTask, department_task_id)
+    if not task or task.status == "archived":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Department task not found")
+    if task.parent_task and task.parent_task.status == "archived":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Department task not found")
+    if not can_access_department_task(db, current_user, task):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to this department task")
+    return [
+        serialize_work_item(item, current_user)
+        for item in department_task_supplement_items(db, [department_task_id])
+    ]
 
 
 @router.post("/department-tasks", status_code=201)

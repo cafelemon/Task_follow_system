@@ -8,6 +8,7 @@ import {
   Descriptions,
   Divider,
   Drawer,
+  Empty,
   Form,
   Input,
   Layout,
@@ -2120,9 +2121,27 @@ function DepartmentTasks() {
       ) : null}
     </div>
   );
+  const renderWorkItemSupplement = (item: AnyRecord) => (
+    <div className="mobile-department-subtask" key={item.id}>
+      <div className="mobile-department-subtask-head">
+        <Typography.Text className="task-code">{item.category_label || '部门任务补充'}</Typography.Text>
+        <Tag>{item.status_label || item.status || '-'}</Tag>
+      </div>
+      <Typography.Text strong>{item.content || '-'}</Typography.Text>
+      <div className="mobile-task-meta compact">
+        <span>提交人</span>
+        <Typography.Text>{item.submitter?.name || '-'}</Typography.Text>
+        <span>提交时间</span>
+        <Typography.Text>{item.created_at ? String(item.created_at).replace('T', ' ').slice(0, 16) : '-'}</Typography.Text>
+        <span>关联子任务</span>
+        <Typography.Text>{item.converted_sub_task ? `${item.converted_sub_task.code || '-'} ${item.converted_sub_task.title || '-'}` : '-'}</Typography.Text>
+      </div>
+    </div>
+  );
   const renderMobileDepartmentTask = (row: AnyRecord) => {
     const expanded = expandedTaskIds.includes(row.id);
     const subTasks = row.sub_tasks || [];
+    const supplements = row.work_item_supplements || [];
     return (
       <Card key={row.id} className="mobile-department-task-card">
         <Space direction="vertical" size={10} className="full-width">
@@ -2145,13 +2164,21 @@ function DepartmentTasks() {
           </div>
           <Space wrap className="mobile-card-actions">
             <Button type="primary" disabled={!row.can_split} onClick={() => openSplit(row)}>拆解子任务</Button>
-            {subTasks.length ? (
-              <Button onClick={() => toggleDepartmentTask(row.id)}>{expanded ? '收起子任务' : `查看子任务（${subTasks.length}）`}</Button>
-            ) : <Tag>暂无子任务</Tag>}
+            {subTasks.length || supplements.length ? (
+              <Button onClick={() => toggleDepartmentTask(row.id)}>
+                {expanded ? '收起明细' : `查看明细（子任务 ${subTasks.length} / 补充 ${supplements.length}）`}
+              </Button>
+            ) : <Tag>暂无子任务和补充记录</Tag>}
           </Space>
           {expanded ? (
             <Space direction="vertical" size={10} className="full-width mobile-department-subtask-list">
-              {subTasks.map((subTask: AnyRecord) => renderMobileSubTask(subTask, row))}
+              {subTasks.length ? subTasks.map((subTask: AnyRecord) => renderMobileSubTask(subTask, row)) : null}
+              {supplements.length ? (
+                <>
+                  <Typography.Text type="secondary">部门任务补充记录</Typography.Text>
+                  {supplements.map(renderWorkItemSupplement)}
+                </>
+              ) : null}
             </Space>
           ) : null}
         </Space>
@@ -2208,34 +2235,45 @@ function DepartmentTasks() {
               title={() => renderTableHeader('部门级任务', departmentTasks.length, '按负责部门和母任务快速扫描')}
               expandable={{
                 expandedRowRender: (row) => (
-                  <Table
-                    rowKey="id"
-                    size="small"
-                    pagination={false}
-                    dataSource={row.sub_tasks || []}
-                    className="business-table nested-table"
-                    columns={[
-                      { title: '子任务编号', dataIndex: 'code', width: 124 },
-                      { title: '具体任务', dataIndex: 'title', width: 210, ellipsis: true, render: renderEllipsis },
-                      { title: '执行人', dataIndex: 'executors', width: 124, render: renderPeople },
-                      { title: '本周完成内容', dataIndex: 'weekly_this_week', width: 190, render: renderBlankEllipsis },
-                      { title: '遗留事项', dataIndex: 'weekly_risk', width: 190, render: renderBlankEllipsis },
-                      { title: '截止日期', dataIndex: 'due_date', width: 104, responsive: ['lg'] },
-                      {
-                        title: '操作',
-                        width: 82,
-                        render: (_: unknown, subTask: AnyRecord) => (
-                          <Button size="small" disabled={!row.can_split} onClick={() => openSubTaskEdit(subTask)}>
-                            编辑
-                          </Button>
-                        )
-                      }
-                    ]}
-                    tableLayout="fixed"
-                    scroll={{ x: 1112 }}
-                  />
+                  <Space direction="vertical" size={12} className="full-width">
+                    <Table
+                      rowKey="id"
+                      size="small"
+                      pagination={false}
+                      dataSource={row.sub_tasks || []}
+                      className="business-table nested-table"
+                      columns={[
+                        { title: '子任务编号', dataIndex: 'code', width: 124 },
+                        { title: '具体任务', dataIndex: 'title', width: 210, ellipsis: true, render: renderEllipsis },
+                        { title: '执行人', dataIndex: 'executors', width: 124, render: renderPeople },
+                        { title: '本周完成内容', dataIndex: 'weekly_this_week', width: 190, render: renderBlankEllipsis },
+                        { title: '遗留事项', dataIndex: 'weekly_risk', width: 190, render: renderBlankEllipsis },
+                        { title: '截止日期', dataIndex: 'due_date', width: 104, responsive: ['lg'] },
+                        {
+                          title: '操作',
+                          width: 82,
+                          render: (_: unknown, subTask: AnyRecord) => (
+                            <Button size="small" disabled={!row.can_split} onClick={() => openSubTaskEdit(subTask)}>
+                              编辑
+                            </Button>
+                          )
+                        }
+                      ]}
+                      tableLayout="fixed"
+                      scroll={{ x: 1112 }}
+                    />
+                    <Card size="small" title={`部门任务补充记录（${(row.work_item_supplements || []).length}）`}>
+                      {(row.work_item_supplements || []).length ? (
+                        <Space direction="vertical" size={10} className="full-width">
+                          {(row.work_item_supplements || []).map(renderWorkItemSupplement)}
+                        </Space>
+                      ) : (
+                        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无部门任务补充记录" />
+                      )}
+                    </Card>
+                  </Space>
                 ),
-                rowExpandable: (row) => Boolean((row.sub_tasks || []).length)
+                rowExpandable: (row) => Boolean((row.sub_tasks || []).length || (row.work_item_supplements || []).length)
               }}
             />
           </Card>}

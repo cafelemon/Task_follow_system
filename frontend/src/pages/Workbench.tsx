@@ -17,6 +17,7 @@ import { getJson } from '../api/client';
 import type { AnyRecord } from '../api/client';
 import { PageShell } from '../components/PageShell';
 import { StatusTag } from '../components/StatusTag';
+import { DepartmentOwnerWorkbench } from '../features/workbench/DepartmentOwnerWorkbench';
 import { WorkItemPanel } from '../features/workItems/WorkItemPanel';
 import { WorkItemSubmitModal } from '../features/workItems/WorkItemSubmitModal';
 import {
@@ -108,6 +109,7 @@ function WorkbenchTaskSection({
 
 export function Workbench({ auth, onCreateRisk }: WorkbenchProps) {
   const [tasks, setTasks] = useState<AnyRecord[]>([]);
+  const [departmentOwnerData, setDepartmentOwnerData] = useState<AnyRecord | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
   const [workItemOpen, setWorkItemOpen] = useState(false);
@@ -117,7 +119,12 @@ export function Workbench({ auth, onCreateRisk }: WorkbenchProps) {
     setLoading(true);
     setError(false);
     try {
-      setTasks(await getJson<AnyRecord[]>('/sub-tasks'));
+      const [taskData, departmentOwnerPayload] = await Promise.all([
+        getJson<AnyRecord[]>('/sub-tasks'),
+        getJson<AnyRecord>('/workbench/department-owner').catch(() => null),
+      ]);
+      setTasks(taskData);
+      setDepartmentOwnerData(departmentOwnerPayload);
     } catch {
       setError(true);
     } finally {
@@ -141,7 +148,7 @@ export function Workbench({ auth, onCreateRisk }: WorkbenchProps) {
   return (
     <PageShell
       title="工作台"
-      subtitle="个人行动入口：汇总本人正式任务、待归类事项和周报材料"
+      subtitle="个人行动入口：按身份叠加展示本人正式任务、待归类事项、部门关注项和周报材料"
       extra={<Button onClick={reload} loading={loading}>刷新</Button>}
     >
       <Space direction="vertical" size={16} className="full-width workbench-page">
@@ -154,7 +161,7 @@ export function Workbench({ auth, onCreateRisk }: WorkbenchProps) {
             </div>
             <Space wrap className="workbench-hero-actions">
               <Link className="mobile-primary-link" to="/sub-tasks">进入子任务执行</Link>
-              <Link className="mobile-secondary-link" to="/weekly-report">查看本周周报材料</Link>
+              <Link className="mobile-secondary-link" to="/weekly-report">查看/复制本周周报材料</Link>
               <Button icon={<RightOutlined />} onClick={() => setWorkItemOpen(true)}>提交待归类事项</Button>
             </Space>
           </div>
@@ -167,9 +174,17 @@ export function Workbench({ auth, onCreateRisk }: WorkbenchProps) {
           <Col xs={12} md={6}><Card className="workbench-metric-card"><Statistic title="已完成" value={completedTasks.length} prefix={<CheckCircleOutlined />} /></Card></Col>
         </Row>
         {!executionTasks.length && !loading ? (
-          <Alert type="info" showIcon message="当前没有需要你执行的子任务。" description="你仍可提交待归类事项，或进入周报中心查看本人本周材料；收到的待处理事项会在工作台展示。" />
+          <Alert
+            type="info"
+            showIcon
+            message="当前没有需要你执行的子任务。"
+            description="你仍可提交待归类事项，或进入周报中心查看和复制本人材料；如果你同时是负责人，对应待处理事项会在工作台下方展示。"
+          />
         ) : null}
-        <WorkItemPanel refreshKey={workItemRefreshKey} />
+        <DepartmentOwnerWorkbench data={departmentOwnerData} />
+        <div id="work-items">
+          <WorkItemPanel refreshKey={workItemRefreshKey} />
+        </div>
         <WorkbenchTaskSection
           title="本周待更新"
           description="正式提交后，本周提醒才会停止；保存草稿不算提交。"

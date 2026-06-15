@@ -120,11 +120,6 @@ class WorkItemCrossDepartmentApprove(BaseModel):
     comment: str | None = None
 
 
-class WorkItemEscalate(BaseModel):
-    target: str
-    comment: str | None = None
-
-
 class WorkItemConvertToSubTask(BaseModel):
     title: str
     executor_ids: list[int]

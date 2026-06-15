@@ -9,9 +9,7 @@ const statusColors: Record<string, string> = {
   approved: 'green',
   rejected: 'red',
   closed: 'default',
-  converted_to_sub_task: 'purple',
-  escalated_department_task: 'orange',
-  escalated_parent_task: 'volcano'
+  converted_to_sub_task: 'purple'
 };
 
 type ActionType = 'reject' | 'close';
@@ -65,8 +63,7 @@ function WorkItemCard({
   onReject,
   onClose,
   onConvert,
-  onCrossApprove,
-  onEscalate
+  onCrossApprove
 }: {
   item: AnyRecord;
   onWithdraw?: (item: AnyRecord) => void;
@@ -75,12 +72,10 @@ function WorkItemCard({
   onClose?: (item: AnyRecord) => void;
   onConvert?: (item: AnyRecord) => void;
   onCrossApprove?: (item: AnyRecord) => void;
-  onEscalate?: (item: AnyRecord) => void;
 }) {
   const event = latestEvent(item);
   const crossApproval = item.cross_department_approval;
   const isConverted = item.status === 'converted_to_sub_task';
-  const isEscalated = item.status === 'escalated_department_task' || item.status === 'escalated_parent_task';
   return (
     <div className="work-item-card">
       <Space direction="vertical" size={10} className="full-width">
@@ -108,21 +103,6 @@ function WorkItemCard({
           {item.converted_at ? (
             <>
               <span>转换时间</span><Typography.Text>{formatDateTime(item.converted_at)}</Typography.Text>
-            </>
-          ) : null}
-          {item.escalated_by ? (
-            <>
-              <span>上提人</span><Typography.Text>{item.escalated_by.name || '-'}</Typography.Text>
-            </>
-          ) : null}
-          {item.escalated_at ? (
-            <>
-              <span>上提时间</span><Typography.Text>{formatDateTime(item.escalated_at)}</Typography.Text>
-            </>
-          ) : null}
-          {item.escalation_comment ? (
-            <>
-              <span>诉求说明</span><Typography.Text>{item.escalation_comment}</Typography.Text>
             </>
           ) : null}
         </div>
@@ -162,20 +142,16 @@ function WorkItemCard({
         {isConverted ? (
           <Alert type="success" showIcon message="已转为正式子任务，后续进展请通过正式子任务周更新跟踪。" />
         ) : null}
-        {isEscalated ? (
-          <Alert type="info" showIcon message="该诉求已进入 4.5.x 的部门负责人/总经办会议工作台深化范围，本页只做追溯展示。" />
-        ) : null}
         {item.can_withdraw ? (
           <Button danger onClick={() => onWithdraw?.(item)}>撤回</Button>
         ) : null}
-        {(item.can_approve || item.can_reject || item.can_close || item.can_convert_to_sub_task || item.can_cross_department_approve || item.can_escalate) ? (
+        {(item.can_approve || item.can_reject || item.can_close || item.can_convert_to_sub_task || item.can_cross_department_approve) ? (
           <Space wrap className="work-item-actions">
             {item.can_approve ? <Button type="primary" onClick={() => onApprove?.(item)}>同意</Button> : null}
             {item.can_cross_department_approve ? <Button type="primary" onClick={() => onCrossApprove?.(item)}>确认协作</Button> : null}
             {item.can_reject ? <Button danger onClick={() => onReject?.(item)}>退回</Button> : null}
             {item.can_close ? <Button onClick={() => onClose?.(item)}>关闭</Button> : null}
             {item.can_convert_to_sub_task ? <Button onClick={() => onConvert?.(item)}>转子任务</Button> : null}
-            {item.can_escalate ? <Button onClick={() => onEscalate?.(item)}>上提诉求</Button> : null}
           </Space>
         ) : null}
         {item.category === 'cross_department_collaboration' && item.status === 'pending' ? (
@@ -191,10 +167,6 @@ export function WorkItemPanel({ refreshKey = 0 }: { refreshKey?: number }) {
   const [received, setReceived] = useState<AnyRecord[]>([]);
   const [departmentRoutine, setDepartmentRoutine] = useState<AnyRecord[]>([]);
   const [canViewDepartmentRoutine, setCanViewDepartmentRoutine] = useState(false);
-  const [departmentEscalations, setDepartmentEscalations] = useState<AnyRecord[]>([]);
-  const [canViewDepartmentEscalations, setCanViewDepartmentEscalations] = useState(false);
-  const [parentEscalations, setParentEscalations] = useState<AnyRecord[]>([]);
-  const [canViewParentEscalations, setCanViewParentEscalations] = useState(false);
   const [loading, setLoading] = useState(false);
   const [actionForm] = Form.useForm();
   const [actionType, setActionType] = useState<ActionType | null>(null);
@@ -209,9 +181,6 @@ export function WorkItemPanel({ refreshKey = 0 }: { refreshKey?: number }) {
   const [crossForm] = Form.useForm();
   const [crossTarget, setCrossTarget] = useState<AnyRecord | null>(null);
   const [crossApproving, setCrossApproving] = useState(false);
-  const [escalateForm] = Form.useForm();
-  const [escalateTarget, setEscalateTarget] = useState<AnyRecord | null>(null);
-  const [escalating, setEscalating] = useState(false);
 
   const reload = async () => {
     setLoading(true);
@@ -231,28 +200,6 @@ export function WorkItemPanel({ refreshKey = 0 }: { refreshKey?: number }) {
         setCanViewDepartmentRoutine(false);
         if (error?.response?.status !== 403) {
           message.warning('本部门常态化记录加载失败，请刷新重试');
-        }
-      }
-      try {
-        const escalationItems = await getJson<AnyRecord[]>('/work-items?scope=department-escalations');
-        setDepartmentEscalations(escalationItems);
-        setCanViewDepartmentEscalations(true);
-      } catch (error: any) {
-        setDepartmentEscalations([]);
-        setCanViewDepartmentEscalations(false);
-        if (error?.response?.status !== 403) {
-          message.warning('缺部门任务诉求加载失败，请刷新重试');
-        }
-      }
-      try {
-        const escalationItems = await getJson<AnyRecord[]>('/work-items?scope=parent-escalations');
-        setParentEscalations(escalationItems);
-        setCanViewParentEscalations(true);
-      } catch (error: any) {
-        setParentEscalations([]);
-        setCanViewParentEscalations(false);
-        if (error?.response?.status !== 403) {
-          message.warning('缺母任务诉求加载失败，请刷新重试');
         }
       }
     } catch {
@@ -344,12 +291,6 @@ export function WorkItemPanel({ refreshKey = 0 }: { refreshKey?: number }) {
     setCrossTarget(item);
   };
 
-  const openEscalateModal = (item: AnyRecord) => {
-    escalateForm.resetFields();
-    escalateForm.setFieldsValue({ target: 'department_task', comment: undefined });
-    setEscalateTarget(item);
-  };
-
   const submitConvert = async () => {
     if (!convertTarget) return;
     const values = await convertForm.validateFields();
@@ -390,25 +331,6 @@ export function WorkItemPanel({ refreshKey = 0 }: { refreshKey?: number }) {
     }
   };
 
-  const submitEscalate = async () => {
-    if (!escalateTarget) return;
-    const values = await escalateForm.validateFields();
-    setEscalating(true);
-    try {
-      await postJson(`/work-items/${escalateTarget.id}/escalate`, {
-        target: values.target,
-        comment: values.comment
-      });
-      message.success(values.target === 'parent_task' ? '已上提缺母任务诉求' : '已上提缺部门任务诉求');
-      setEscalateTarget(null);
-      await reload();
-    } catch (error: any) {
-      message.error(error?.response?.data?.detail || '上提诉求失败');
-    } finally {
-      setEscalating(false);
-    }
-  };
-
   const submitAction = async () => {
     if (!actionTarget || !actionType) return;
     const values = await actionForm.validateFields();
@@ -434,7 +356,7 @@ export function WorkItemPanel({ refreshKey = 0 }: { refreshKey?: number }) {
       <div className="workbench-section-head">
         <div>
           <Typography.Title level={4}>待归类事项</Typography.Title>
-          <Typography.Text type="secondary">按当前身份叠加展示你的提交、待处理事项、部门记录和任务缺口诉求；未转成正式任务前不进入会议看板正式任务统计。</Typography.Text>
+          <Typography.Text type="secondary">按当前身份叠加展示你的提交、待处理事项和部门记录；只围绕部门任务补充、常态化、跨部门协作和周报补充四类事项。</Typography.Text>
         </div>
         <Button onClick={reload} loading={loading}>刷新</Button>
       </div>
@@ -442,7 +364,7 @@ export function WorkItemPanel({ refreshKey = 0 }: { refreshKey?: number }) {
         type="info"
         showIcon
         message="处理口径"
-        description="待我处理只展示当前仍需你处理的事项；已处理记录保留在我的提交、本部门常态化或诉求视图中。缺任务诉求只形成追溯和会议候选，不会自动创建任务。"
+        description="待我处理只展示当前仍需你处理的事项；已处理、已退回、已关闭和已转子任务记录保留追溯，不会再显示无效操作按钮。"
       />
       <Tabs
         items={[
@@ -454,7 +376,7 @@ export function WorkItemPanel({ refreshKey = 0 }: { refreshKey?: number }) {
                 {submitted.map((item) => <WorkItemCard key={item.id} item={item} onWithdraw={withdraw} />)}
               </div>
             ) : (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无已提交待归类事项；临时或补充工作可从上方入口登记。" />
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无已提交待归类事项；临时、补充或周报材料可从工作台上方入口登记。" />
             )
           },
           {
@@ -471,12 +393,11 @@ export function WorkItemPanel({ refreshKey = 0 }: { refreshKey?: number }) {
                     onClose={(target) => openActionModal(target, 'close')}
                     onConvert={openConvertModal}
                     onCrossApprove={openCrossApproveModal}
-                    onEscalate={openEscalateModal}
                   />
                 ))}
               </div>
             ) : (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无当前需要你处理的事项；已处理记录可在对应视图或我的提交中追溯。" />
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无当前需要你处理的事项；如果事项已经处理，请在我的提交、部门记录或部门任务补充中追溯。" />
             )
           },
           ...(canViewDepartmentRoutine ? [
@@ -493,7 +414,6 @@ export function WorkItemPanel({ refreshKey = 0 }: { refreshKey?: number }) {
                       onReject={(target) => openActionModal(target, 'reject')}
                       onClose={(target) => openActionModal(target, 'close')}
                       onCrossApprove={openCrossApproveModal}
-                      onEscalate={openEscalateModal}
                     />
                   ))}
                 </div>
@@ -502,38 +422,6 @@ export function WorkItemPanel({ refreshKey = 0 }: { refreshKey?: number }) {
               )
             }
           ] : []),
-          ...(canViewDepartmentEscalations ? [
-            {
-              key: 'department-escalations',
-              label: `缺部门任务诉求 ${departmentEscalations.length}`,
-              children: departmentEscalations.length ? (
-                <Space direction="vertical" size={10} className="full-width">
-                  <Alert type="info" showIcon message="缺部门任务诉求将在 4.5.x 进入部门负责人工作台深化处理，本版只追溯诉求来源和上提说明。" />
-                  <div className="work-item-list">
-                    {departmentEscalations.map((item) => <WorkItemCard key={item.id} item={item} />)}
-                  </div>
-                </Space>
-              ) : (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无缺部门任务诉求；后续由 4.5.x 深化部门负责人处理闭环。" />
-              )
-            }
-          ] : []),
-          ...(canViewParentEscalations ? [
-            {
-              key: 'parent-escalations',
-              label: `缺母任务诉求 ${parentEscalations.length}`,
-              children: parentEscalations.length ? (
-                <Space direction="vertical" size={10} className="full-width">
-                  <Alert type="info" showIcon message="缺母任务诉求将在 4.5.x 进入总经办会议工作台深化处理，本版只追溯诉求来源和上提说明。" />
-                  <div className="work-item-list">
-                    {parentEscalations.map((item) => <WorkItemCard key={item.id} item={item} />)}
-                  </div>
-                </Space>
-              ) : (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无缺母任务诉求；后续由 4.5.x 深化总经办会议处理闭环。" />
-              )
-            }
-          ] : [])
         ]}
       />
       <Modal
@@ -659,50 +547,6 @@ export function WorkItemPanel({ refreshKey = 0 }: { refreshKey?: number }) {
               rules={[{ max: 1000, message: '确认说明不能超过 1000 字' }]}
             >
               <Input.TextArea rows={3} placeholder="可补充协作内容、边界或确认依据" />
-            </Form.Item>
-          </Form>
-        </Space>
-      </Modal>
-      <Modal
-        className={detectedMobile ? 'mobile-form-modal' : undefined}
-        title="上提任务诉求"
-        open={Boolean(escalateTarget)}
-        onOk={submitEscalate}
-        onCancel={() => setEscalateTarget(null)}
-        confirmLoading={escalating}
-        okText="确认上提"
-        cancelText="取消"
-        destroyOnClose
-      >
-        <Space direction="vertical" size={12} className="full-width">
-          <Alert
-            type="info"
-            showIcon
-            message="上提只形成诉求和追溯记录，不会自动创建部门任务或母任务。"
-            description="缺部门任务进入部门负责人工作台；缺母任务进入总经办/秘书工作台作为会议议题候选。"
-          />
-          <Form form={escalateForm} layout="vertical">
-            <Form.Item
-              name="target"
-              label="诉求类型"
-              rules={[{ required: true, message: '请选择诉求类型' }]}
-            >
-              <Select
-                options={[
-                  { value: 'department_task', label: '缺部门任务' },
-                  { value: 'parent_task', label: '缺母任务' }
-                ]}
-              />
-            </Form.Item>
-            <Form.Item
-              name="comment"
-              label="上提说明"
-              rules={[
-                { required: true, whitespace: true, message: '请填写上提说明' },
-                { max: 1000, message: '上提说明不能超过 1000 字' }
-              ]}
-            >
-              <Input.TextArea rows={4} placeholder="说明为什么当前任务树无法承接，以及建议由谁继续判断" />
             </Form.Item>
           </Form>
         </Space>
