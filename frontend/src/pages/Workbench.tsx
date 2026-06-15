@@ -167,7 +167,7 @@ export function Workbench({ auth, onCreateRisk }: WorkbenchProps) {
           <Col xs={12} md={6}><Card className="workbench-metric-card"><Statistic title="已完成" value={completedTasks.length} prefix={<CheckCircleOutlined />} /></Card></Col>
         </Row>
         {!executionTasks.length && !loading ? (
-          <Alert type="info" showIcon message="当前没有需要你执行的子任务。" description="你仍可提交待归类事项，或进入周报中心查看本人本周材料；责任人处理能力将从 4.4.0 开始开放。" />
+          <Alert type="info" showIcon message="当前没有需要你执行的子任务。" description="你仍可提交待归类事项，或进入周报中心查看本人本周材料；收到的待确认事项可在工作台处理。" />
         ) : null}
         <WorkItemPanel refreshKey={workItemRefreshKey} />
         <WorkbenchTaskSection

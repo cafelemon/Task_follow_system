@@ -71,6 +71,8 @@ def ensure_runtime_schema() -> None:
         "CREATE INDEX IF NOT EXISTS ix_work_items_submitter_status ON work_items(submitter_id, status)",
         "CREATE INDEX IF NOT EXISTS ix_work_items_category_status ON work_items(category, status)",
         "ALTER TABLE work_items ADD COLUMN IF NOT EXISTS withdrawn_at TIMESTAMPTZ",
+        "ALTER TABLE work_items ADD COLUMN IF NOT EXISTS converted_sub_task_id INTEGER REFERENCES sub_tasks(id)",
+        "ALTER TABLE work_items ADD COLUMN IF NOT EXISTS converted_at TIMESTAMPTZ",
         """
         CREATE TABLE IF NOT EXISTS work_item_events (
             id SERIAL PRIMARY KEY,

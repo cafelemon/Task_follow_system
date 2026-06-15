@@ -175,7 +175,7 @@ export function WorkItemSubmitModal({ open, mobile, onCancel, onSubmitted }: Wor
           ) : null}
         </Form>
         <Typography.Text type="secondary">
-          提交后可在工作台“待归类事项”查看状态；责任人处理能力将从 4.4.0 开始开放。
+          提交后可在工作台“待归类事项”查看状态；责任人可在待确认列表中处理。
         </Typography.Text>
       </Space>
     </Modal>

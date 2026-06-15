@@ -552,6 +552,10 @@ body {
   overflow-wrap: anywhere;
 }
 
+.work-item-actions {
+  width: 100%;
+}
+
 .weekly-report-page {
   min-width: 0;
 }
@@ -1528,6 +1532,12 @@ body {
   .mobile-form-modal .ant-modal-footer .ant-btn {
     width: 100%;
     margin-inline-start: 0 !important;
+  }
+
+  .work-item-actions,
+  .work-item-actions .ant-space-item,
+  .work-item-actions .ant-btn {
+    width: 100%;
   }
 
   .meeting-tabs {

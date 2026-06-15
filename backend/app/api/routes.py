@@ -64,6 +64,8 @@ from app.schemas.dto import (
     WeeklyReminderRequest,
     WeeklyReportConfirm,
     WeeklyUpdateUpsert,
+    WorkItemAction,
+    WorkItemConvertToSubTask,
     WorkItemCreate,
 )
 from app.services.business import (
@@ -408,12 +410,32 @@ def normalize_email(value: str | None) -> str | None:
 WORK_ITEM_CONTENT_LIMIT = 2000
 WORK_ITEM_STATUS_PENDING = "pending"
 WORK_ITEM_STATUS_WITHDRAWN = "withdrawn"
+WORK_ITEM_STATUS_APPROVED = "approved"
+WORK_ITEM_STATUS_REJECTED = "rejected"
+WORK_ITEM_STATUS_CLOSED = "closed"
+WORK_ITEM_STATUS_CONVERTED_TO_SUB_TASK = "converted_to_sub_task"
+WORK_ITEM_WEEKLY_REPORT_STATUSES = {WORK_ITEM_STATUS_PENDING, WORK_ITEM_STATUS_APPROVED}
+WORK_ITEM_DEPARTMENT_ROUTINE_STATUSES = {
+    WORK_ITEM_STATUS_PENDING,
+    WORK_ITEM_STATUS_APPROVED,
+    WORK_ITEM_STATUS_REJECTED,
+    WORK_ITEM_STATUS_CLOSED,
+}
 WORK_ITEM_STATUS_LABELS = {
     "pending": "待确认",
     "withdrawn": "已撤回",
     "approved": "已确认",
     "rejected": "已退回",
     "closed": "已关闭",
+    "converted_to_sub_task": "已转子任务",
+}
+WORK_ITEM_EVENT_LABELS = {
+    "created": "已提交",
+    "withdrawn": "已撤回",
+    "approved": "已确认",
+    "rejected": "已退回",
+    "closed": "已关闭",
+    "converted_to_sub_task": "已转子任务",
 }
 WORK_ITEM_CATEGORY_DEPARTMENT_TASK = "department_task_supplement"
 WORK_ITEM_CATEGORY_DEPARTMENT_ROUTINE = "department_routine"
@@ -915,9 +937,7 @@ def is_department_owner_for_department(user: User, department_id: int | None) ->
     return bool(department_id and user.department_id == department_id and "department_owner" in user_role_codes(user))
 
 
-def can_receive_work_item(user: User, item: WorkItem) -> bool:
-    if item.status != WORK_ITEM_STATUS_PENDING:
-        return False
+def can_handle_work_item(user: User, item: WorkItem) -> bool:
     if item.category == WORK_ITEM_CATEGORY_DEPARTMENT_TASK:
         return bool(item.related_department_task and user.id in task_owner_ids(item.related_department_task))
     if item.category == WORK_ITEM_CATEGORY_DEPARTMENT_ROUTINE:
@@ -925,6 +945,29 @@ def can_receive_work_item(user: User, item: WorkItem) -> bool:
     if item.category == WORK_ITEM_CATEGORY_CROSS_DEPARTMENT:
         return is_department_owner_for_department(user, item.collaboration_department_id)
     return False
+
+
+def can_receive_work_item(user: User, item: WorkItem) -> bool:
+    return item.status == WORK_ITEM_STATUS_PENDING and can_handle_work_item(user, item)
+
+
+def can_view_received_work_item(user: User, item: WorkItem) -> bool:
+    if not can_handle_work_item(user, item):
+        return False
+    if item.status == WORK_ITEM_STATUS_PENDING:
+        return True
+    return (
+        item.category == WORK_ITEM_CATEGORY_DEPARTMENT_TASK
+        and item.status in {WORK_ITEM_STATUS_APPROVED, WORK_ITEM_STATUS_CONVERTED_TO_SUB_TASK}
+    )
+
+
+def can_manage_work_item(user: User, item: WorkItem) -> bool:
+    return (
+        user.is_admin
+        or "permission.manage" in user_permission_codes(user)
+        or can_handle_work_item(user, item)
+    )
 
 
 def serialize_user_brief(user: User | None) -> dict | None:
@@ -944,7 +987,41 @@ def serialize_department_brief(department: Department | None) -> dict | None:
     return {"id": department.id, "name": department.name, "status": department.status}
 
 
+def serialize_work_item_sub_task(task: SubTask | None) -> dict | None:
+    if not task:
+        return None
+    return {
+        "id": task.id,
+        "code": task.code,
+        "title": task.title,
+        "department_task_id": task.department_task_id,
+        "department_task_code": task.department_task.code if task.department_task else None,
+        "department_task_title": task.department_task.title if task.department_task else None,
+        "status": task.status,
+        "due_date": task.due_date.isoformat() if task.due_date else None,
+    }
+
+
+def serialize_work_item_event(event: WorkItemEvent) -> dict:
+    return {
+        "id": event.id,
+        "action": event.action,
+        "action_label": WORK_ITEM_EVENT_LABELS.get(event.action, event.action),
+        "comment": event.comment,
+        "actor": serialize_user_brief(event.actor),
+        "created_at": event.created_at.isoformat() if event.created_at else None,
+    }
+
+
 def serialize_work_item(item: WorkItem, viewer: User | None = None) -> dict:
+    can_manage = bool(viewer and can_manage_work_item(viewer, item))
+    is_pending = item.status == WORK_ITEM_STATUS_PENDING
+    can_convert = bool(
+        can_manage
+        and item.category == WORK_ITEM_CATEGORY_DEPARTMENT_TASK
+        and item.status in {WORK_ITEM_STATUS_PENDING, WORK_ITEM_STATUS_APPROVED}
+        and item.related_department_task
+    )
     return {
         "id": item.id,
         "content": item.content,
@@ -964,10 +1041,22 @@ def serialize_work_item(item: WorkItem, viewer: User | None = None) -> dict:
         ),
         "collaboration_department_id": item.collaboration_department_id,
         "collaboration_department": serialize_department_brief(item.collaboration_department),
-        "can_withdraw": bool(viewer and viewer.id == item.submitter_id and item.status == WORK_ITEM_STATUS_PENDING),
+        "converted_sub_task_id": item.converted_sub_task_id,
+        "converted_sub_task": serialize_work_item_sub_task(item.converted_sub_task),
+        "can_withdraw": bool(viewer and viewer.id == item.submitter_id and is_pending),
+        "can_approve": bool(
+            can_manage
+            and is_pending
+            and item.category != WORK_ITEM_CATEGORY_CROSS_DEPARTMENT
+        ),
+        "can_reject": bool(can_manage and is_pending),
+        "can_close": bool(can_manage and is_pending),
+        "can_convert_to_sub_task": can_convert,
+        "events": [serialize_work_item_event(event) for event in item.events],
         "created_at": item.created_at.isoformat() if item.created_at else None,
         "updated_at": item.updated_at.isoformat() if item.updated_at else None,
         "withdrawn_at": item.withdrawn_at.isoformat() if item.withdrawn_at else None,
+        "converted_at": item.converted_at.isoformat() if item.converted_at else None,
     }
 
 
@@ -1065,7 +1154,7 @@ def weekly_report_draft_payload(db: Session, user: User, week_key: str) -> dict:
             .where(
                 WorkItem.submitter_id == user.id,
                 WorkItem.week_key == target_week,
-                WorkItem.status != WORK_ITEM_STATUS_WITHDRAWN,
+                WorkItem.status.in_(WORK_ITEM_WEEKLY_REPORT_STATUSES),
             )
             .order_by(WorkItem.created_at, WorkItem.id)
         ).all()
@@ -2057,24 +2146,45 @@ def list_work_items(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[dict]:
-    if scope not in {"submitted", "received"}:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="scope 仅支持 submitted 或 received")
+    if scope not in {"submitted", "received", "department-routine"}:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="scope 仅支持 submitted、received 或 department-routine")
     if scope == "submitted":
         items = db.scalars(
             select(WorkItem)
             .where(WorkItem.submitter_id == current_user.id)
             .order_by(WorkItem.created_at.desc(), WorkItem.id.desc())
         ).all()
-    else:
+    elif scope == "received":
         items = [
             item
             for item in db.scalars(
                 select(WorkItem)
-                .where(WorkItem.status == WORK_ITEM_STATUS_PENDING)
+                .where(WorkItem.status.in_([
+                    WORK_ITEM_STATUS_PENDING,
+                    WORK_ITEM_STATUS_APPROVED,
+                    WORK_ITEM_STATUS_CONVERTED_TO_SUB_TASK,
+                ]))
                 .order_by(WorkItem.created_at.desc(), WorkItem.id.desc())
             ).all()
-            if can_receive_work_item(current_user, item)
+            if can_view_received_work_item(current_user, item)
         ]
+    else:
+        can_view_all_departments = current_user.is_admin or "permission.manage" in user_permission_codes(current_user)
+        if not can_view_all_departments and "department_owner" not in user_role_codes(current_user):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, detail="无权查看本部门常态化事项")
+        filters = [
+            WorkItem.category == WORK_ITEM_CATEGORY_DEPARTMENT_ROUTINE,
+            WorkItem.status.in_(WORK_ITEM_DEPARTMENT_ROUTINE_STATUSES),
+        ]
+        if not can_view_all_departments:
+            if not current_user.department_id:
+                return []
+            filters.append(WorkItem.department_id == current_user.department_id)
+        items = db.scalars(
+            select(WorkItem)
+            .where(*filters)
+            .order_by(WorkItem.created_at.desc(), WorkItem.id.desc())
+        ).all()
     return [serialize_work_item(item, current_user) for item in items]
 
 
@@ -2172,6 +2282,191 @@ def withdraw_work_item(
     db.commit()
     db.refresh(item)
     return serialize_work_item(item, current_user)
+
+
+def normalize_work_item_comment(payload: WorkItemAction, field_name: str, required: bool = False) -> str | None:
+    comment = payload.comment.strip() if payload.comment else ""
+    if required and not comment:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"请填写{field_name}")
+    return comment or None
+
+
+def update_work_item_status(
+    item: WorkItem,
+    actor: User,
+    status_value: str,
+    action: str,
+    comment: str | None,
+    db: Session,
+) -> dict:
+    if not can_manage_work_item(actor, item):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="无权处理该待归类事项")
+    if item.status != WORK_ITEM_STATUS_PENDING:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="只有待确认事项可以处理")
+    now = datetime.now(timezone.utc)
+    item.status = status_value
+    item.updated_at = now
+    db.add(
+        WorkItemEvent(
+            work_item_id=item.id,
+            actor_id=actor.id,
+            action=action,
+            comment=comment,
+        )
+    )
+    db.commit()
+    db.refresh(item)
+    return serialize_work_item(item, actor)
+
+
+@router.post("/work-items/{work_item_id}/approve")
+def approve_work_item(
+    work_item_id: int,
+    payload: WorkItemAction,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    item = db.get(WorkItem, work_item_id)
+    if not item:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Work item not found")
+    if not can_manage_work_item(current_user, item):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="无权处理该待归类事项")
+    if item.category == WORK_ITEM_CATEGORY_CROSS_DEPARTMENT:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="跨部门协作同意将在 4.4.4 双确认中开放")
+    comment = normalize_work_item_comment(payload, "确认说明")
+    return update_work_item_status(
+        item,
+        current_user,
+        WORK_ITEM_STATUS_APPROVED,
+        WORK_ITEM_STATUS_APPROVED,
+        comment,
+        db,
+    )
+
+
+@router.post("/work-items/{work_item_id}/reject")
+def reject_work_item(
+    work_item_id: int,
+    payload: WorkItemAction,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    item = db.get(WorkItem, work_item_id)
+    if not item:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Work item not found")
+    comment = normalize_work_item_comment(payload, "退回原因", required=True)
+    return update_work_item_status(
+        item,
+        current_user,
+        WORK_ITEM_STATUS_REJECTED,
+        WORK_ITEM_STATUS_REJECTED,
+        comment,
+        db,
+    )
+
+
+@router.post("/work-items/{work_item_id}/close")
+def close_work_item(
+    work_item_id: int,
+    payload: WorkItemAction,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    item = db.get(WorkItem, work_item_id)
+    if not item:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Work item not found")
+    comment = normalize_work_item_comment(payload, "关闭说明", required=True)
+    return update_work_item_status(
+        item,
+        current_user,
+        WORK_ITEM_STATUS_CLOSED,
+        WORK_ITEM_STATUS_CLOSED,
+        comment,
+        db,
+    )
+
+
+@router.post("/work-items/{work_item_id}/convert-to-sub-task")
+def convert_work_item_to_sub_task(
+    work_item_id: int,
+    payload: WorkItemConvertToSubTask,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    item = db.get(WorkItem, work_item_id)
+    if not item:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Work item not found")
+    if not can_manage_work_item(current_user, item):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="无权处理该待归类事项")
+    if item.category != WORK_ITEM_CATEGORY_DEPARTMENT_TASK:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="只有挂载已有部门任务的事项可以转为子任务")
+    if item.status not in {WORK_ITEM_STATUS_PENDING, WORK_ITEM_STATUS_APPROVED}:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="只有待确认或已确认事项可以转为子任务")
+    if item.converted_sub_task_id:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="该事项已转为子任务")
+    department_task = item.related_department_task
+    if not department_task or department_task.status == "archived":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Department task not found")
+    if department_task.parent_task and department_task.parent_task.status == "archived":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Department task not found")
+
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="请填写子任务标题")
+    if not payload.executor_ids:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="请选择执行人")
+    owners = owner_people(department_task)
+    if not owners:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="部门任务负责人不能为空")
+    executors = resolve_users(db, payload.executor_ids, None, "执行人")
+    now = datetime.now(timezone.utc)
+    task = SubTask(
+        code=generate_sub_task_code(db, department_task),
+        department_task_id=department_task.id,
+        title=title,
+        owner_id=owners[0].id,
+        executor_id=executors[0].id,
+        due_date=payload.due_date,
+    )
+    db.add(task)
+    if department_task.pending_split_count:
+        department_task.pending_split_count = max((department_task.pending_split_count or 0) - 1, 0)
+        codes = list(department_task.pending_split_codes or [])
+        department_task.pending_split_codes = codes[1:] if codes else []
+    db.flush()
+    sync_task_owners(db, task, owners)
+    sync_sub_task_executors(db, task, executors)
+    item.status = WORK_ITEM_STATUS_CONVERTED_TO_SUB_TASK
+    item.converted_sub_task_id = task.id
+    item.converted_at = now
+    item.updated_at = now
+    comment = payload.comment.strip() if payload.comment else None
+    db.add(
+        TaskEvent(
+            object_type="sub_task",
+            object_id=task.id,
+            event_type="created_from_work_item",
+            title="待归类事项转子任务",
+            content=item.content,
+            actor_id=current_user.id,
+        )
+    )
+    db.add(
+        WorkItemEvent(
+            work_item_id=item.id,
+            actor_id=current_user.id,
+            action=WORK_ITEM_STATUS_CONVERTED_TO_SUB_TASK,
+            comment=comment or f"已转为子任务 {task.code}",
+        )
+    )
+    db.commit()
+    db.refresh(item)
+    db.refresh(task)
+    expire_task_people(db, task, include_executors=True)
+    return {
+        "work_item": serialize_work_item(item, current_user),
+        "sub_task": serialize_work_item_sub_task(task),
+    }
 
 
 @router.get("/weekly-reports/draft")

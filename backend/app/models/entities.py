@@ -293,6 +293,8 @@ class WorkItem(Base):
     related_department_task_id: Mapped[int | None] = mapped_column(ForeignKey("department_tasks.id"))
     collaboration_department_id: Mapped[int | None] = mapped_column(ForeignKey("departments.id"))
     withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    converted_sub_task_id: Mapped[int | None] = mapped_column(ForeignKey("sub_tasks.id"))
+    converted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -300,6 +302,8 @@ class WorkItem(Base):
     department: Mapped[Department | None] = relationship(foreign_keys=[department_id])
     related_department_task: Mapped[DepartmentTask | None] = relationship(foreign_keys=[related_department_task_id])
     collaboration_department: Mapped[Department | None] = relationship(foreign_keys=[collaboration_department_id])
+    converted_sub_task: Mapped[SubTask | None] = relationship(foreign_keys=[converted_sub_task_id])
+    events: Mapped[list["WorkItemEvent"]] = relationship(order_by="WorkItemEvent.created_at")
 
 
 class WorkItemEvent(Base):

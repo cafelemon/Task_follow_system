@@ -111,6 +111,17 @@ class WorkItemCreate(BaseModel):
     collaboration_department_id: int | None = None
 
 
+class WorkItemAction(BaseModel):
+    comment: str | None = None
+
+
+class WorkItemConvertToSubTask(BaseModel):
+    title: str
+    executor_ids: list[int]
+    due_date: date | None = None
+    comment: str | None = None
+
+
 class WeeklyReportConfirm(BaseModel):
     week_key: str | None = None
 

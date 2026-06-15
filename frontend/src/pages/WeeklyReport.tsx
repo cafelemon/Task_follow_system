@@ -92,7 +92,7 @@ export function WeeklyReport() {
   return (
     <PageShell
       title="周报中心"
-      subtitle="聚合本人周报材料；这里不处理他人待归类事项，责任人处理从 4.4.0 开始"
+      subtitle="聚合本人周报材料；他人待归类事项请回到工作台处理"
       extra={<Button onClick={reload} loading={loading}>刷新</Button>}
     >
       <Space direction="vertical" size={16} className="full-width">
