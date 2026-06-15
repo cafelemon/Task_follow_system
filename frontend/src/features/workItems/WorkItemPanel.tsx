@@ -56,7 +56,7 @@ function WorkItemCard({
           <span>撤回时间</span><Typography.Text>{formatDateTime(item.withdrawn_at)}</Typography.Text>
         </div>
         {readonly ? (
-          <Alert type="info" showIcon message="本版仅展示待确认事项，处理能力将在 4.4.x 开放。" />
+          <Alert type="info" showIcon message="本版仅展示待确认事项，处理能力将在 4.4.0 开始开放。" />
         ) : item.can_withdraw ? (
           <Button danger onClick={() => onWithdraw?.(item)}>撤回</Button>
         ) : null}
@@ -110,7 +110,7 @@ export function WorkItemPanel({ refreshKey = 0 }: { refreshKey?: number }) {
       <div className="workbench-section-head">
         <div>
           <Typography.Title level={4}>待归类事项</Typography.Title>
-          <Typography.Text type="secondary">提交的临时和补充事项先进入待确认，不进入正式任务统计。</Typography.Text>
+          <Typography.Text type="secondary">提交的临时和补充事项先进入待确认，不进入正式任务统计；处理动作从 4.4.0 开始开放。</Typography.Text>
         </div>
         <Button onClick={reload} loading={loading}>刷新</Button>
       </div>
@@ -124,7 +124,7 @@ export function WorkItemPanel({ refreshKey = 0 }: { refreshKey?: number }) {
                 {submitted.map((item) => <WorkItemCard key={item.id} item={item} onWithdraw={withdraw} />)}
               </div>
             ) : (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无已提交待归类事项" />
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无已提交待归类事项；临时或补充工作可从上方入口登记。" />
             )
           },
           {
@@ -135,7 +135,7 @@ export function WorkItemPanel({ refreshKey = 0 }: { refreshKey?: number }) {
                 {received.map((item) => <WorkItemCard key={item.id} item={item} readonly />)}
               </div>
             ) : (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无待你确认的事项" />
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无待你确认的事项；本版仍为只读预览，4.4.0 开始处理。" />
             )
           }
         ]}

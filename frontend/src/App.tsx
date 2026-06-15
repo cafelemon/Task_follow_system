@@ -34,6 +34,7 @@ import {
   BellOutlined,
   CheckCircleOutlined,
   DatabaseOutlined,
+  FileTextOutlined,
   FolderOutlined,
   HistoryOutlined,
   LockOutlined,
@@ -65,6 +66,7 @@ import type { AnyRecord } from './api/client';
 import { PageShell } from './components/PageShell';
 import { StatusTag } from './components/StatusTag';
 import { Workbench } from './pages/Workbench';
+import { WeeklyReport } from './pages/WeeklyReport';
 import { buildSubTaskUpdatePath, relationLabels, renderPeople } from './ui/taskDisplay';
 import companyLogoCompact from './assets/brand/company-logo-compact-light.png';
 import companyLogoFullname from './assets/brand/company-logo-fullname-light.png';
@@ -280,6 +282,7 @@ function renderEmail(value?: string | null) {
 
 const baseMenuItems = [
   { key: '/workbench', title: '工作台', icon: <AppstoreOutlined />, label: <Link to="/workbench">工作台</Link> },
+  { key: '/weekly-report', title: '周报中心', icon: <FileTextOutlined />, label: <Link to="/weekly-report">周报中心</Link> },
   { key: '/meeting-board', title: '会议看板', icon: <ScheduleOutlined />, label: <Link to="/meeting-board/overview">会议看板</Link> },
   { key: '/goals', title: '战略目标', icon: <NodeIndexOutlined />, label: <Link to="/goals">战略目标</Link> },
   { key: '/parent-tasks', title: '母任务管理', icon: <FolderOutlined />, label: <Link to="/parent-tasks">母任务管理</Link> },
@@ -1352,6 +1355,7 @@ function AppLayout() {
             <Route path="/" element={<Navigate to="/workbench" replace />} />
             <Route path="/dashboard" element={<Navigate to="/workbench" replace />} />
             <Route path="/workbench" element={<Workbench auth={auth} onCreateRisk={setWorkbenchRiskTarget} />} />
+            <Route path="/weekly-report" element={<WeeklyReport />} />
             <Route path="/goals" element={<Goals />} />
             <Route path="/goals/:goalId" element={<GoalDetail />} />
             <Route path="/parent-tasks" element={<ParentTasks />} />

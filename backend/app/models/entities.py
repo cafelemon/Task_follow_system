@@ -317,6 +317,29 @@ class WorkItemEvent(Base):
     actor: Mapped[User | None] = relationship()
 
 
+class WeeklyReport(Base):
+    __tablename__ = "weekly_reports"
+    __table_args__ = (
+        UniqueConstraint("user_id", "week_key", name="uq_weekly_reports_user_week"),
+        Index("ix_weekly_reports_user_week", "user_id", "week_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    week_key: Mapped[str] = mapped_column(String(20))
+    task_update_snapshot: Mapped[list] = mapped_column(JSONB, default=list)
+    work_item_snapshot: Mapped[list] = mapped_column(JSONB, default=list)
+    risk_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict)
+    next_plan_snapshot: Mapped[list] = mapped_column(JSONB, default=list)
+    export_text: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="confirmed")
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    user: Mapped[User] = relationship()
+
+
 class RiskRecord(Base):
     __tablename__ = "risk_records"
 

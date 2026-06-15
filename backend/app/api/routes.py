@@ -38,6 +38,7 @@ from app.models.entities import (
     User,
     UserGuideProgress,
     WeeklyUpdate,
+    WeeklyReport,
     WorkItem,
     WorkItemEvent,
 )
@@ -61,6 +62,7 @@ from app.schemas.dto import (
     SubTaskCreate,
     SubTaskUpdate,
     WeeklyReminderRequest,
+    WeeklyReportConfirm,
     WeeklyUpdateUpsert,
     WorkItemCreate,
 )
@@ -967,6 +969,282 @@ def serialize_work_item(item: WorkItem, viewer: User | None = None) -> dict:
         "updated_at": item.updated_at.isoformat() if item.updated_at else None,
         "withdrawn_at": item.withdrawn_at.isoformat() if item.withdrawn_at else None,
     }
+
+
+def weekly_report_execution_tasks(db: Session, user: User) -> list[SubTask]:
+    return [
+        task
+        for task in db.scalars(select(SubTask).order_by(SubTask.id)).all()
+        if (
+            user.id in sub_task_executor_ids(task)
+            and task.department_task
+            and task.department_task.status != "archived"
+            and task.department_task.parent_task
+            and task.department_task.parent_task.status != "archived"
+        )
+    ]
+
+
+def serialize_weekly_report_task_update(db: Session, update: WeeklyUpdate, user: User) -> dict:
+    task = update.sub_task
+    department_task = task.department_task if task else None
+    parent_task = department_task.parent_task if department_task else None
+    return {
+        "id": update.id,
+        "week_key": update.week_key,
+        "status": update.status,
+        "progress": update.progress,
+        "this_week": update.this_week,
+        "next_week": update.next_week,
+        "risk": update.risk,
+        "risk_level": update.risk_level,
+        "needs_coordination": update.needs_coordination,
+        "submitted_at": update.submitted_at.isoformat() if update.submitted_at else None,
+        "attachments": [
+            serialize_attachment_for_user(attachment, user)
+            for attachment in weekly_update_attachments(db, update.id)
+            if attachment_file_exists(attachment)
+        ],
+        "sub_task": {
+            "id": task.id if task else None,
+            "code": task.code if task else None,
+            "title": task.title if task else None,
+            "status": task.status if task else None,
+            "due_date": task.due_date.isoformat() if task and task.due_date else None,
+        },
+        "department_task": {
+            "id": department_task.id if department_task else None,
+            "code": department_task.code if department_task else None,
+            "title": department_task.title if department_task else None,
+        },
+        "parent_task": {
+            "id": parent_task.id if parent_task else None,
+            "code": parent_task.code if parent_task else None,
+            "title": parent_task.title if parent_task else None,
+        },
+    }
+
+
+def work_item_groups(items: list[WorkItem], viewer: User) -> list[dict]:
+    grouped: dict[str, list[WorkItem]] = defaultdict(list)
+    for item in items:
+        grouped[item.category].append(item)
+    return [
+        {
+            "category": option["value"],
+            "category_label": option["label"],
+            "items": [serialize_work_item(item, viewer) for item in grouped.get(option["value"], [])],
+        }
+        for option in WORK_ITEM_CATEGORY_OPTIONS
+    ]
+
+
+def validate_week_key(value: str) -> str:
+    if not re.fullmatch(r"\d{4}-W\d{2}", value):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="week_key 格式应为 YYYY-Www")
+    return value
+
+
+def weekly_report_draft_payload(db: Session, user: User, week_key: str) -> dict:
+    target_week = validate_week_key(week_key)
+    execution_tasks = weekly_report_execution_tasks(db, user)
+    execution_task_ids = {task.id for task in execution_tasks}
+    updates = [
+        update
+        for update in db.scalars(
+            select(WeeklyUpdate)
+            .where(WeeklyUpdate.week_key == target_week, WeeklyUpdate.assignee_id == user.id)
+            .order_by(WeeklyUpdate.id)
+        ).all()
+        if update.sub_task_id in execution_task_ids
+    ]
+    task_updates = [serialize_weekly_report_task_update(db, update, user) for update in updates]
+    work_items = list(
+        db.scalars(
+            select(WorkItem)
+            .where(
+                WorkItem.submitter_id == user.id,
+                WorkItem.week_key == target_week,
+                WorkItem.status != WORK_ITEM_STATUS_WITHDRAWN,
+            )
+            .order_by(WorkItem.created_at, WorkItem.id)
+        ).all()
+    )
+    risk_texts = [
+        {
+            "weekly_update_id": update.id,
+            "sub_task": {
+                "id": update.sub_task.id if update.sub_task else None,
+                "code": update.sub_task.code if update.sub_task else None,
+                "title": update.sub_task.title if update.sub_task else None,
+            },
+            "risk": update.risk,
+            "needs_coordination": update.needs_coordination,
+        }
+        for update in updates
+        if (update.risk and update.risk.strip()) or update.needs_coordination
+    ]
+    next_plans = [
+        {
+            "weekly_update_id": update.id,
+            "sub_task": {
+                "id": update.sub_task.id if update.sub_task else None,
+                "code": update.sub_task.code if update.sub_task else None,
+                "title": update.sub_task.title if update.sub_task else None,
+            },
+            "next_week": update.next_week,
+        }
+        for update in updates
+        if update.next_week and update.next_week.strip()
+    ]
+    risk_items = [serialize_risk_item_for_user(item, user) for item in active_risk_items_for_tasks(db, execution_tasks)]
+    return {
+        "user": serialize_user_brief(user),
+        "week_key": target_week,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "summary": {
+            "task_update_count": len(task_updates),
+            "work_item_count": len(work_items),
+            "risk_text_count": len(risk_texts),
+            "risk_item_count": len(risk_items),
+            "next_plan_count": len(next_plans),
+        },
+        "task_updates": task_updates,
+        "work_items_by_category": work_item_groups(work_items, user),
+        "risk_texts": risk_texts,
+        "risk_items": risk_items,
+        "next_plans": next_plans,
+    }
+
+
+def weekly_report_item_text(value: str | None) -> str:
+    text = (value or "").strip()
+    return text or "无"
+
+
+def weekly_report_task_label(task: dict | None) -> str:
+    if not task:
+        return "-"
+    code = task.get("code") or ""
+    title = task.get("title") or ""
+    return f"{code} {title}".strip() or "-"
+
+
+def weekly_report_section(title: str, lines: list[str]) -> str:
+    body = "\n".join(lines) if lines else "- 无"
+    return f"{title}\n{body}"
+
+
+def work_items_for_category(groups: list[dict], category: str) -> list[dict]:
+    for group in groups:
+        if group.get("category") == category:
+            return list(group.get("items") or [])
+    return []
+
+
+def build_weekly_report_export_text(draft: dict) -> str:
+    task_lines = []
+    for item in draft.get("task_updates") or []:
+        task = item.get("sub_task") or {}
+        parent = item.get("parent_task") or {}
+        department = item.get("department_task") or {}
+        risk_text = item.get("risk") or ("需协调，未填写具体说明" if item.get("needs_coordination") else None)
+        task_lines.append(
+            "\n".join(
+                [
+                    f"- {weekly_report_task_label(task)}",
+                    f"  所属母任务：{weekly_report_task_label(parent)}",
+                    f"  所属部门任务：{weekly_report_task_label(department)}",
+                    f"  本周完成：{weekly_report_item_text(item.get('this_week'))}",
+                    f"  当前进度：{item.get('progress') or 0}%",
+                    f"  风险与卡点：{weekly_report_item_text(risk_text) if risk_text else '无'}",
+                ]
+            )
+        )
+    department_task_items = work_items_for_category(draft.get("work_items_by_category") or [], WORK_ITEM_CATEGORY_DEPARTMENT_TASK)
+    for item in department_task_items:
+        related_task = item.get("related_department_task") or {}
+        task_lines.append(
+            f"- 【部门任务补充】{weekly_report_item_text(item.get('content'))}（关联：{weekly_report_task_label(related_task)}，状态：{item.get('status_label') or item.get('status') or '-'}）"
+        )
+
+    cross_lines = [
+        f"- {weekly_report_item_text(item.get('content'))}（协作部门：{(item.get('collaboration_department') or {}).get('name') or '-'}，状态：{item.get('status_label') or item.get('status') or '-'}）"
+        for item in work_items_for_category(draft.get("work_items_by_category") or [], WORK_ITEM_CATEGORY_CROSS_DEPARTMENT)
+    ]
+    routine_lines = [
+        f"- {weekly_report_item_text(item.get('content'))}（部门：{(item.get('department') or {}).get('name') or '-'}，状态：{item.get('status_label') or item.get('status') or '-'}）"
+        for item in work_items_for_category(draft.get("work_items_by_category") or [], WORK_ITEM_CATEGORY_DEPARTMENT_ROUTINE)
+    ]
+    supplement_lines = [
+        f"- {weekly_report_item_text(item.get('content'))}（状态：{item.get('status_label') or item.get('status') or '-'}）"
+        for item in work_items_for_category(draft.get("work_items_by_category") or [], WORK_ITEM_CATEGORY_WEEKLY_SUPPLEMENT)
+    ]
+
+    risk_lines = []
+    for item in draft.get("risk_texts") or []:
+        risk_text = item.get("risk") or ("需协调，未填写具体说明" if item.get("needs_coordination") else None)
+        risk_lines.append(f"- {weekly_report_task_label(item.get('sub_task'))}：{weekly_report_item_text(risk_text)}")
+    for item in draft.get("risk_items") or []:
+        risk_lines.append(
+            f"- {item.get('title') or '-'}（来源：{item.get('sub_task') or '-'}，等级：{item.get('level') or '-'}，状态：{item.get('status') or '-'}）"
+        )
+
+    next_plan_lines = [
+        f"- {weekly_report_task_label(item.get('sub_task'))}：{weekly_report_item_text(item.get('next_week'))}"
+        for item in draft.get("next_plans") or []
+    ]
+    return "\n\n".join(
+        [
+            f"{draft.get('week_key') or '-'} 个人周报",
+            weekly_report_section("一、本周正式任务进展", task_lines),
+            weekly_report_section("二、本周跨部门协作任务补充事项", cross_lines),
+            weekly_report_section("三、本周部门常态化工作", routine_lines),
+            weekly_report_section("四、本周周报补充记录", supplement_lines),
+            weekly_report_section("五、本周风险与问题", risk_lines),
+            weekly_report_section("六、下周计划", next_plan_lines),
+        ]
+    )
+
+
+def weekly_report_summary_from_snapshots(report: WeeklyReport) -> dict:
+    risk_snapshot = report.risk_snapshot or {}
+    work_items = [item for group in (report.work_item_snapshot or []) for item in group.get("items", [])]
+    return {
+        "task_update_count": len(report.task_update_snapshot or []),
+        "work_item_count": len(work_items),
+        "risk_text_count": len(risk_snapshot.get("risk_texts") or []),
+        "risk_item_count": len(risk_snapshot.get("risk_items") or []),
+        "next_plan_count": len(report.next_plan_snapshot or []),
+    }
+
+
+def serialize_weekly_report(report: WeeklyReport, include_detail: bool = False) -> dict:
+    risk_snapshot = report.risk_snapshot or {}
+    payload = {
+        "id": report.id,
+        "user": serialize_user_brief(report.user),
+        "week_key": report.week_key,
+        "status": report.status,
+        "status_label": "已确认" if report.status == "confirmed" else report.status,
+        "confirmed_at": report.confirmed_at.isoformat() if report.confirmed_at else None,
+        "created_at": report.created_at.isoformat() if report.created_at else None,
+        "updated_at": report.updated_at.isoformat() if report.updated_at else None,
+        "summary": weekly_report_summary_from_snapshots(report),
+    }
+    if include_detail:
+        payload.update(
+            {
+                "generated_at": report.confirmed_at.isoformat() if report.confirmed_at else None,
+                "task_updates": report.task_update_snapshot or [],
+                "work_items_by_category": report.work_item_snapshot or [],
+                "risk_texts": risk_snapshot.get("risk_texts") or [],
+                "risk_items": risk_snapshot.get("risk_items") or [],
+                "next_plans": report.next_plan_snapshot or [],
+                "export_text": report.export_text,
+            }
+        )
+    return payload
 
 
 def update_by_sub_task(db: Session, sub_tasks: list[SubTask], week_key: str) -> dict[int, WeeklyUpdate]:
@@ -1894,6 +2172,100 @@ def withdraw_work_item(
     db.commit()
     db.refresh(item)
     return serialize_work_item(item, current_user)
+
+
+@router.get("/weekly-reports/draft")
+def weekly_report_draft(
+    week_key: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    return weekly_report_draft_payload(db, current_user, week_key or current_week_key())
+
+
+@router.post("/weekly-reports/confirm")
+def confirm_weekly_report(
+    payload: WeeklyReportConfirm,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    target_week = payload.week_key or current_week_key()
+    draft = weekly_report_draft_payload(db, current_user, target_week)
+    export_text = build_weekly_report_export_text(draft)
+    now = datetime.now(timezone.utc)
+    report = db.scalar(
+        select(WeeklyReport).where(
+            WeeklyReport.user_id == current_user.id,
+            WeeklyReport.week_key == draft["week_key"],
+        )
+    )
+    if report:
+        report.task_update_snapshot = draft["task_updates"]
+        report.work_item_snapshot = draft["work_items_by_category"]
+        report.risk_snapshot = {"risk_texts": draft["risk_texts"], "risk_items": draft["risk_items"]}
+        report.next_plan_snapshot = draft["next_plans"]
+        report.export_text = export_text
+        report.status = "confirmed"
+        report.confirmed_at = now
+        report.updated_at = now
+    else:
+        report = WeeklyReport(
+            user_id=current_user.id,
+            week_key=draft["week_key"],
+            task_update_snapshot=draft["task_updates"],
+            work_item_snapshot=draft["work_items_by_category"],
+            risk_snapshot={"risk_texts": draft["risk_texts"], "risk_items": draft["risk_items"]},
+            next_plan_snapshot=draft["next_plans"],
+            export_text=export_text,
+            status="confirmed",
+            confirmed_at=now,
+            updated_at=now,
+        )
+        db.add(report)
+    db.commit()
+    db.refresh(report)
+    return serialize_weekly_report(report, include_detail=True)
+
+
+@router.get("/weekly-reports/history")
+def weekly_report_history(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[dict]:
+    reports = db.scalars(
+        select(WeeklyReport)
+        .where(WeeklyReport.user_id == current_user.id)
+        .order_by(WeeklyReport.week_key.desc(), WeeklyReport.id.desc())
+    ).all()
+    return [serialize_weekly_report(report) for report in reports]
+
+
+@router.get("/weekly-reports/{report_id}")
+def get_weekly_report(
+    report_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    report = db.get(WeeklyReport, report_id)
+    if not report:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Weekly report not found")
+    if report.user_id != current_user.id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to this weekly report")
+    return serialize_weekly_report(report, include_detail=True)
+
+
+@router.get("/weekly-reports/{report_id}/copy-text")
+def weekly_report_copy_text(
+    report_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    report = db.get(WeeklyReport, report_id)
+    if not report:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Weekly report not found")
+    if report.user_id != current_user.id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to this weekly report")
+    return {"id": report.id, "week_key": report.week_key, "text": report.export_text}
 
 
 @router.get("/departments/manage")

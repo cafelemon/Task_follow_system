@@ -111,6 +111,10 @@ class WorkItemCreate(BaseModel):
     collaboration_department_id: int | None = None
 
 
+class WeeklyReportConfirm(BaseModel):
+    week_key: str | None = None
+
+
 class RolePermissionUpdate(BaseModel):
     role_id: int
     permission_codes: list[str]

@@ -154,6 +154,7 @@ export function Workbench({ auth, onCreateRisk }: WorkbenchProps) {
             </div>
             <Space wrap className="workbench-hero-actions">
               <Link className="mobile-primary-link" to="/sub-tasks">进入子任务执行</Link>
+              <Link className="mobile-secondary-link" to="/weekly-report">查看本周周报材料</Link>
               <Button icon={<RightOutlined />} onClick={() => setWorkItemOpen(true)}>提交待归类事项</Button>
             </Space>
           </div>
@@ -166,7 +167,7 @@ export function Workbench({ auth, onCreateRisk }: WorkbenchProps) {
           <Col xs={12} md={6}><Card className="workbench-metric-card"><Statistic title="已完成" value={completedTasks.length} prefix={<CheckCircleOutlined />} /></Card></Col>
         </Row>
         {!executionTasks.length && !loading ? (
-          <Alert type="info" showIcon message="当前没有需要你执行的子任务。" description="如果你同时是负责人或管理员，可继续通过部门任务、子任务执行或会议看板查看其他事项。" />
+          <Alert type="info" showIcon message="当前没有需要你执行的子任务。" description="你仍可提交待归类事项，或进入周报中心查看本人本周材料；责任人处理能力将从 4.4.0 开始开放。" />
         ) : null}
         <WorkItemPanel refreshKey={workItemRefreshKey} />
         <WorkbenchTaskSection

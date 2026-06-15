@@ -82,6 +82,24 @@ def ensure_runtime_schema() -> None:
         )
         """,
         "CREATE INDEX IF NOT EXISTS ix_work_item_events_work_item_id ON work_item_events(work_item_id)",
+        """
+        CREATE TABLE IF NOT EXISTS weekly_reports (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            week_key VARCHAR(20) NOT NULL,
+            task_update_snapshot JSONB DEFAULT '[]'::jsonb NOT NULL,
+            work_item_snapshot JSONB DEFAULT '[]'::jsonb NOT NULL,
+            risk_snapshot JSONB DEFAULT '{}'::jsonb NOT NULL,
+            next_plan_snapshot JSONB DEFAULT '[]'::jsonb NOT NULL,
+            export_text TEXT NOT NULL,
+            status VARCHAR(32) DEFAULT 'confirmed' NOT NULL,
+            confirmed_at TIMESTAMPTZ NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ,
+            CONSTRAINT uq_weekly_reports_user_week UNIQUE (user_id, week_key)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_weekly_reports_user_week ON weekly_reports(user_id, week_key)",
         "ALTER TABLE department_tasks ADD COLUMN IF NOT EXISTS pending_split_count INTEGER DEFAULT 0",
         "ALTER TABLE department_tasks ADD COLUMN IF NOT EXISTS pending_split_codes JSONB",
         "ALTER TABLE sub_tasks ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ",
