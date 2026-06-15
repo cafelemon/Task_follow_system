@@ -17,6 +17,8 @@ import { getJson } from '../api/client';
 import type { AnyRecord } from '../api/client';
 import { PageShell } from '../components/PageShell';
 import { StatusTag } from '../components/StatusTag';
+import { WorkItemPanel } from '../features/workItems/WorkItemPanel';
+import { WorkItemSubmitModal } from '../features/workItems/WorkItemSubmitModal';
 import {
   buildSubTaskUpdatePath,
   daysUntil,
@@ -108,6 +110,8 @@ export function Workbench({ auth, onCreateRisk }: WorkbenchProps) {
   const [tasks, setTasks] = useState<AnyRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
+  const [workItemOpen, setWorkItemOpen] = useState(false);
+  const [workItemRefreshKey, setWorkItemRefreshKey] = useState(0);
 
   const reload = async () => {
     setLoading(true);
@@ -150,7 +154,7 @@ export function Workbench({ auth, onCreateRisk }: WorkbenchProps) {
             </div>
             <Space wrap className="workbench-hero-actions">
               <Link className="mobile-primary-link" to="/sub-tasks">进入子任务执行</Link>
-              <Button icon={<RightOutlined />} disabled>待归类事项即将开放</Button>
+              <Button icon={<RightOutlined />} onClick={() => setWorkItemOpen(true)}>提交待归类事项</Button>
             </Space>
           </div>
         </Card>
@@ -164,6 +168,7 @@ export function Workbench({ auth, onCreateRisk }: WorkbenchProps) {
         {!executionTasks.length && !loading ? (
           <Alert type="info" showIcon message="当前没有需要你执行的子任务。" description="如果你同时是负责人或管理员，可继续通过部门任务、子任务执行或会议看板查看其他事项。" />
         ) : null}
+        <WorkItemPanel refreshKey={workItemRefreshKey} />
         <WorkbenchTaskSection
           title="本周待更新"
           description="正式提交后，本周提醒才会停止；保存草稿不算提交。"
@@ -191,6 +196,14 @@ export function Workbench({ auth, onCreateRisk }: WorkbenchProps) {
           tasks={riskReadyTasks}
           emptyText="当前没有可登记风险的执行任务。"
           onCreateRisk={onCreateRisk}
+        />
+        <WorkItemSubmitModal
+          open={workItemOpen}
+          onCancel={() => setWorkItemOpen(false)}
+          onSubmitted={() => {
+            setWorkItemOpen(false);
+            setWorkItemRefreshKey((current) => current + 1);
+          }}
         />
       </Space>
     </PageShell>

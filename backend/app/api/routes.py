@@ -38,6 +38,8 @@ from app.models.entities import (
     User,
     UserGuideProgress,
     WeeklyUpdate,
+    WorkItem,
+    WorkItemEvent,
 )
 from app.schemas.dto import (
     DepartmentCreate,
@@ -60,6 +62,7 @@ from app.schemas.dto import (
     SubTaskUpdate,
     WeeklyReminderRequest,
     WeeklyUpdateUpsert,
+    WorkItemCreate,
 )
 from app.services.business import (
     build_meeting_board,
@@ -398,6 +401,46 @@ def normalize_email(value: str | None) -> str | None:
         return None
     normalized = value.strip().lower()
     return normalized or None
+
+
+WORK_ITEM_CONTENT_LIMIT = 2000
+WORK_ITEM_STATUS_PENDING = "pending"
+WORK_ITEM_STATUS_WITHDRAWN = "withdrawn"
+WORK_ITEM_STATUS_LABELS = {
+    "pending": "待确认",
+    "withdrawn": "已撤回",
+    "approved": "已确认",
+    "rejected": "已退回",
+    "closed": "已关闭",
+}
+WORK_ITEM_CATEGORY_DEPARTMENT_TASK = "department_task_supplement"
+WORK_ITEM_CATEGORY_DEPARTMENT_ROUTINE = "department_routine"
+WORK_ITEM_CATEGORY_CROSS_DEPARTMENT = "cross_department_collaboration"
+WORK_ITEM_CATEGORY_WEEKLY_SUPPLEMENT = "weekly_report_supplement"
+WORK_ITEM_CATEGORY_OPTIONS = [
+    {
+        "value": WORK_ITEM_CATEGORY_DEPARTMENT_TASK,
+        "label": "挂载已有部门任务",
+        "description": "用于补充本人所属部门已有部门任务下的临时事项。",
+    },
+    {
+        "value": WORK_ITEM_CATEGORY_DEPARTMENT_ROUTINE,
+        "label": "本部门常态化工作",
+        "description": "用于记录本部门常态化、日常性但暂未进入任务树的工作。",
+    },
+    {
+        "value": WORK_ITEM_CATEGORY_CROSS_DEPARTMENT,
+        "label": "跨部门协作任务",
+        "description": "用于记录需要其它部门协同判断或承接的事项。",
+    },
+    {
+        "value": WORK_ITEM_CATEGORY_WEEKLY_SUPPLEMENT,
+        "label": "周报补充记录",
+        "description": "仅作为个人周报材料补充，暂不进入正式任务统计。",
+    },
+]
+WORK_ITEM_CATEGORY_LABELS = {item["value"]: item["label"] for item in WORK_ITEM_CATEGORY_OPTIONS}
+WORK_ITEM_CATEGORY_VALUES = set(WORK_ITEM_CATEGORY_LABELS)
 
 
 def apply_open_id_binding(db: Session, user: User, open_id: str | None) -> None:
@@ -821,6 +864,109 @@ def visible_department_tasks(db: Session, user: User) -> list[DepartmentTask]:
         ).all()
         if can_access_department_task(db, user, task)
     ]
+
+
+def department_ids_for_task(task: DepartmentTask) -> set[int]:
+    ids = {department.id for department in task.departments or []}
+    if task.department_id:
+        ids.add(task.department_id)
+    return ids
+
+
+def is_user_department_task(user: User, task: DepartmentTask) -> bool:
+    return bool(user.department_id and user.department_id in department_ids_for_task(task))
+
+
+def user_department_task_options(db: Session, user: User) -> list[DepartmentTask]:
+    if not user.department_id:
+        return []
+    return [
+        task
+        for task in db.scalars(
+            select(DepartmentTask)
+            .join(ParentTask)
+            .where(DepartmentTask.status != "archived", ParentTask.status != "archived")
+            .order_by(DepartmentTask.code)
+        ).all()
+        if is_user_department_task(user, task)
+    ]
+
+
+def serialize_work_item_department_task_option(task: DepartmentTask) -> dict:
+    departments = list(task.departments or [])
+    if task.department and task.department.id not in {department.id for department in departments}:
+        departments.insert(0, task.department)
+    return {
+        "id": task.id,
+        "code": task.code,
+        "title": task.title,
+        "parent_task_id": task.parent_task_id,
+        "parent_task_code": task.parent_task.code if task.parent_task else None,
+        "parent_task_title": task.parent_task.title if task.parent_task else None,
+        "departments": [{"id": department.id, "name": department.name} for department in departments],
+        "owners": people_payload(owner_people(task)),
+        "due_date": task.due_date.isoformat() if task.due_date else None,
+    }
+
+
+def is_department_owner_for_department(user: User, department_id: int | None) -> bool:
+    return bool(department_id and user.department_id == department_id and "department_owner" in user_role_codes(user))
+
+
+def can_receive_work_item(user: User, item: WorkItem) -> bool:
+    if item.status != WORK_ITEM_STATUS_PENDING:
+        return False
+    if item.category == WORK_ITEM_CATEGORY_DEPARTMENT_TASK:
+        return bool(item.related_department_task and user.id in task_owner_ids(item.related_department_task))
+    if item.category == WORK_ITEM_CATEGORY_DEPARTMENT_ROUTINE:
+        return is_department_owner_for_department(user, item.department_id)
+    if item.category == WORK_ITEM_CATEGORY_CROSS_DEPARTMENT:
+        return is_department_owner_for_department(user, item.collaboration_department_id)
+    return False
+
+
+def serialize_user_brief(user: User | None) -> dict | None:
+    if not user:
+        return None
+    return {
+        "id": user.id,
+        "name": user.name,
+        "department_id": user.department_id,
+        "department": user.department.name if user.department else None,
+    }
+
+
+def serialize_department_brief(department: Department | None) -> dict | None:
+    if not department:
+        return None
+    return {"id": department.id, "name": department.name, "status": department.status}
+
+
+def serialize_work_item(item: WorkItem, viewer: User | None = None) -> dict:
+    return {
+        "id": item.id,
+        "content": item.content,
+        "category": item.category,
+        "category_label": WORK_ITEM_CATEGORY_LABELS.get(item.category, item.category),
+        "status": item.status,
+        "status_label": WORK_ITEM_STATUS_LABELS.get(item.status, item.status),
+        "week_key": item.week_key,
+        "submitter_id": item.submitter_id,
+        "submitter": serialize_user_brief(item.submitter),
+        "department_id": item.department_id,
+        "department": serialize_department_brief(item.department),
+        "related_department_task_id": item.related_department_task_id,
+        "related_department_task": (
+            serialize_work_item_department_task_option(item.related_department_task)
+            if item.related_department_task else None
+        ),
+        "collaboration_department_id": item.collaboration_department_id,
+        "collaboration_department": serialize_department_brief(item.collaboration_department),
+        "can_withdraw": bool(viewer and viewer.id == item.submitter_id and item.status == WORK_ITEM_STATUS_PENDING),
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+        "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+        "withdrawn_at": item.withdrawn_at.isoformat() if item.withdrawn_at else None,
+    }
 
 
 def update_by_sub_task(db: Session, sub_tasks: list[SubTask], week_key: str) -> dict[int, WeeklyUpdate]:
@@ -1602,6 +1748,152 @@ async def import_user_emails(
 def list_departments(db: Session = Depends(get_db), _: User = Depends(get_current_user)) -> list[dict]:
     departments = db.scalars(select(Department).order_by(Department.id)).all()
     return [serialize_department_item(item) for item in departments]
+
+
+@router.get("/work-items/options")
+def work_item_options(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    departments = [
+        {"id": department.id, "name": department.name}
+        for department in db.scalars(select(Department).where(Department.status != "archived").order_by(Department.name)).all()
+        if not current_user.department_id or department.id != current_user.department_id
+    ]
+    department_tasks = [
+        serialize_work_item_department_task_option(task)
+        for task in user_department_task_options(db, current_user)
+    ]
+    return {
+        "categories": WORK_ITEM_CATEGORY_OPTIONS,
+        "department_tasks": department_tasks,
+        "collaboration_departments": departments,
+        "user_department_id": current_user.department_id,
+        "can_attach_department_task": bool(current_user.department_id),
+    }
+
+
+@router.get("/work-items")
+def list_work_items(
+    scope: str = "submitted",
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[dict]:
+    if scope not in {"submitted", "received"}:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="scope 仅支持 submitted 或 received")
+    if scope == "submitted":
+        items = db.scalars(
+            select(WorkItem)
+            .where(WorkItem.submitter_id == current_user.id)
+            .order_by(WorkItem.created_at.desc(), WorkItem.id.desc())
+        ).all()
+    else:
+        items = [
+            item
+            for item in db.scalars(
+                select(WorkItem)
+                .where(WorkItem.status == WORK_ITEM_STATUS_PENDING)
+                .order_by(WorkItem.created_at.desc(), WorkItem.id.desc())
+            ).all()
+            if can_receive_work_item(current_user, item)
+        ]
+    return [serialize_work_item(item, current_user) for item in items]
+
+
+@router.post("/work-items", status_code=201)
+def create_work_item(
+    payload: WorkItemCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    if current_user.status == "disabled":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="账号已停用")
+    content = payload.content.strip()
+    if not content:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="事项内容不能为空")
+    if len(content) > WORK_ITEM_CONTENT_LIMIT:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"事项内容不能超过 {WORK_ITEM_CONTENT_LIMIT} 字")
+    if payload.category not in WORK_ITEM_CATEGORY_VALUES:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="归类方式不合法")
+
+    related_department_task_id: int | None = None
+    collaboration_department_id: int | None = None
+    if payload.category == WORK_ITEM_CATEGORY_DEPARTMENT_TASK:
+        if not current_user.department_id:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="请先补充所属部门后再选择部门任务挂载")
+        if not payload.related_department_task_id:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="请选择本人所属部门的部门任务")
+        task = db.get(DepartmentTask, payload.related_department_task_id)
+        if not task or task.status == "archived" or not task.parent_task or task.parent_task.status == "archived":
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Department task not found")
+        if not is_user_department_task(current_user, task):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, detail="只能选择本人所属部门的部门任务")
+        related_department_task_id = task.id
+    elif payload.category == WORK_ITEM_CATEGORY_CROSS_DEPARTMENT:
+        if not payload.collaboration_department_id:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="请选择协作部门")
+        department = db.get(Department, payload.collaboration_department_id)
+        if not department or department.status == "archived":
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Department not found")
+        if current_user.department_id and department.id == current_user.department_id:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="跨部门协作不能选择本人所属部门")
+        collaboration_department_id = department.id
+
+    now = datetime.now(timezone.utc)
+    item = WorkItem(
+        submitter_id=current_user.id,
+        department_id=current_user.department_id,
+        week_key=current_week_key(),
+        content=content,
+        category=payload.category,
+        status=WORK_ITEM_STATUS_PENDING,
+        related_department_task_id=related_department_task_id,
+        collaboration_department_id=collaboration_department_id,
+        updated_at=now,
+    )
+    db.add(item)
+    db.flush()
+    db.add(
+        WorkItemEvent(
+            work_item_id=item.id,
+            actor_id=current_user.id,
+            action="created",
+            comment=WORK_ITEM_CATEGORY_LABELS[item.category],
+        )
+    )
+    db.commit()
+    db.refresh(item)
+    return serialize_work_item(item, current_user)
+
+
+@router.post("/work-items/{work_item_id}/withdraw")
+def withdraw_work_item(
+    work_item_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    item = db.get(WorkItem, work_item_id)
+    if not item:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Work item not found")
+    if item.submitter_id != current_user.id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="只能撤回本人提交的待归类事项")
+    if item.status != WORK_ITEM_STATUS_PENDING:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="只有待确认事项可以撤回")
+    now = datetime.now(timezone.utc)
+    item.status = WORK_ITEM_STATUS_WITHDRAWN
+    item.withdrawn_at = now
+    item.updated_at = now
+    db.add(
+        WorkItemEvent(
+            work_item_id=item.id,
+            actor_id=current_user.id,
+            action="withdrawn",
+            comment="提交人撤回",
+        )
+    )
+    db.commit()
+    db.refresh(item)
+    return serialize_work_item(item, current_user)
 
 
 @router.get("/departments/manage")

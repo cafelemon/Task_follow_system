@@ -104,6 +104,13 @@ class RiskItemUpdate(BaseModel):
     resolution_note: str | None = None
 
 
+class WorkItemCreate(BaseModel):
+    content: str
+    category: str
+    related_department_task_id: int | None = None
+    collaboration_department_id: int | None = None
+
+
 class RolePermissionUpdate(BaseModel):
     role_id: int
     permission_codes: list[str]

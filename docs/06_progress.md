@@ -6,9 +6,9 @@
 
 ## 2. 当前状态
 
-当前状态：4.3.1 已落地执行者工作台框架，工作台成为登录默认页；本版不新增数据库结构、不制作生产离线包，生产通知仍保持暂停口径。
+当前状态：4.3.3 已落地待归类事项个人列表、待确认只读列表和提交人撤回能力；责任人同意/退回和任务挂接仍留到后续版本，生产通知保持暂停口径。
 
-记录日期：2026-06-12。
+记录日期：2026-06-15。
 
 生产运行备注：因本周部分部门暂不使用任务跟踪系统，生产环境已临时关闭通知。当前应视为主动暂停，而非通知系统故障；排查通知问题前先确认 `env_of` 中 `TASK_FOLLOW_SCHEDULER_ENABLED`、`TASK_FOLLOW_NOTIFICATION_DELIVERY_MODE` 和 `TASK_FOLLOW_NOTIFICATION_ALLOWLIST_EMAILS` 是否仍处于暂停口径。
 
@@ -595,3 +595,21 @@
 - 前端新增 `frontend/src/pages/Workbench.tsx`，并将任务身份、人员展示、子任务更新链接等公共展示逻辑抽到 `frontend/src/ui/taskDisplay.tsx`，避免继续把新增页面堆入 `App.tsx`。
 - 本版不新增数据库结构、不实现待归类事项提交、不做负责人同意/退回、不恢复生产通知；4.3.2 再进入待归类事项底座。
 - 本轮验证：`python3 -m compileall backend/app scripts/preflight_prod_check.py`、`npm run build`、`git diff --check` 均通过；前端构建仍有既有大 chunk 提示，不影响构建结果。Vite 临时服务可打开 `/workbench`，手机宽度 `390x844` 无全局横向滚动；因本机后端和 Docker daemon 未运行，API 数据加载、Docker 重建和 `/api/health` 检查需启动 Docker 后复跑。
+
+4.3.2 待归类事项提交入口实施内容：
+
+- 版本推进到 `4.3.2`。
+- 新增 `work_items` 和 `work_item_events` runtime schema，待归类事项提交后默认进入 `pending`，并记录 `created` 事件。
+- 新增 `/api/work-items/options` 和 `/api/work-items`，支持四类归类方式：挂载已有部门任务、本部门常态化工作、跨部门协作任务、周报补充记录。
+- 挂载已有部门任务严格按本人所属部门过滤，部门任务主部门或多部门关联命中本人 `department_id` 才可选择；无所属部门用户不能提交该类型。
+- 工作台新增“提交待归类事项”入口，表单独立拆到 `frontend/src/features/workItems/WorkItemSubmitModal.tsx`，移动端使用全屏表单弹窗。
+- 本版不做责任人同意/退回、不做个人列表状态页、不做周报中心聚合、不恢复生产通知。
+
+4.3.3 待归类事项个人列表与状态可见实施内容：
+
+- 版本推进到 `4.3.3`。
+- `work_items` 增加 `withdrawn_at`，runtime schema 使用幂等补列。
+- 新增 `GET /api/work-items?scope=submitted|received`，`submitted` 只返回本人提交事项，`received` 按潜在责任关系返回待确认事项。
+- 新增 `POST /api/work-items/{work_item_id}/withdraw`，仅提交人可撤回本人 `pending` 事项，撤回后状态为 `withdrawn` 并写入 `work_item_events`。
+- 工作台新增“待归类事项”区域，包含“我的提交”和“待我确认”两个视图；待我确认本版只读，提示处理能力将在 4.4.x 开放。
+- 本版不做同意、退回、挂任务、双审核、部门统计、会议看板统计和通知。

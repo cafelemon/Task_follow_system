@@ -53,6 +53,35 @@ def ensure_runtime_schema() -> None:
             created_at TIMESTAMPTZ DEFAULT now()
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS work_items (
+            id SERIAL PRIMARY KEY,
+            submitter_id INTEGER NOT NULL REFERENCES users(id),
+            department_id INTEGER REFERENCES departments(id),
+            week_key VARCHAR(20) NOT NULL,
+            content TEXT NOT NULL,
+            category VARCHAR(60) NOT NULL,
+            status VARCHAR(32) DEFAULT 'pending' NOT NULL,
+            related_department_task_id INTEGER REFERENCES department_tasks(id),
+            collaboration_department_id INTEGER REFERENCES departments(id),
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_work_items_submitter_status ON work_items(submitter_id, status)",
+        "CREATE INDEX IF NOT EXISTS ix_work_items_category_status ON work_items(category, status)",
+        "ALTER TABLE work_items ADD COLUMN IF NOT EXISTS withdrawn_at TIMESTAMPTZ",
+        """
+        CREATE TABLE IF NOT EXISTS work_item_events (
+            id SERIAL PRIMARY KEY,
+            work_item_id INTEGER NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+            actor_id INTEGER REFERENCES users(id),
+            action VARCHAR(60) NOT NULL,
+            comment TEXT,
+            created_at TIMESTAMPTZ DEFAULT now()
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_work_item_events_work_item_id ON work_item_events(work_item_id)",
         "ALTER TABLE department_tasks ADD COLUMN IF NOT EXISTS pending_split_count INTEGER DEFAULT 0",
         "ALTER TABLE department_tasks ADD COLUMN IF NOT EXISTS pending_split_codes JSONB",
         "ALTER TABLE sub_tasks ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ",

@@ -506,6 +506,35 @@ body {
   width: 100%;
 }
 
+.work-item-list {
+  display: grid;
+  gap: 10px;
+}
+
+.work-item-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: #fbfdff;
+}
+
+.work-item-card-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.work-item-card h5 {
+  margin: 4px 0 0;
+  color: var(--ink-strong);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .meeting-tabs {
   padding: 4px;
   border: 1px solid var(--line-soft);

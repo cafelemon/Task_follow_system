@@ -276,6 +276,47 @@ class TaskEvent(Base):
     actor: Mapped[User | None] = relationship()
 
 
+class WorkItem(Base):
+    __tablename__ = "work_items"
+    __table_args__ = (
+        Index("ix_work_items_submitter_status", "submitter_id", "status"),
+        Index("ix_work_items_category_status", "category", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    submitter_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    department_id: Mapped[int | None] = mapped_column(ForeignKey("departments.id"))
+    week_key: Mapped[str] = mapped_column(String(20))
+    content: Mapped[str] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(String(60))
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    related_department_task_id: Mapped[int | None] = mapped_column(ForeignKey("department_tasks.id"))
+    collaboration_department_id: Mapped[int | None] = mapped_column(ForeignKey("departments.id"))
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    submitter: Mapped[User] = relationship(foreign_keys=[submitter_id])
+    department: Mapped[Department | None] = relationship(foreign_keys=[department_id])
+    related_department_task: Mapped[DepartmentTask | None] = relationship(foreign_keys=[related_department_task_id])
+    collaboration_department: Mapped[Department | None] = relationship(foreign_keys=[collaboration_department_id])
+
+
+class WorkItemEvent(Base):
+    __tablename__ = "work_item_events"
+    __table_args__ = (Index("ix_work_item_events_work_item_id", "work_item_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    work_item_id: Mapped[int] = mapped_column(ForeignKey("work_items.id", ondelete="CASCADE"))
+    actor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    action: Mapped[str] = mapped_column(String(60))
+    comment: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    work_item: Mapped[WorkItem] = relationship()
+    actor: Mapped[User | None] = relationship()
+
+
 class RiskRecord(Base):
     __tablename__ = "risk_records"
 
