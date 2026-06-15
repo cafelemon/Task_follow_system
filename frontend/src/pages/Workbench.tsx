@@ -141,7 +141,7 @@ export function Workbench({ auth, onCreateRisk }: WorkbenchProps) {
   return (
     <PageShell
       title="工作台"
-      subtitle="执行者本周行动入口：先处理待更新、草稿和临近截止任务"
+      subtitle="个人行动入口：汇总本人正式任务、待归类事项和周报材料"
       extra={<Button onClick={reload} loading={loading}>刷新</Button>}
     >
       <Space direction="vertical" size={16} className="full-width workbench-page">
@@ -167,7 +167,7 @@ export function Workbench({ auth, onCreateRisk }: WorkbenchProps) {
           <Col xs={12} md={6}><Card className="workbench-metric-card"><Statistic title="已完成" value={completedTasks.length} prefix={<CheckCircleOutlined />} /></Card></Col>
         </Row>
         {!executionTasks.length && !loading ? (
-          <Alert type="info" showIcon message="当前没有需要你执行的子任务。" description="你仍可提交待归类事项，或进入周报中心查看本人本周材料；收到的待确认事项可在工作台处理。" />
+          <Alert type="info" showIcon message="当前没有需要你执行的子任务。" description="你仍可提交待归类事项，或进入周报中心查看本人本周材料；收到的待处理事项会在工作台展示。" />
         ) : null}
         <WorkItemPanel refreshKey={workItemRefreshKey} />
         <WorkbenchTaskSection

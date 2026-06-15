@@ -552,6 +552,12 @@ body {
   overflow-wrap: anywhere;
 }
 
+.work-item-card .ant-typography,
+.work-item-card .ant-alert-description,
+.work-item-card .ant-alert-message {
+  overflow-wrap: anywhere;
+}
+
 .work-item-actions {
   width: 100%;
 }

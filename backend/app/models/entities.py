@@ -295,6 +295,15 @@ class WorkItem(Base):
     withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     converted_sub_task_id: Mapped[int | None] = mapped_column(ForeignKey("sub_tasks.id"))
     converted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    submitter_department_approved_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    submitter_department_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    submitter_department_approval_comment: Mapped[str | None] = mapped_column(Text)
+    collaboration_department_approved_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    collaboration_department_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    collaboration_department_approval_comment: Mapped[str | None] = mapped_column(Text)
+    escalated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    escalated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    escalation_comment: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -303,6 +312,9 @@ class WorkItem(Base):
     related_department_task: Mapped[DepartmentTask | None] = relationship(foreign_keys=[related_department_task_id])
     collaboration_department: Mapped[Department | None] = relationship(foreign_keys=[collaboration_department_id])
     converted_sub_task: Mapped[SubTask | None] = relationship(foreign_keys=[converted_sub_task_id])
+    submitter_department_approved_by: Mapped[User | None] = relationship(foreign_keys=[submitter_department_approved_by_id])
+    collaboration_department_approved_by: Mapped[User | None] = relationship(foreign_keys=[collaboration_department_approved_by_id])
+    escalated_by: Mapped[User | None] = relationship(foreign_keys=[escalated_by_id])
     events: Mapped[list["WorkItemEvent"]] = relationship(order_by="WorkItemEvent.created_at")
 
 

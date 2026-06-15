@@ -73,6 +73,15 @@ def ensure_runtime_schema() -> None:
         "ALTER TABLE work_items ADD COLUMN IF NOT EXISTS withdrawn_at TIMESTAMPTZ",
         "ALTER TABLE work_items ADD COLUMN IF NOT EXISTS converted_sub_task_id INTEGER REFERENCES sub_tasks(id)",
         "ALTER TABLE work_items ADD COLUMN IF NOT EXISTS converted_at TIMESTAMPTZ",
+        "ALTER TABLE work_items ADD COLUMN IF NOT EXISTS submitter_department_approved_by_id INTEGER REFERENCES users(id)",
+        "ALTER TABLE work_items ADD COLUMN IF NOT EXISTS submitter_department_approved_at TIMESTAMPTZ",
+        "ALTER TABLE work_items ADD COLUMN IF NOT EXISTS submitter_department_approval_comment TEXT",
+        "ALTER TABLE work_items ADD COLUMN IF NOT EXISTS collaboration_department_approved_by_id INTEGER REFERENCES users(id)",
+        "ALTER TABLE work_items ADD COLUMN IF NOT EXISTS collaboration_department_approved_at TIMESTAMPTZ",
+        "ALTER TABLE work_items ADD COLUMN IF NOT EXISTS collaboration_department_approval_comment TEXT",
+        "ALTER TABLE work_items ADD COLUMN IF NOT EXISTS escalated_by_id INTEGER REFERENCES users(id)",
+        "ALTER TABLE work_items ADD COLUMN IF NOT EXISTS escalated_at TIMESTAMPTZ",
+        "ALTER TABLE work_items ADD COLUMN IF NOT EXISTS escalation_comment TEXT",
         """
         CREATE TABLE IF NOT EXISTS work_item_events (
             id SERIAL PRIMARY KEY,

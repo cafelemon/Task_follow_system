@@ -66,7 +66,9 @@ from app.schemas.dto import (
     WeeklyUpdateUpsert,
     WorkItemAction,
     WorkItemConvertToSubTask,
+    WorkItemCrossDepartmentApprove,
     WorkItemCreate,
+    WorkItemEscalate,
 )
 from app.services.business import (
     build_meeting_board,
@@ -414,6 +416,8 @@ WORK_ITEM_STATUS_APPROVED = "approved"
 WORK_ITEM_STATUS_REJECTED = "rejected"
 WORK_ITEM_STATUS_CLOSED = "closed"
 WORK_ITEM_STATUS_CONVERTED_TO_SUB_TASK = "converted_to_sub_task"
+WORK_ITEM_STATUS_ESCALATED_DEPARTMENT_TASK = "escalated_department_task"
+WORK_ITEM_STATUS_ESCALATED_PARENT_TASK = "escalated_parent_task"
 WORK_ITEM_WEEKLY_REPORT_STATUSES = {WORK_ITEM_STATUS_PENDING, WORK_ITEM_STATUS_APPROVED}
 WORK_ITEM_DEPARTMENT_ROUTINE_STATUSES = {
     WORK_ITEM_STATUS_PENDING,
@@ -428,6 +432,8 @@ WORK_ITEM_STATUS_LABELS = {
     "rejected": "已退回",
     "closed": "已关闭",
     "converted_to_sub_task": "已转子任务",
+    "escalated_department_task": "缺部门任务诉求",
+    "escalated_parent_task": "缺母任务诉求",
 }
 WORK_ITEM_EVENT_LABELS = {
     "created": "已提交",
@@ -436,7 +442,15 @@ WORK_ITEM_EVENT_LABELS = {
     "rejected": "已退回",
     "closed": "已关闭",
     "converted_to_sub_task": "已转子任务",
+    "cross_submitter_department_approved": "提交部门已确认",
+    "cross_collaboration_department_approved": "协作部门已确认",
+    "escalated_department_task": "已上提缺部门任务",
+    "escalated_parent_task": "已上提缺母任务",
 }
+WORK_ITEM_CROSS_SUBMITTER_SIDE = "submitter_department"
+WORK_ITEM_CROSS_COLLABORATION_SIDE = "collaboration_department"
+WORK_ITEM_ESCALATION_TARGET_DEPARTMENT_TASK = "department_task"
+WORK_ITEM_ESCALATION_TARGET_PARENT_TASK = "parent_task"
 WORK_ITEM_CATEGORY_DEPARTMENT_TASK = "department_task_supplement"
 WORK_ITEM_CATEGORY_DEPARTMENT_ROUTINE = "department_routine"
 WORK_ITEM_CATEGORY_CROSS_DEPARTMENT = "cross_department_collaboration"
@@ -943,15 +957,57 @@ def can_handle_work_item(user: User, item: WorkItem) -> bool:
     if item.category == WORK_ITEM_CATEGORY_DEPARTMENT_ROUTINE:
         return is_department_owner_for_department(user, item.department_id)
     if item.category == WORK_ITEM_CATEGORY_CROSS_DEPARTMENT:
-        return is_department_owner_for_department(user, item.collaboration_department_id)
+        return (
+            is_department_owner_for_department(user, item.department_id)
+            or is_department_owner_for_department(user, item.collaboration_department_id)
+        )
     return False
 
 
-def can_receive_work_item(user: User, item: WorkItem) -> bool:
-    return item.status == WORK_ITEM_STATUS_PENDING and can_handle_work_item(user, item)
+def can_manage_any_work_item(user: User) -> bool:
+    return user.is_admin or "permission.manage" in user_permission_codes(user)
+
+
+def can_view_parent_task_escalations(user: User) -> bool:
+    roles = user_role_codes(user)
+    return can_manage_any_work_item(user) or bool({"general_manager", "secretary"} & roles)
+
+
+def cross_department_missing_sides(item: WorkItem) -> list[str]:
+    if item.category != WORK_ITEM_CATEGORY_CROSS_DEPARTMENT:
+        return []
+    sides: list[str] = []
+    if not item.submitter_department_approved_by_id:
+        sides.append(WORK_ITEM_CROSS_SUBMITTER_SIDE)
+    if not item.collaboration_department_approved_by_id:
+        sides.append(WORK_ITEM_CROSS_COLLABORATION_SIDE)
+    return sides
+
+
+def cross_department_approval_sides_for_user(user: User, item: WorkItem) -> list[str]:
+    if item.category != WORK_ITEM_CATEGORY_CROSS_DEPARTMENT or item.status != WORK_ITEM_STATUS_PENDING:
+        return []
+    if not item.department_id or not item.collaboration_department_id:
+        return []
+    missing = set(cross_department_missing_sides(item))
+    if can_manage_any_work_item(user):
+        return [side for side in [WORK_ITEM_CROSS_SUBMITTER_SIDE, WORK_ITEM_CROSS_COLLABORATION_SIDE] if side in missing]
+    sides: list[str] = []
+    if WORK_ITEM_CROSS_SUBMITTER_SIDE in missing and is_department_owner_for_department(user, item.department_id):
+        sides.append(WORK_ITEM_CROSS_SUBMITTER_SIDE)
+    if WORK_ITEM_CROSS_COLLABORATION_SIDE in missing and is_department_owner_for_department(user, item.collaboration_department_id):
+        sides.append(WORK_ITEM_CROSS_COLLABORATION_SIDE)
+    return sides
 
 
 def can_view_received_work_item(user: User, item: WorkItem) -> bool:
+    if can_manage_any_work_item(user):
+        if item.status == WORK_ITEM_STATUS_PENDING:
+            return True
+        return (
+            item.category == WORK_ITEM_CATEGORY_DEPARTMENT_TASK
+            and item.status in {WORK_ITEM_STATUS_APPROVED, WORK_ITEM_STATUS_CONVERTED_TO_SUB_TASK}
+        )
     if not can_handle_work_item(user, item):
         return False
     if item.status == WORK_ITEM_STATUS_PENDING:
@@ -964,8 +1020,7 @@ def can_view_received_work_item(user: User, item: WorkItem) -> bool:
 
 def can_manage_work_item(user: User, item: WorkItem) -> bool:
     return (
-        user.is_admin
-        or "permission.manage" in user_permission_codes(user)
+        can_manage_any_work_item(user)
         or can_handle_work_item(user, item)
     )
 
@@ -1013,9 +1068,45 @@ def serialize_work_item_event(event: WorkItemEvent) -> dict:
     }
 
 
+def serialize_cross_department_approval(item: WorkItem, viewer: User | None = None) -> dict | None:
+    if item.category != WORK_ITEM_CATEGORY_CROSS_DEPARTMENT:
+        return None
+    available_sides = cross_department_approval_sides_for_user(viewer, item) if viewer else []
+    return {
+        "submitter_department": serialize_department_brief(item.department),
+        "collaboration_department": serialize_department_brief(item.collaboration_department),
+        "submitter_department_approved": bool(item.submitter_department_approved_by_id),
+        "submitter_department_approved_by": serialize_user_brief(item.submitter_department_approved_by),
+        "submitter_department_approved_at": (
+            item.submitter_department_approved_at.isoformat()
+            if item.submitter_department_approved_at else None
+        ),
+        "submitter_department_comment": item.submitter_department_approval_comment,
+        "collaboration_department_approved": bool(item.collaboration_department_approved_by_id),
+        "collaboration_department_approved_by": serialize_user_brief(item.collaboration_department_approved_by),
+        "collaboration_department_approved_at": (
+            item.collaboration_department_approved_at.isoformat()
+            if item.collaboration_department_approved_at else None
+        ),
+        "collaboration_department_comment": item.collaboration_department_approval_comment,
+        "missing_sides": cross_department_missing_sides(item),
+        "available_approval_sides": available_sides,
+        "blocker": (
+            "提交人缺少所属部门，无法完成跨部门双确认"
+            if item.status == WORK_ITEM_STATUS_PENDING and not item.department_id else None
+        ),
+    }
+
+
 def serialize_work_item(item: WorkItem, viewer: User | None = None) -> dict:
     can_manage = bool(viewer and can_manage_work_item(viewer, item))
     is_pending = item.status == WORK_ITEM_STATUS_PENDING
+    can_escalate = bool(
+        can_manage
+        and item.status in {WORK_ITEM_STATUS_PENDING, WORK_ITEM_STATUS_APPROVED}
+        and item.category != WORK_ITEM_CATEGORY_WEEKLY_SUPPLEMENT
+    )
+    cross_approval_sides = cross_department_approval_sides_for_user(viewer, item) if viewer else []
     can_convert = bool(
         can_manage
         and item.category == WORK_ITEM_CATEGORY_DEPARTMENT_TASK
@@ -1052,11 +1143,18 @@ def serialize_work_item(item: WorkItem, viewer: User | None = None) -> dict:
         "can_reject": bool(can_manage and is_pending),
         "can_close": bool(can_manage and is_pending),
         "can_convert_to_sub_task": can_convert,
+        "can_escalate": can_escalate,
+        "can_cross_department_approve": bool(cross_approval_sides),
+        "cross_department_approval_sides": cross_approval_sides,
+        "cross_department_approval": serialize_cross_department_approval(item, viewer),
         "events": [serialize_work_item_event(event) for event in item.events],
         "created_at": item.created_at.isoformat() if item.created_at else None,
         "updated_at": item.updated_at.isoformat() if item.updated_at else None,
         "withdrawn_at": item.withdrawn_at.isoformat() if item.withdrawn_at else None,
         "converted_at": item.converted_at.isoformat() if item.converted_at else None,
+        "escalated_by": serialize_user_brief(item.escalated_by),
+        "escalated_at": item.escalated_at.isoformat() if item.escalated_at else None,
+        "escalation_comment": item.escalation_comment,
     }
 
 
@@ -1159,6 +1257,10 @@ def weekly_report_draft_payload(db: Session, user: User, week_key: str) -> dict:
             .order_by(WorkItem.created_at, WorkItem.id)
         ).all()
     )
+    work_items = [
+        item for item in work_items
+        if item.category != WORK_ITEM_CATEGORY_CROSS_DEPARTMENT or item.status == WORK_ITEM_STATUS_APPROVED
+    ]
     risk_texts = [
         {
             "weekly_update_id": update.id,
@@ -2146,8 +2248,9 @@ def list_work_items(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[dict]:
-    if scope not in {"submitted", "received", "department-routine"}:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="scope 仅支持 submitted、received 或 department-routine")
+    supported_scopes = {"submitted", "received", "department-routine", "department-escalations", "parent-escalations"}
+    if scope not in supported_scopes:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="scope 仅支持 submitted、received、department-routine、department-escalations 或 parent-escalations")
     if scope == "submitted":
         items = db.scalars(
             select(WorkItem)
@@ -2168,7 +2271,7 @@ def list_work_items(
             ).all()
             if can_view_received_work_item(current_user, item)
         ]
-    else:
+    elif scope == "department-routine":
         can_view_all_departments = current_user.is_admin or "permission.manage" in user_permission_codes(current_user)
         if not can_view_all_departments and "department_owner" not in user_role_codes(current_user):
             raise HTTPException(status.HTTP_403_FORBIDDEN, detail="无权查看本部门常态化事项")
@@ -2184,6 +2287,28 @@ def list_work_items(
             select(WorkItem)
             .where(*filters)
             .order_by(WorkItem.created_at.desc(), WorkItem.id.desc())
+        ).all()
+    elif scope == "department-escalations":
+        can_view_all_departments = can_manage_any_work_item(current_user)
+        if not can_view_all_departments and "department_owner" not in user_role_codes(current_user):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, detail="无权查看缺部门任务诉求")
+        filters = [WorkItem.status == WORK_ITEM_STATUS_ESCALATED_DEPARTMENT_TASK]
+        if not can_view_all_departments:
+            if not current_user.department_id:
+                return []
+            filters.append(WorkItem.department_id == current_user.department_id)
+        items = db.scalars(
+            select(WorkItem)
+            .where(*filters)
+            .order_by(WorkItem.escalated_at.desc(), WorkItem.id.desc())
+        ).all()
+    else:
+        if not can_view_parent_task_escalations(current_user):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, detail="无权查看缺母任务诉求")
+        items = db.scalars(
+            select(WorkItem)
+            .where(WorkItem.status == WORK_ITEM_STATUS_ESCALATED_PARENT_TASK)
+            .order_by(WorkItem.escalated_at.desc(), WorkItem.id.desc())
         ).all()
     return [serialize_work_item(item, current_user) for item in items]
 
@@ -2332,7 +2457,7 @@ def approve_work_item(
     if not can_manage_work_item(current_user, item):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="无权处理该待归类事项")
     if item.category == WORK_ITEM_CATEGORY_CROSS_DEPARTMENT:
-        raise HTTPException(status.HTTP_409_CONFLICT, detail="跨部门协作同意将在 4.4.4 双确认中开放")
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="跨部门协作请使用双确认入口")
     comment = normalize_work_item_comment(payload, "确认说明")
     return update_work_item_status(
         item,
@@ -2342,6 +2467,81 @@ def approve_work_item(
         comment,
         db,
     )
+
+
+@router.post("/work-items/{work_item_id}/cross-department-approve")
+def approve_cross_department_work_item(
+    work_item_id: int,
+    payload: WorkItemCrossDepartmentApprove,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    item = db.get(WorkItem, work_item_id)
+    if not item:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Work item not found")
+    if item.category != WORK_ITEM_CATEGORY_CROSS_DEPARTMENT:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="只有跨部门协作事项需要双确认")
+    if item.status != WORK_ITEM_STATUS_PENDING:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="只有待确认跨部门协作事项可以确认")
+    if not item.department_id:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="提交人缺少所属部门，无法完成跨部门双确认")
+    if not item.collaboration_department_id:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="缺少协作部门，无法完成跨部门双确认")
+
+    valid_sides = {WORK_ITEM_CROSS_SUBMITTER_SIDE, WORK_ITEM_CROSS_COLLABORATION_SIDE}
+    requested_side = payload.side.strip() if payload.side else None
+    if requested_side and requested_side not in valid_sides:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="确认侧仅支持 submitter_department 或 collaboration_department")
+    available_sides = cross_department_approval_sides_for_user(current_user, item)
+    if requested_side:
+        if requested_side not in cross_department_missing_sides(item):
+            raise HTTPException(status.HTTP_409_CONFLICT, detail="该确认侧已确认")
+        if requested_side not in available_sides:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, detail="无权确认该跨部门协作事项")
+        side = requested_side
+    else:
+        if not available_sides:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, detail="无权确认该跨部门协作事项")
+        if len(available_sides) > 1:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="请选择确认侧")
+        side = available_sides[0]
+
+    now = datetime.now(timezone.utc)
+    comment = payload.comment.strip() if payload.comment else None
+    if side == WORK_ITEM_CROSS_SUBMITTER_SIDE:
+        item.submitter_department_approved_by_id = current_user.id
+        item.submitter_department_approved_at = now
+        item.submitter_department_approval_comment = comment
+        action = "cross_submitter_department_approved"
+        event_comment = comment or "提交部门确认"
+    else:
+        item.collaboration_department_approved_by_id = current_user.id
+        item.collaboration_department_approved_at = now
+        item.collaboration_department_approval_comment = comment
+        action = "cross_collaboration_department_approved"
+        event_comment = comment or "协作部门确认"
+    item.updated_at = now
+    db.add(
+        WorkItemEvent(
+            work_item_id=item.id,
+            actor_id=current_user.id,
+            action=action,
+            comment=event_comment,
+        )
+    )
+    if item.submitter_department_approved_by_id and item.collaboration_department_approved_by_id:
+        item.status = WORK_ITEM_STATUS_APPROVED
+        db.add(
+            WorkItemEvent(
+                work_item_id=item.id,
+                actor_id=current_user.id,
+                action=WORK_ITEM_STATUS_APPROVED,
+                comment="跨部门协作双确认完成",
+            )
+        )
+    db.commit()
+    db.refresh(item)
+    return serialize_work_item(item, current_user)
 
 
 @router.post("/work-items/{work_item_id}/reject")
@@ -2384,6 +2584,55 @@ def close_work_item(
         comment,
         db,
     )
+
+
+@router.post("/work-items/{work_item_id}/escalate")
+def escalate_work_item(
+    work_item_id: int,
+    payload: WorkItemEscalate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    item = db.get(WorkItem, work_item_id)
+    if not item:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Work item not found")
+    if not can_manage_work_item(current_user, item):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="无权处理该待归类事项")
+    if item.status not in {WORK_ITEM_STATUS_PENDING, WORK_ITEM_STATUS_APPROVED}:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="只有待确认或已确认事项可以上提诉求")
+    if item.category == WORK_ITEM_CATEGORY_WEEKLY_SUPPLEMENT:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="周报补充记录不支持上提为任务诉求")
+    target = payload.target.strip() if payload.target else ""
+    if target not in {WORK_ITEM_ESCALATION_TARGET_DEPARTMENT_TASK, WORK_ITEM_ESCALATION_TARGET_PARENT_TASK}:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="上提类型仅支持 department_task 或 parent_task")
+    comment = payload.comment.strip() if payload.comment else ""
+    if not comment:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="请填写上提说明")
+    if target == WORK_ITEM_ESCALATION_TARGET_DEPARTMENT_TASK and not item.department_id:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="提交人缺少所属部门，无法形成缺部门任务诉求")
+
+    now = datetime.now(timezone.utc)
+    status_value = (
+        WORK_ITEM_STATUS_ESCALATED_DEPARTMENT_TASK
+        if target == WORK_ITEM_ESCALATION_TARGET_DEPARTMENT_TASK
+        else WORK_ITEM_STATUS_ESCALATED_PARENT_TASK
+    )
+    item.status = status_value
+    item.escalated_by_id = current_user.id
+    item.escalated_at = now
+    item.escalation_comment = comment
+    item.updated_at = now
+    db.add(
+        WorkItemEvent(
+            work_item_id=item.id,
+            actor_id=current_user.id,
+            action=status_value,
+            comment=comment,
+        )
+    )
+    db.commit()
+    db.refresh(item)
+    return serialize_work_item(item, current_user)
 
 
 @router.post("/work-items/{work_item_id}/convert-to-sub-task")
