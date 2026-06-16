@@ -11,6 +11,7 @@ import {
   Empty,
   Form,
   Input,
+  InputNumber,
   Layout,
   Menu,
   Modal,
@@ -26,7 +27,6 @@ import {
   Upload,
   message
 } from 'antd';
-import type { TourProps } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
   ApartmentOutlined,
@@ -68,6 +68,7 @@ import { PageShell } from './components/PageShell';
 import { StatusTag } from './components/StatusTag';
 import { Workbench } from './pages/Workbench';
 import { WeeklyReport } from './pages/WeeklyReport';
+import { useGuideTour } from './features/guides/useGuideTour';
 import { buildSubTaskUpdatePath, relationLabels, renderPeople } from './ui/taskDisplay';
 import companyLogoCompact from './assets/brand/company-logo-compact-light.png';
 import companyLogoFullname from './assets/brand/company-logo-fullname-light.png';
@@ -554,24 +555,11 @@ function AppLayout() {
   const headerMetaRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLElement | null>(null);
   const guideButtonRef = useRef<HTMLButtonElement | null>(null);
-  const onboardingPresentedRef = useRef(false);
-  const onboardingSavingRef = useRef(false);
-  const tourCloseTimerRef = useRef<number | null>(null);
-  const [tourOpen, setTourOpen] = useState(false);
-  const [activeGuideKey, setActiveGuideKey] = useState<string | null>(null);
-  const [tourTracksProgress, setTourTracksProgress] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [workbenchRiskTarget, setWorkbenchRiskTarget] = useState<AnyRecord | null>(null);
   const selectedKey = `/${location.pathname.split('/')[1] || 'workbench'}`;
   const isAdmin = Boolean(auth?.user?.is_admin || (auth?.permission_codes || []).includes('permission.manage'));
   const guideProfile = auth?.guide_profile as string | null | undefined;
-  const guideProfileLabels: Record<string, string> = {
-    executive_office: '总经办会议相关',
-    department_owner: '部门负责人',
-    task_owner: '任务负责人',
-    executor: '子任务执行者',
-    observer: '观察者'
-  };
   const canViewParentTasks = Boolean(auth?.features?.can_view_parent_tasks || isAdmin);
   const visibleBaseMenuItems = baseMenuItems.filter((item) => item.key !== '/parent-tasks' || canViewParentTasks);
   const menuItems = isAdmin ? [...visibleBaseMenuItems, ...adminMenuItems] : visibleBaseMenuItems;
@@ -580,680 +568,21 @@ function AppLayout() {
     await postJson('/auth/logout', {});
     navigate('/login');
   };
-  useEffect(() => {
-    if (onboardingPresentedRef.current) return;
-    if (auth?.guides?.system?.required) {
-      onboardingPresentedRef.current = true;
-      setActiveGuideKey(auth.guides.system.guide_key);
-      setTourTracksProgress(true);
-      setTourOpen(true);
-      return;
-    }
-    if (guideProfile && !auth?.guides?.system && auth?.onboarding?.required) {
-      onboardingPresentedRef.current = true;
-      setActiveGuideKey('legacy');
-      setTourTracksProgress(true);
-      setTourOpen(true);
-    }
-  }, [auth?.guides?.system, auth?.guides?.system?.required, auth?.onboarding?.required, guideProfile]);
+  const {
+    tourOpen,
+    tourSteps,
+    openManualGuide,
+    triggerModuleGuide,
+    handleTourClose,
+    handleTourFinish
+  } = useGuideTour({
+    auth,
+    guideProfile,
+    pathname: location.pathname,
+    refs: { brandRef, menuRef, headerMetaRef, contentRef, guideButtonRef },
+    reloadAuth
+  });
 
-  const saveGuideProgress = async (action: 'completed' | 'skipped') => {
-    if (onboardingSavingRef.current || !activeGuideKey) return;
-    const savingGuideKey = activeGuideKey;
-    onboardingSavingRef.current = true;
-    setTourOpen(false);
-    try {
-      if (savingGuideKey === 'legacy') {
-        await postJson('/auth/onboarding', { version: auth?.onboarding?.version, action });
-      } else {
-        const guide = auth?.guides?.system?.guide_key === savingGuideKey
-          ? auth?.guides?.system
-          : Object.values(auth?.guides?.modules || {}).find((item: any) => item?.guide_key === savingGuideKey) as AnyRecord | undefined;
-        await postJson('/auth/guides', {
-          guide_key: guide?.guide_key,
-          version: guide?.version,
-          action
-        });
-      }
-      await reloadAuth();
-    } catch {
-      message.error('使用指南状态保存失败，请稍后重试');
-    } finally {
-      onboardingSavingRef.current = false;
-      setActiveGuideKey(null);
-    }
-  };
-  const closeTour = (action: 'completed' | 'skipped') => {
-    if (tourTracksProgress) {
-      saveGuideProgress(action);
-    } else {
-      setTourOpen(false);
-    }
-  };
-  const handleTourClose = () => {
-    if (tourCloseTimerRef.current) window.clearTimeout(tourCloseTimerRef.current);
-    tourCloseTimerRef.current = window.setTimeout(() => {
-      tourCloseTimerRef.current = null;
-      closeTour('skipped');
-    }, 80);
-  };
-  const handleTourFinish = () => {
-    if (tourCloseTimerRef.current) {
-      window.clearTimeout(tourCloseTimerRef.current);
-      tourCloseTimerRef.current = null;
-    }
-    closeTour('completed');
-  };
-  const guideDescriptions: Record<string, string> = {
-    department_owner: '从“母任务管理”查看本部门牵头的母任务，并将任务拆分到相关部门；部门任务中可跟踪本部门负责事项。',
-    task_owner: '从“部门任务”进入自己负责的任务，拆解到具体执行人并持续跟踪进展与风险。',
-    executor: '从“子任务执行”进入本人任务，填写本周进展、遗留事项和下一步计划，发现问题时登记风险。',
-    observer: '从会议看板和历史时间线查看任务推进情况，观察者不承担任务拆解和填报操作。'
-  };
-  const legacyTourSteps: TourProps['steps'] = [
-    {
-      title: `欢迎使用任务跟踪系统 · ${guideProfile ? guideProfileLabels[guideProfile] : ''}`,
-      description: '这份短引导只在首次进入时自动展示，之后可以随时从右上角重新打开。',
-      target: () => brandRef.current || document.body
-    },
-    {
-      title: '从导航开始工作',
-      description: guideDescriptions[guideProfile || ''] || '请从左侧导航进入与本人职责相关的工作板块。',
-      target: () => menuRef.current || document.body
-    },
-    {
-      title: '当前工作区',
-      description: '列表、看板和编辑窗口都会在这里呈现。系统不会在引导过程中替你切换页面。',
-      target: () => contentRef.current || document.body
-    },
-    {
-      title: '确认身份与周期',
-      description: '这里显示当前登录人员、所属部门、日期和系统周次，提交更新前可以先核对。',
-      target: () => headerMetaRef.current || document.body
-    },
-    {
-      title: '随时重看使用指南',
-      description: '完成或跳过后都不会再次自动打扰；需要时点击这个问号即可重新查看。',
-      target: () => guideButtonRef.current || document.body
-    }
-  ];
-  const executiveSystemSteps: TourProps['steps'] = [
-    {
-      title: '公司任务推进与会议决策支持',
-      description: '系统用于统一呈现公司重点任务的责任分解、周度进展、风险与逾期情况，为经营会议审阅和决策提供依据。',
-      target: () => brandRef.current || document.body
-    },
-    {
-      title: '四级任务框架',
-      description: '战略目标明确方向，母任务承接公司重点事项，部门任务落实部门责任，子任务记录具体执行与周度进展。',
-      target: () => contentRef.current || document.body
-    },
-    {
-      title: '以会议看板为主要入口',
-      description: '会议看板用于集中审阅全局状态；战略目标、母任务、部门任务和历史时间线用于进一步追溯任务来源与执行过程。',
-      target: () => menuRef.current || document.body
-    },
-    {
-      title: '确认身份与会议周期',
-      description: '顶部显示当前登录人员、所属部门和系统周次。会议审阅前建议先确认当前周期，避免混用不同周次的数据。',
-      target: () => headerMetaRef.current || document.body
-    },
-    {
-      title: '板块内还有专项说明',
-      description: '首次主动点击左侧板块时，系统会提供该板块的专项引导。需要回顾时，可通过右上角使用指南再次查看。',
-      target: () => guideButtonRef.current || document.body
-    }
-  ];
-  const executiveMeetingSteps: TourProps['steps'] = [
-    {
-      title: '三种会议视角',
-      description: '“总览”用于快速识别异常，“母任务看板”用于检查公司级事项，“部门看板”用于横向比较各部门承接与推进情况。',
-      target: () => document.querySelector('#meeting-guide-tabs') as HTMLElement || document.body
-    },
-    {
-      title: '先看六项核心指标',
-      description: '建议先关注本周待更新、风险任务和逾期任务。点击任一指标可打开对应明细，直接核对任务、责任人和当前状态。',
-      target: () => document.querySelector('#meeting-guide-metrics') as HTMLElement || document.body
-    },
-    {
-      title: '判断本周信息完整度',
-      description: '本周更新状态用于判断填报完整度，近周提交趋势用于观察执行节奏是否稳定，并识别持续未更新的事项。',
-      target: () => document.querySelector('#meeting-guide-weekly') as HTMLElement || document.body
-    },
-    {
-      title: '集中审阅风险与逾期',
-      description: '风险与逾期汇总用于确认高风险事项、处理责任人和截止日期。具备处理权限时，可直接进入风险处置。',
-      target: () => document.querySelector('#risk-overdue') as HTMLElement || document.body
-    },
-    {
-      title: '检查时间节点与部门差异',
-      description: '母任务截止日期帮助识别临近节点；需要部门横向比较时，可切换到“部门看板”查看任务量、待更新、风险和逾期分布。',
-      target: () => document.querySelector('#meeting-guide-deadline') as HTMLElement || document.body
-    },
-    {
-      title: '建议的会议审阅顺序',
-      description: '先从总览识别异常，再下钻任务明细，现场确认责任人与处理要求，最后形成会后跟进事项。',
-      target: () => contentRef.current || document.body
-    }
-  ];
-  const departmentOwnerFrameworkSteps: TourProps['steps'] = [
-    {
-      title: '部门任务承接与责任落地',
-      description: '部门负责人负责承接本部门牵头的公司任务，并把任务拆分到清晰的负责部门、任务负责人和截止节点。',
-      target: () => brandRef.current || document.body
-    },
-    {
-      title: '查看范围以部门责任为边界',
-      description: '你可以查看本部门牵头的母任务，以及与本人部门相关的部门任务；普通同部门人员不会自动获得这些视图。',
-      target: () => contentRef.current || document.body
-    },
-    {
-      title: '核心流程从母任务详情开始',
-      description: '进入母任务详情后，通过“新增”建立部门任务，明确负责部门、任务负责人和截止日期，再由任务负责人继续拆解子任务。',
-      target: () => menuRef.current || document.body
-    },
-    {
-      title: '跟进部门任务闭环',
-      description: '部门任务页用于检查任务状态、子任务进展、本周更新、遗留事项、风险和截止节点，便于及时推动责任人处理。',
-      target: () => contentRef.current || document.body
-    },
-    {
-      title: '区分管理责任和执行责任',
-      description: '部门负责人权限不自动包含子任务拆解或周更新。若你同时是任务负责人或执行人，请按对应身份完成拆解或填报。',
-      target: () => headerMetaRef.current || document.body
-    },
-    {
-      title: '板块首次进入会继续提示',
-      description: '首次主动点击母任务管理、部门任务等板块时，会出现专项说明；需要回顾时，可从右上角重新打开。',
-      target: () => guideButtonRef.current || document.body
-    }
-  ];
-  const departmentOwnerParentSteps: TourProps['steps'] = [
-    {
-      title: '只看本部门牵头母任务',
-      description: '母任务管理中展示与你所属部门牵头责任相关的母任务，便于从公司级事项开始向下拆分。',
-      target: () => document.querySelector('#department-owner-parent-list') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '先核对母任务关键信息',
-      description: '任务卡展示负责人、牵头部门、截止日期和进度指标。拆分前建议先确认这些信息是否与当前责任边界一致。',
-      target: () => document.querySelector('#department-owner-parent-cards') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '进入详情查看承接结果',
-      description: '通过“查看任务详情”进入母任务详情，可看到已经建立的部门任务，以及展开后的子任务执行情况。',
-      target: () => document.querySelector('#department-owner-parent-cards') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '用新增完成部门任务拆分',
-      description: '在母任务详情中点击“新增”，填写部门任务内容、负责部门、任务负责人和截止日期，这是部门负责人最核心的操作。',
-      target: () => contentRef.current || document.body
-    },
-    {
-      title: '任务负责人继续拆解子任务',
-      description: '部门任务建立后，任务负责人会收到通知，并负责继续拆解到执行人。部门负责人重点检查责任是否清晰、节点是否合理。',
-      target: () => contentRef.current || document.body
-    },
-    {
-      title: '删除是归档隐藏',
-      description: '删除部门任务时按归档处理，不物理删除历史记录。部门负责人不能仅凭该身份编辑母任务本身。',
-      target: () => contentRef.current || document.body
-    }
-  ];
-  const departmentOwnerDepartmentSteps: TourProps['steps'] = [
-    {
-      title: '查看本部门相关部门任务',
-      description: '这里集中展示本人部门负责，或本人部门牵头母任务下的部门任务，用于日常跟踪承接结果。',
-      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '重点核对四类信息',
-      description: '建议优先查看负责部门、任务负责人、状态和待拆解数量，快速判断任务是否已经进入执行层。',
-      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '展开查看执行进展',
-      description: '展开部门任务后，可以看到子任务执行人、本周完成内容、遗留事项和截止日期，用于判断推进质量。',
-      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '问题回到母任务详情维护',
-      description: '如果发现责任人、负责部门或截止日期不合理，请回到对应母任务详情维护部门任务。',
-      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '拆解子任务属于任务负责人',
-      description: '“拆解”按钮只在你同时是该部门任务负责人时可用。部门负责人本身负责管理承接关系，不代替任务负责人拆子任务。',
-      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
-    }
-  ];
-  const departmentOwnerSubTaskSteps: TourProps['steps'] = [
-    {
-      title: '先区分你在子任务中的身份',
-      description: '“我执行”表示需要你填写周更新；“我负责”表示跟进责任；“管理查看”是只读查看，不代执行人填写。',
-      target: () => document.querySelector('#sub-task-guide-groups') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '从执行任务进入更新页',
-      description: '在“我执行”或“负责+执行”的子任务中点击“更新”，进入本周填报页面。',
-      target: () => document.querySelector('#sub-task-guide-execution') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '未开启任务先开启',
-      description: '如果任务尚未开启，请先点击“开启任务”；任务完成后再标记已完成，完成后周更新表单会锁定。',
-      target: () => contentRef.current || document.body
-    },
-    {
-      title: '按周填写执行信息',
-      description: '本周完成内容、下周计划和遗留事项分别记录已完成工作、下一步安排和距离完全完成仍需处理的尾项。',
-      target: () => contentRef.current || document.body
-    },
-    {
-      title: '提交状态会影响提醒',
-      description: '保存草稿不会视为本周已提交；只有点击“提交保存”后，周五未提交提醒才会停止。',
-      target: () => contentRef.current || document.body
-    },
-    {
-      title: '遗留事项不等于风险',
-      description: '遗留事项继续作为周更新文本；确有影响和可能性的问题，请使用“登记风险”单独形成风险项。',
-      target: () => contentRef.current || document.body
-    }
-  ];
-  const taskOwnerFrameworkSteps: TourProps['steps'] = [
-    {
-      title: '承接部门任务并拆解执行',
-      description: '任务负责人负责承接本人名下的部门任务，并把任务拆解成可执行、可跟踪、可按周更新的子任务。',
-      target: () => brandRef.current || document.body
-    },
-    {
-      title: '只处理自己负责的部门任务',
-      description: '任务负责人不承担母任务拆分职责，也不会因为任务负责人身份进入母任务管理；你的主入口是部门任务。',
-      target: () => menuRef.current || document.body
-    },
-    {
-      title: '从部门任务进入拆解',
-      description: '在部门任务页找到本人负责的任务，点击“拆解”创建子任务，明确具体任务、执行人和截止日期。',
-      target: () => contentRef.current || document.body
-    },
-    {
-      title: '持续跟踪执行闭环',
-      description: '拆解后需要关注待拆解数量、执行人周更新、遗留事项、风险和完成状态，确保任务进入真实推进。',
-      target: () => contentRef.current || document.body
-    },
-    {
-      title: '兼任执行人时要提交更新',
-      description: '如果你同时是某个子任务的执行人，需要按执行人身份进入子任务执行页填写并提交本周进展。',
-      target: () => headerMetaRef.current || document.body
-    },
-    {
-      title: '板块首次进入会继续提示',
-      description: '首次主动点击部门任务或子任务执行板块时，会出现专项说明；需要回顾时，可从右上角重新打开。',
-      target: () => guideButtonRef.current || document.body
-    }
-  ];
-  const taskOwnerDepartmentSteps: TourProps['steps'] = [
-    {
-      title: '集中查看本人负责的部门任务',
-      description: '这里是任务负责人日常工作的主入口，用于查看本人负责的部门任务及其拆解情况。',
-      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '先判断是否需要拆解',
-      description: '建议优先查看任务负责人、状态、待拆解数量和截止日期，确认哪些任务还没有落到具体执行人。',
-      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '点击拆解创建子任务',
-      description: '点击“拆解”后填写具体任务、执行人和截止日期。子任务应足够具体，便于执行人按周提交进展。',
-      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '负责人自动继承',
-      description: '子任务负责人自动继承部门任务负责人，不在拆解窗口单独选择，避免部门任务责任和子任务责任分叉。',
-      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '展开检查执行情况',
-      description: '展开部门任务后，可以检查子任务执行人、本周进展、遗留事项和截止日期，及时发现未更新或推进异常。',
-      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '编辑只维护执行层信息',
-      description: '编辑子任务时只维护任务内容、执行人和截止日期；部门任务负责人变化会自动同步到子任务负责人。',
-      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
-    }
-  ];
-  const taskOwnerSubTaskSteps: TourProps['steps'] = [
-    {
-      title: '先看你在子任务中的身份',
-      description: '“我负责”用于跟踪推进，“我执行”需要填写周更新，“负责+执行”则两类责任都要关注。',
-      target: () => document.querySelector('#sub-task-guide-groups') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '负责不等于代填',
-      description: '在“我负责”任务中，你需要跟进执行人进展和风险，但不代替执行人填写周更新。',
-      target: () => document.querySelector('#sub-task-guide-groups') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '执行任务进入更新页',
-      description: '在“我执行”或“负责+执行”的子任务中点击“更新”，进入本周填报页面。',
-      target: () => document.querySelector('#sub-task-guide-execution') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '区分草稿和正式提交',
-      description: '保存草稿便于临时记录；只有点击“提交保存”，系统才认为本周更新已经正式提交。',
-      target: () => contentRef.current || document.body
-    },
-    {
-      title: '遗留事项不是风险',
-      description: '遗留事项用于记录距离完成还剩什么；确有影响和可能性的问题，请单独登记风险项。',
-      target: () => contentRef.current || document.body
-    },
-    {
-      title: '完成后更新入口会收口',
-      description: '任务完成后周更新表单会锁定，后续主要通过历史记录查看提交内容。',
-      target: () => contentRef.current || document.body
-    }
-  ];
-  const executorFrameworkSteps: TourProps['steps'] = [
-    {
-      title: '按计划推进本人子任务',
-      description: '子任务执行者负责推进本人名下的具体任务，并按周提交真实、可追溯的执行进展。',
-      target: () => brandRef.current || document.body
-    },
-    {
-      title: '主要入口是子任务执行',
-      description: '你的主要工作入口是“子任务执行”。执行人不承担母任务拆分或部门任务拆解职责。',
-      target: () => menuRef.current || document.body
-    },
-    {
-      title: '先确认任务状态',
-      description: '任务可能处于待开启、进行中或已完成。待开启任务需要先开启，再填写本周进展。',
-      target: () => contentRef.current || document.body
-    },
-    {
-      title: '周更新要按周维护',
-      description: '本周完成内容、下周计划和遗留事项分别记录已完成工作、下一步安排和距离完全完成仍需处理的事项。',
-      target: () => contentRef.current || document.body
-    },
-    {
-      title: '风险需要单独登记',
-      description: '遗留事项不等于风险；确有影响和可能性的问题，请使用风险入口单独登记。',
-      target: () => contentRef.current || document.body
-    },
-    {
-      title: '正式提交影响提醒',
-      description: '周五提醒以正式提交为准。保存草稿便于临时记录，但不会视为本周已提交。',
-      target: () => guideButtonRef.current || document.body
-    }
-  ];
-  const executorSubTaskSteps: TourProps['steps'] = [
-    {
-      title: '我执行是主要工作区',
-      description: '“我执行”展示本人需要推进和更新的子任务，是执行人最常用的工作区。',
-      target: () => document.querySelector('#sub-task-guide-execution') as HTMLElement || document.querySelector('#sub-task-guide-groups') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '先核对任务关键信息',
-      description: '更新前建议核对任务编号、任务名称、所属部门任务、负责人、状态和截止日期。',
-      target: () => document.querySelector('#sub-task-guide-execution') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '点击更新进入填报',
-      description: '点击“更新”进入本周填报页面。待开启任务进入后先点击“开启任务”，再填写进展。',
-      target: () => document.querySelector('#sub-task-guide-execution') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '填写三类周更新内容',
-      description: '本周完成内容写已经推进的工作，下周计划写下一步安排，遗留事项写距离完成仍需处理的尾项。',
-      target: () => contentRef.current || document.body
-    },
-    {
-      title: '草稿和提交要区分',
-      description: '保存草稿不会停止周提醒；只有“提交保存”才代表本周更新正式完成。',
-      target: () => contentRef.current || document.body
-    },
-    {
-      title: '风险和完成状态单独处理',
-      description: '发现真实风险时点击“风险”登记；任务完成后标记完成，后续更新入口会锁定。',
-      target: () => contentRef.current || document.body
-    }
-  ];
-  const observerFrameworkSteps: TourProps['steps'] = [
-    {
-      title: '全局只读审阅与任务追溯',
-      description: '观察者用于公司级任务推进的只读审阅，重点关注任务推进质量、风险、逾期和历史过程。',
-      target: () => brandRef.current || document.body
-    },
-    {
-      title: '会议看板看全局',
-      description: '会议看板是主要审阅入口，用于快速查看核心指标、风险逾期、更新完整度和部门差异。',
-      target: () => menuRef.current || document.body
-    },
-    {
-      title: '按任务层级理解责任拆解',
-      description: '任务从母任务、部门任务到子任务逐级拆解。观察者可沿层级下钻，查看责任边界和执行进展。',
-      target: () => contentRef.current || document.body
-    },
-    {
-      title: '观察者保持只读边界',
-      description: '观察者不负责新增、拆分、编辑或代填任务，主要用于审阅、追溯和会前准备。',
-      target: () => contentRef.current || document.body
-    },
-    {
-      title: '多重身份分开处理',
-      description: '如果你同时也是任务负责人或执行人，对应任务仍按该身份跟进；观察者身份本身不增加写入职责。',
-      target: () => headerMetaRef.current || document.body
-    },
-    {
-      title: '板块首次进入会有专项说明',
-      description: '首次主动点击左侧板块时，系统会补充该板块的审阅方法；右上角可随时重看当前页面指南。',
-      target: () => guideButtonRef.current || document.body
-    }
-  ];
-  const observerMeetingSteps: TourProps['steps'] = [
-    {
-      title: '先看核心指标',
-      description: '会议看板先用于判断总体推进是否健康，再决定是否下钻风险、逾期、未更新和部门差异。',
-      target: () => document.querySelector('#meeting-guide-metrics') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '切换会议视角',
-      description: '总览、母任务看板和部门看板分别对应不同审阅口径，可用于会前准备和会议中快速定位问题。',
-      target: () => document.querySelector('#meeting-guide-tabs') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '关注更新完整度',
-      description: '本周更新情况和待更新人员帮助判断进展数据是否充分，避免会议只基于不完整信息讨论。',
-      target: () => document.querySelector('#meeting-guide-weekly') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '风险和逾期优先下钻',
-      description: '风险、逾期和高风险事项是审阅重点，可点击明细查看来源任务、责任人和处理状态。',
-      target: () => document.querySelector('#meeting-guide-risk') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '看趋势和部门差异',
-      description: '趋势和部门横向对比用于识别连续未更新、推进滞后或压力集中的方向。',
-      target: () => document.querySelector('#meeting-guide-trend') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '建议会议顺序',
-      description: '建议按“总览异常、下钻明细、确认责任人、形成会后跟进”的顺序审阅。',
-      target: () => document.querySelector('#meeting-guide-deadline') as HTMLElement || contentRef.current || document.body
-    }
-  ];
-  const observerParentSteps: TourProps['steps'] = [
-    {
-      title: '查看公司级母任务',
-      description: '母任务管理用于只读查看公司级任务、牵头部门、负责人、截止日期和当前状态。',
-      target: () => document.querySelector('#department-owner-parent-list') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '从任务卡进入详情',
-      description: '进入详情后可查看该母任务下的部门任务拆解、子任务推进和周更新脉络。',
-      target: () => document.querySelector('#department-owner-parent-cards') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '沿层级追溯责任',
-      description: '重点关注牵头部门、任务负责人、负责部门和截止日期是否清晰，便于会议追问到具体责任层级。',
-      target: () => contentRef.current || document.body
-    },
-    {
-      title: '保持只读审阅',
-      description: '观察者不在这里新增、拆分或编辑任务；如本人另有部门负责人职责，请按对应身份处理。',
-      target: () => contentRef.current || document.body
-    }
-  ];
-  const observerDepartmentSteps: TourProps['steps'] = [
-    {
-      title: '查看部门承接情况',
-      description: '部门任务用于查看各部门承接、任务负责人、截止日期、状态和待拆解情况。',
-      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '展开查看子任务推进',
-      description: '展开部门任务后，可查看子任务执行人、本周进展、遗留事项、风险和截止节点。',
-      target: () => document.querySelector('#department-owner-department-task-table') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '兼任任务负责人时要跟进',
-      description: '如果本人也是某个部门任务的任务负责人，需要额外关注待拆解、执行人更新和风险处理。',
-      target: () => contentRef.current || document.body
-    },
-    {
-      title: '观察者不代替维护',
-      description: '观察者身份只做审阅和追溯，不代替负责人新增子任务、调整执行人或填写周更新。',
-      target: () => contentRef.current || document.body
-    }
-  ];
-  const observerTimelineSteps: TourProps['steps'] = [
-    {
-      title: '按周追溯任务过程',
-      description: '历史时间线按任务层级和周次展开，适合回看完成内容、遗留事项、附件和历史提交。',
-      target: () => document.querySelector('#timeline-guide-card') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '横向比较周次变化',
-      description: '同一任务可以横向查看不同周次的更新，帮助判断问题是偶发、连续还是已经改善。',
-      target: () => document.querySelector('#timeline-guide-matrix') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '纵向追溯任务层级',
-      description: '从母任务到部门任务再到子任务逐层展开，可定位进展内容来自哪个责任层级。',
-      target: () => document.querySelector('#timeline-guide-matrix') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '作为审阅证据来源',
-      description: '时间线用于会前准备、会后复盘和过程追溯，不在这里直接修改历史提交。',
-      target: () => contentRef.current || document.body
-    }
-  ];
-  const observerSubTaskSteps: TourProps['steps'] = [
-    {
-      title: '仅在兼任执行人时出现',
-      description: '观察者身份本身不承担填报责任；这里出现，说明你当前也有需要执行和更新的子任务。',
-      target: () => document.querySelector('#sub-task-guide-execution') as HTMLElement || document.querySelector('#sub-task-guide-groups') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '按执行人身份更新',
-      description: '属于本人执行的子任务，需要进入更新页填写本周完成内容、下周计划和遗留事项。',
-      target: () => document.querySelector('#sub-task-guide-execution') as HTMLElement || contentRef.current || document.body
-    },
-    {
-      title: '草稿不等于提交',
-      description: '保存草稿只用于临时记录；只有正式提交后，系统才认为本周更新完成。',
-      target: () => contentRef.current || document.body
-    },
-    {
-      title: '风险仍需单独登记',
-      description: '遗留事项用于说明剩余工作；影响和可能性明确的问题，应单独登记风险项。',
-      target: () => contentRef.current || document.body
-    }
-  ];
-  const guideStepsByKey: Record<string, TourProps['steps']> = {
-    legacy: legacyTourSteps,
-    executive_framework: executiveSystemSteps,
-    executive_meeting_board: executiveMeetingSteps,
-    department_owner_framework: departmentOwnerFrameworkSteps,
-    department_owner_parent_tasks: departmentOwnerParentSteps,
-    department_owner_department_tasks: departmentOwnerDepartmentSteps,
-    department_owner_sub_tasks: departmentOwnerSubTaskSteps,
-    task_owner_framework: taskOwnerFrameworkSteps,
-    task_owner_department_tasks: taskOwnerDepartmentSteps,
-    task_owner_sub_tasks: taskOwnerSubTaskSteps,
-    executor_framework: executorFrameworkSteps,
-    executor_sub_tasks: executorSubTaskSteps,
-    observer_framework: observerFrameworkSteps,
-    observer_meeting_board: observerMeetingSteps,
-    observer_parent_tasks: observerParentSteps,
-    observer_department_tasks: observerDepartmentSteps,
-    observer_timeline: observerTimelineSteps,
-    observer_sub_tasks: observerSubTaskSteps
-  };
-  const tourSteps = guideStepsByKey[activeGuideKey || 'legacy'] || legacyTourSteps;
-
-  const guideKeyForCurrentPage = () => {
-    if (guideProfile === 'executive_office') {
-      return location.pathname.startsWith('/meeting-board')
-        ? auth?.guides?.modules?.meeting_board?.guide_key
-        : auth?.guides?.system?.guide_key;
-    }
-    if (guideProfile === 'department_owner') {
-      if (location.pathname.startsWith('/parent-tasks')) return auth?.guides?.modules?.parent_tasks?.guide_key;
-      if (location.pathname.startsWith('/department-tasks')) return auth?.guides?.modules?.department_tasks?.guide_key;
-      if (location.pathname.startsWith('/sub-tasks')) return auth?.guides?.modules?.sub_tasks?.guide_key;
-      return auth?.guides?.system?.guide_key;
-    }
-    if (guideProfile === 'task_owner') {
-      if (location.pathname.startsWith('/department-tasks')) return auth?.guides?.modules?.department_tasks?.guide_key;
-      if (location.pathname.startsWith('/sub-tasks')) return auth?.guides?.modules?.sub_tasks?.guide_key;
-      return auth?.guides?.system?.guide_key;
-    }
-    if (guideProfile === 'executor') {
-      if (location.pathname.startsWith('/sub-tasks')) return auth?.guides?.modules?.sub_tasks?.guide_key;
-      return auth?.guides?.system?.guide_key;
-    }
-    if (guideProfile === 'observer') {
-      if (location.pathname.startsWith('/meeting-board')) return auth?.guides?.modules?.meeting_board?.guide_key;
-      if (location.pathname.startsWith('/parent-tasks')) return auth?.guides?.modules?.parent_tasks?.guide_key;
-      if (location.pathname.startsWith('/department-tasks')) return auth?.guides?.modules?.department_tasks?.guide_key;
-      if (location.pathname.startsWith('/timeline')) return auth?.guides?.modules?.timeline?.guide_key;
-      if (location.pathname.startsWith('/sub-tasks')) return auth?.guides?.modules?.sub_tasks?.guide_key;
-      return auth?.guides?.system?.guide_key;
-    }
-    return guideProfile ? 'legacy' : null;
-  };
-
-  const openManualGuide = () => {
-    setActiveGuideKey(guideKeyForCurrentPage() || auth?.guides?.system?.guide_key || 'legacy');
-    setTourTracksProgress(false);
-    setTourOpen(true);
-  };
-
-  const guideForMenuPath = (key: string) => (
-    key === '/meeting-board'
-      ? auth?.guides?.modules?.meeting_board
-      : key === '/parent-tasks'
-        ? auth?.guides?.modules?.parent_tasks
-        : key === '/department-tasks'
-          ? auth?.guides?.modules?.department_tasks
-          : key === '/sub-tasks'
-            ? auth?.guides?.modules?.sub_tasks
-            : key === '/timeline'
-              ? auth?.guides?.modules?.timeline
-              : null
-  );
-  const triggerModuleGuide = (key: string) => {
-    const moduleGuide = guideForMenuPath(key);
-    if (moduleGuide?.required) {
-      window.setTimeout(() => {
-        setActiveGuideKey(moduleGuide.guide_key);
-        setTourTracksProgress(true);
-        setTourOpen(true);
-      }, 180);
-    }
-  };
   const handleMenuClick = ({ key }: { key: string }) => {
     if (mobileLayout) setMobileNavOpen(false);
     triggerModuleGuide(key);
@@ -3311,17 +2640,101 @@ function MeetingBoardDepartment() {
 
 function TimelinePage() {
   const mobileLayout = useIsMobileLayout();
-  const { data, loading } = useApi<AnyRecord>('/timeline/matrix', []);
+  const { data, loading, reload } = useApi<AnyRecord>('/timeline/matrix', []);
   const weeks: string[] = data?.weeks || [];
+  const canManualEdit = Boolean(data?.can_manual_edit);
   const [selectedWeek, setSelectedWeek] = useState<string | undefined>();
+  const [manualForm] = Form.useForm();
+  const [manualTarget, setManualTarget] = useState<AnyRecord | null>(null);
+  const [manualSaving, setManualSaving] = useState(false);
   useEffect(() => {
     if (!weeks.length) return;
     if (!selectedWeek || !weeks.includes(selectedWeek)) setSelectedWeek(weeks[weeks.length - 1]);
   }, [weeks.join('|'), selectedWeek]);
   const timelineColumns = `240px 132px repeat(${weeks.length}, 156px)`;
   const renderCell = (value?: string | null) => renderTimelineText(value);
+  const findManualUpdate = (cell: AnyRecord | undefined, assigneeId?: number) =>
+    (cell?.updates || []).find((item: AnyRecord) => Number(item.assignee_id) === Number(assigneeId));
+  const fillManualFormForAssignee = (cell: AnyRecord | undefined, assigneeId?: number) => {
+    const update = findManualUpdate(cell, assigneeId);
+    manualForm.setFieldsValue({
+      progress: update?.progress ?? cell?.progress ?? 0,
+      this_week: update?.this_week ?? '',
+      next_week: update?.next_week ?? '',
+      risk: update?.risk ?? '',
+      needs_coordination: update?.needs_coordination ?? cell?.needs_coordination ?? false,
+    });
+  };
+  const openManualEditor = (subTask: AnyRecord, week: string, cell: AnyRecord | undefined) => {
+    const executors = subTask.executors || [];
+    const defaultAssigneeId = cell?.assignee_id || executors[0]?.id;
+    setManualTarget({ subTask, week, cell, executors });
+    manualForm.setFieldsValue({
+      assignee_id: defaultAssigneeId,
+      progress: 0,
+      this_week: '',
+      next_week: '',
+      risk: '',
+      needs_coordination: false,
+    });
+    fillManualFormForAssignee(cell, defaultAssigneeId);
+  };
+  const saveManualUpdate = async () => {
+    if (!manualTarget) return;
+    const values = await manualForm.validateFields();
+    Modal.confirm({
+      title: `确认补录 ${manualTarget.week}？`,
+      content: '这是 4.8.1 临时历史补录，会直接写入正式已提交周更新。保存后会影响历史时间线、周报和导出数据。',
+      okText: '确认写入',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setManualSaving(true);
+        try {
+          await postJson('/weekly-updates/manual-history-upsert', {
+            sub_task_id: manualTarget.subTask.id,
+            assignee_id: values.assignee_id,
+            week_key: manualTarget.week,
+            progress: values.progress ?? 0,
+            this_week: values.this_week || null,
+            next_week: values.next_week || null,
+            risk: values.risk || null,
+            needs_coordination: Boolean(values.needs_coordination),
+          });
+          message.success('历史周更新已补录');
+          setManualTarget(null);
+          reload();
+        } finally {
+          setManualSaving(false);
+        }
+      },
+    });
+  };
+  const renderManualEditButton = (subTask: AnyRecord, week: string, cell: AnyRecord | undefined) => {
+    if (!canManualEdit) return null;
+    const hasExecutor = Boolean((subTask.executors || []).length);
+    return (
+      <Button
+        size="small"
+        type={cell?.update_id ? 'default' : 'dashed'}
+        disabled={!hasExecutor || !week}
+        onClick={() => openManualEditor(subTask, week, cell)}
+      >
+        {cell?.update_id ? '编辑' : '补录'}
+      </Button>
+    );
+  };
   return (
     <PageShell title="历史时间线" subtitle="按任务层级展开，以周为主轴查看完成内容、遗留事项和附件">
+      {canManualEdit ? (
+        <Alert
+          className="mb16"
+          type="warning"
+          showIcon
+          message="临时历史补录功能仅用于 4.8.1 数据修复，下个版本将关闭。"
+          description="保存会直接写入正式已提交周更新，不会导入历史附件，也不会发送飞书通知。"
+        />
+      ) : null}
       <Card id="timeline-guide-card" loading={loading} className="timeline-card">
         {mobileLayout ? (
           <div id="timeline-guide-matrix" className="mobile-timeline">
@@ -3355,6 +2768,11 @@ function TimelinePage() {
                               <span>遗留事项</span><Typography.Text>{cell?.risk || '-'}</Typography.Text>
                               <span>附件</span><Typography.Text>{renderAttachmentLinks(attachments)}</Typography.Text>
                             </div>
+                            {canManualEdit ? (
+                              <div className="mobile-card-actions">
+                                {renderManualEditButton(subTask, selectedWeek || '', cell)}
+                              </div>
+                            ) : null}
                           </div>
                         );
                       })}
@@ -3381,7 +2799,14 @@ function TimelinePage() {
                       <div className="timeline-grid timeline-subtask-title" style={{ gridTemplateColumns: timelineColumns }}>
                         <strong><span className="timeline-code">{subTask.code}</span>{renderTimelineText(subTask.title)}</strong>
                         <span>{subTask.started_at || '-'}</span>
-                        {weeks.map((week) => <span key={week}><StatusTag value={subTask.status} /></span>)}
+                        {weeks.map((week) => (
+                          <span key={week}>
+                            <Space direction="vertical" size={4}>
+                              <StatusTag value={subTask.cells?.[week]?.status || subTask.status} />
+                              {renderManualEditButton(subTask, week, subTask.cells?.[week])}
+                            </Space>
+                          </span>
+                        ))}
                       </div>
                       {[
                         ['完成内容', 'this_week'],
@@ -3409,6 +2834,48 @@ function TimelinePage() {
           ))}
         </div>}
       </Card>
+      <Modal
+        title={manualTarget ? `${manualTarget.subTask.code} ${manualTarget.subTask.title} / ${manualTarget.week}` : '补录历史周更新'}
+        open={Boolean(manualTarget)}
+        onCancel={() => setManualTarget(null)}
+        onOk={saveManualUpdate}
+        okText="保存为已提交"
+        cancelText="取消"
+        confirmLoading={manualSaving}
+        width={720}
+        destroyOnClose
+      >
+        <Alert
+          className="mb16"
+          type="warning"
+          showIcon
+          message="临时补录"
+          description="本功能只用于补齐历史周数据，保存后会作为正式已提交周更新落库。"
+        />
+        <Form form={manualForm} layout="vertical">
+          <Form.Item name="assignee_id" label="执行人" rules={[{ required: true, message: '请选择执行人' }]}>
+            <Select
+              options={(manualTarget?.executors || []).map((person: AnyRecord) => ({ value: person.id, label: person.name }))}
+              onChange={(value) => fillManualFormForAssignee(manualTarget?.cell, value)}
+            />
+          </Form.Item>
+          <Form.Item name="progress" label="进度" rules={[{ required: true, message: '请填写进度' }]}>
+            <InputNumber min={0} max={100} addonAfter="%" className="full-width-control" />
+          </Form.Item>
+          <Form.Item name="this_week" label="本周完成内容">
+            <Input.TextArea rows={4} placeholder="补录该周实际完成内容" />
+          </Form.Item>
+          <Form.Item name="next_week" label="下周计划">
+            <Input.TextArea rows={3} placeholder="补录下一步计划" />
+          </Form.Item>
+          <Form.Item name="risk" label="遗留事项">
+            <Input.TextArea rows={3} placeholder="补录遗留事项或风险说明" />
+          </Form.Item>
+          <Form.Item name="needs_coordination" valuePropName="checked">
+            <Checkbox>需要协调</Checkbox>
+          </Form.Item>
+        </Form>
+      </Modal>
     </PageShell>
   );
 }
@@ -3425,6 +2892,8 @@ function Notifications() {
     department_task_split_required: '部门任务拆解提醒',
     department_task_due_soon: '部门任务临期提醒',
     risk_item_alert: '风险项提醒',
+    work_item_review_required: '待归类事项处理提醒',
+    work_item_auto_approved: '待归类事项自动同意提醒',
     lark_test_message: '历史测试卡片',
     weekly_update_reminder: '历史周更新模拟',
   };

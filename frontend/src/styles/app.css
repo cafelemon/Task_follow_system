@@ -430,10 +430,19 @@ body {
 
 .workbench-page {
   min-width: 0;
+  overflow-x: hidden;
+}
+
+.workbench-page .ant-collapse-content-box {
+  padding: 14px;
 }
 
 .workbench-hero-card .ant-card-body {
   padding: 18px;
+}
+
+.workbench-hero-card.compact .ant-card-body {
+  padding: 16px;
 }
 
 .workbench-hero {
@@ -443,8 +452,13 @@ body {
   align-items: center;
 }
 
+.workbench-hero.compact {
+  gap: 12px;
+}
+
 .workbench-hero h3 {
   margin: 4px 0;
+  overflow-wrap: anywhere;
 }
 
 .workbench-hero-actions {
@@ -504,6 +518,168 @@ body {
 
 .workbench-task-actions {
   width: 100%;
+}
+
+.workbench-compact-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  min-width: 0;
+}
+
+.workbench-entry-grid,
+.workbench-role-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+.workbench-role-card {
+  min-width: 0;
+}
+
+.workbench-role-card .ant-card-body {
+  padding: 16px;
+}
+
+.workbench-role-card-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.workbench-role-card-head > div {
+  min-width: 0;
+}
+
+.workbench-role-card-head h4 {
+  margin: 4px 0;
+  color: var(--ink-strong);
+  overflow-wrap: anywhere;
+}
+
+.workbench-role-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.workbench-role-metric {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+  min-height: 34px;
+  padding: 7px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.workbench-role-metric .ant-typography {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.workbench-role-metric.warning {
+  border-color: rgba(217, 119, 6, 0.28);
+  background: #fff7ed;
+}
+
+.workbench-role-metric.danger {
+  border-color: rgba(220, 38, 38, 0.25);
+  background: #fff1f2;
+}
+
+.workbench-role-metric.success {
+  border-color: rgba(22, 163, 74, 0.22);
+  background: #f0fdf4;
+}
+
+.workbench-priority-list {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.workbench-priority-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+  padding: 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.workbench-priority-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.workbench-priority-main .ant-typography {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.workbench-priority-title {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.workbench-priority-status {
+  justify-self: end;
+  max-width: 100%;
+}
+
+.workbench-priority-status .ant-tag {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.workbench-priority-actions,
+.workbench-role-actions {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+.workbench-role-empty {
+  display: grid;
+  align-items: center;
+}
+
+.workbench-role-empty .ant-empty {
+  margin: 0;
+}
+
+.workbench-role-empty .ant-empty-image {
+  height: 40px;
+  margin-bottom: 6px;
+}
+
+.observer-export-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.workbench-detail-collapse {
+  background: transparent;
+}
+
+.workbench-detail-collapse > .ant-collapse-item {
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: #fff;
+  overflow: hidden;
 }
 
 .mobile-secondary-link {
@@ -1026,6 +1202,10 @@ body {
   margin-bottom: 16px;
 }
 
+.full-width-control {
+  width: 100%;
+}
+
 .mt16 {
   margin-top: 16px;
 }
@@ -1443,6 +1623,43 @@ body {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .workbench-entry-grid,
+  .workbench-role-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .workbench-role-metrics {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .workbench-role-card .ant-card-body {
+    padding: 14px;
+  }
+
+  .workbench-role-card-head {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workbench-role-card-head > .ant-tag {
+    justify-self: start;
+  }
+
+  .workbench-priority-item {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+    padding: 9px;
+  }
+
+  .workbench-priority-title {
+    -webkit-line-clamp: 3;
+  }
+
+  .workbench-priority-status {
+    justify-self: start;
+  }
+
   .workbench-hero-actions,
   .workbench-hero-actions .ant-space-item,
   .workbench-hero-actions .ant-btn,
@@ -1454,8 +1671,30 @@ body {
   .workbench-task-actions,
   .workbench-task-actions .ant-space-item,
   .workbench-task-actions .ant-btn,
-  .workbench-task-actions .mobile-primary-link {
+  .workbench-task-actions .mobile-primary-link,
+  .workbench-priority-actions,
+  .workbench-priority-actions .ant-space-item,
+  .workbench-priority-actions .ant-btn,
+  .workbench-priority-actions .mobile-primary-link,
+  .workbench-priority-actions .mobile-secondary-link,
+  .workbench-role-actions,
+  .workbench-role-actions .ant-space-item,
+  .workbench-role-actions .ant-btn,
+  .workbench-role-actions .mobile-primary-link,
+  .workbench-role-actions .mobile-secondary-link {
     width: 100%;
+  }
+
+  .observer-export-controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .observer-export-controls .ant-btn {
+    width: 100%;
+  }
+
+  .workbench-detail-collapse .ant-collapse-header {
+    align-items: flex-start !important;
   }
 
   .weekly-report-current-head {
@@ -1850,8 +2089,45 @@ body {
     width: 100%;
   }
 
-  .attachment-row {
+.attachment-row {
     align-items: flex-start;
     flex-direction: column;
+  }
+}
+
+.work-item-settings-list {
+  display: grid;
+  gap: 12px;
+}
+
+.work-item-settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.work-item-settings-row p {
+  margin: 4px 0 0;
+}
+
+.work-item-settings-switches {
+  justify-content: flex-end;
+}
+
+@media (max-width: 900px) {
+  .work-item-settings-row {
+    grid-template-columns: 1fr;
+  }
+
+  .work-item-settings-switches {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    width: 100%;
+    justify-content: stretch;
   }
 }

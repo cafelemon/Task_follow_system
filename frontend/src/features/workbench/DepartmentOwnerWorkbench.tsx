@@ -131,7 +131,7 @@ function DepartmentWorkItemMaterials({ materials }: { materials?: AnyRecord | nu
   const summary = materials?.summary || {};
   if (!categories.length) {
     return (
-      <Card className="business-card workbench-section-card">
+      <Card id="department-work-item-materials" className="business-card workbench-section-card">
         <div className="workbench-section-head">
           <div>
             <Typography.Title level={4}>本周周报材料统计</Typography.Title>
@@ -144,7 +144,7 @@ function DepartmentWorkItemMaterials({ materials }: { materials?: AnyRecord | nu
     );
   }
   return (
-    <Card className="business-card workbench-section-card">
+    <Card id="department-work-item-materials" className="business-card workbench-section-card">
       <Space direction="vertical" size={16} className="full-width">
         <div className="workbench-section-head">
           <div>

@@ -333,6 +333,24 @@ class WorkItemEvent(Base):
     actor: Mapped[User | None] = relationship()
 
 
+class WorkItemAutomationSetting(Base):
+    __tablename__ = "work_item_automation_settings"
+    __table_args__ = (
+        UniqueConstraint("user_id", "category", name="uq_work_item_automation_user_category"),
+        Index("ix_work_item_automation_user", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    category: Mapped[str] = mapped_column(String(60))
+    notify_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    auto_approve_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    user: Mapped[User] = relationship()
+
+
 class WeeklyReport(Base):
     __tablename__ = "weekly_reports"
     __table_args__ = (

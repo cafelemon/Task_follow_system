@@ -94,6 +94,19 @@ def ensure_runtime_schema() -> None:
         """,
         "CREATE INDEX IF NOT EXISTS ix_work_item_events_work_item_id ON work_item_events(work_item_id)",
         """
+        CREATE TABLE IF NOT EXISTS work_item_automation_settings (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            category VARCHAR(60) NOT NULL,
+            notify_enabled BOOLEAN DEFAULT FALSE NOT NULL,
+            auto_approve_enabled BOOLEAN DEFAULT FALSE NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ,
+            CONSTRAINT uq_work_item_automation_user_category UNIQUE (user_id, category)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_work_item_automation_user ON work_item_automation_settings(user_id)",
+        """
         CREATE TABLE IF NOT EXISTS weekly_reports (
             id SERIAL PRIMARY KEY,
             user_id INTEGER NOT NULL REFERENCES users(id),

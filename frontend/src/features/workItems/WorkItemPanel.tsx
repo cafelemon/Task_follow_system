@@ -2,6 +2,7 @@ import { Alert, Button, Card, DatePicker, Empty, Form, Input, Modal, Select, Spa
 import { useEffect, useState } from 'react';
 import { getJson, postJson } from '../../api/client';
 import type { AnyRecord } from '../../api/client';
+import { WorkItemAutomationSettingsModal } from './WorkItemAutomationSettingsModal';
 
 const statusColors: Record<string, string> = {
   pending: 'blue',
@@ -63,7 +64,8 @@ function WorkItemCard({
   onReject,
   onClose,
   onConvert,
-  onCrossApprove
+  onCrossApprove,
+  onRevokeAutoApproval
 }: {
   item: AnyRecord;
   onWithdraw?: (item: AnyRecord) => void;
@@ -72,10 +74,12 @@ function WorkItemCard({
   onClose?: (item: AnyRecord) => void;
   onConvert?: (item: AnyRecord) => void;
   onCrossApprove?: (item: AnyRecord) => void;
+  onRevokeAutoApproval?: (item: AnyRecord) => void;
 }) {
   const event = latestEvent(item);
   const crossApproval = item.cross_department_approval;
   const isConverted = item.status === 'converted_to_sub_task';
+  const autoApproval = item.auto_approval;
   return (
     <div className="work-item-card">
       <Space direction="vertical" size={10} className="full-width">
@@ -139,6 +143,17 @@ function WorkItemCard({
             description={event.comment || '无补充说明'}
           />
         ) : null}
+        {autoApproval ? (
+          <Alert
+            type="success"
+            showIcon
+            message={`${autoApproval.action_label || '已自动同意'}：${autoApproval.source?.name || '-'}`}
+            description={`${autoApproval.comment || '按个人设置自动同意'} · ${formatDateTime(autoApproval.created_at)}`}
+            action={item.can_revoke_auto_approval ? (
+              <Button size="small" onClick={() => onRevokeAutoApproval?.(item)}>撤销自动同意</Button>
+            ) : undefined}
+          />
+        ) : null}
         {isConverted ? (
           <Alert type="success" showIcon message="已转为正式子任务，后续进展请通过正式子任务周更新跟踪。" />
         ) : null}
@@ -181,6 +196,7 @@ export function WorkItemPanel({ refreshKey = 0 }: { refreshKey?: number }) {
   const [crossForm] = Form.useForm();
   const [crossTarget, setCrossTarget] = useState<AnyRecord | null>(null);
   const [crossApproving, setCrossApproving] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const reload = async () => {
     setLoading(true);
@@ -249,6 +265,24 @@ export function WorkItemPanel({ refreshKey = 0 }: { refreshKey?: number }) {
           await reload();
         } catch (error: any) {
           message.error(error?.response?.data?.detail || '处理失败');
+        }
+      }
+    });
+  };
+
+  const revokeAutoApproval = (item: AnyRecord) => {
+    Modal.confirm({
+      title: '撤销自动同意？',
+      content: '撤销后该事项回到待确认状态，可继续人工同意、退回或关闭。历史自动同意和撤销记录会保留。',
+      okText: '确认撤销',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          await postJson(`/work-items/${item.id}/revoke-auto-approval`, {});
+          message.success('已撤销自动同意');
+          await reload();
+        } catch (error: any) {
+          message.error(error?.response?.data?.detail || '撤销失败');
         }
       }
     });
@@ -358,7 +392,10 @@ export function WorkItemPanel({ refreshKey = 0 }: { refreshKey?: number }) {
           <Typography.Title level={4}>待归类事项</Typography.Title>
           <Typography.Text type="secondary">按当前身份叠加展示你的提交、待处理事项和部门记录；只围绕部门任务补充、常态化、跨部门协作和周报补充四类事项。</Typography.Text>
         </div>
-        <Button onClick={reload} loading={loading}>刷新</Button>
+        <Space wrap>
+          <Button onClick={() => setSettingsOpen(true)}>审批与通知设置</Button>
+          <Button onClick={reload} loading={loading}>刷新</Button>
+        </Space>
       </div>
       <Alert
         type="info"
@@ -373,7 +410,14 @@ export function WorkItemPanel({ refreshKey = 0 }: { refreshKey?: number }) {
             label: `我的提交 ${submitted.length}`,
             children: submitted.length ? (
               <div className="work-item-list">
-                {submitted.map((item) => <WorkItemCard key={item.id} item={item} onWithdraw={withdraw} />)}
+                {submitted.map((item) => (
+                  <WorkItemCard
+                    key={item.id}
+                    item={item}
+                    onWithdraw={withdraw}
+                    onRevokeAutoApproval={revokeAutoApproval}
+                  />
+                ))}
               </div>
             ) : (
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无已提交待归类事项；临时、补充或周报材料可从工作台上方入口登记。" />
@@ -393,6 +437,7 @@ export function WorkItemPanel({ refreshKey = 0 }: { refreshKey?: number }) {
                     onClose={(target) => openActionModal(target, 'close')}
                     onConvert={openConvertModal}
                     onCrossApprove={openCrossApproveModal}
+                    onRevokeAutoApproval={revokeAutoApproval}
                   />
                 ))}
               </div>
@@ -414,6 +459,7 @@ export function WorkItemPanel({ refreshKey = 0 }: { refreshKey?: number }) {
                       onReject={(target) => openActionModal(target, 'reject')}
                       onClose={(target) => openActionModal(target, 'close')}
                       onCrossApprove={openCrossApproveModal}
+                      onRevokeAutoApproval={revokeAutoApproval}
                     />
                   ))}
                 </div>
@@ -551,6 +597,10 @@ export function WorkItemPanel({ refreshKey = 0 }: { refreshKey?: number }) {
           </Form>
         </Space>
       </Modal>
+      <WorkItemAutomationSettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
     </Card>
   );
 }

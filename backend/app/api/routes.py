@@ -12,7 +12,8 @@ from fastapi import APIRouter, Cookie, Depends, File, HTTPException, Request, Re
 from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 from app import __version__
 from app.core.config import settings
@@ -38,8 +39,10 @@ from app.models.entities import (
     User,
     UserGuideProgress,
     WeeklyUpdate,
+    WeeklyUpdateRevision,
     WeeklyReport,
     WorkItem,
+    WorkItemAutomationSetting,
     WorkItemEvent,
 )
 from app.schemas.dto import (
@@ -50,6 +53,7 @@ from app.schemas.dto import (
     GoalCreate,
     GuideProgressUpdate,
     LoginRequest,
+    ManualHistoryWeeklyUpdateUpsert,
     OnboardingUpdate,
     OpenIdLoginRequest,
     ParentTaskCreate,
@@ -65,17 +69,22 @@ from app.schemas.dto import (
     WeeklyReportConfirm,
     WeeklyUpdateUpsert,
     WorkItemAction,
+    WorkItemAutomationSettingsUpdate,
     WorkItemConvertToSubTask,
     WorkItemCrossDepartmentApprove,
     WorkItemCreate,
 )
 from app.services.business import (
+    build_work_item_card,
     build_meeting_board,
     current_week_key,
+    deliver_notification,
     executor_people,
     generate_code,
+    notification_exists,
     owner_people,
     people_payload,
+    prepare_notification_link,
     send_department_task_due_reminders,
     send_department_task_split_notifications,
     send_risk_item_notifications,
@@ -152,24 +161,24 @@ ALLOWED_ATTACHMENT_EXTENSIONS = {
     ".xlsx",
     ".zip",
 }
-CURRENT_ONBOARDING_VERSION = "1"
-EXECUTIVE_FRAMEWORK_GUIDE = ("executive_framework", "1")
-EXECUTIVE_MEETING_GUIDE = ("executive_meeting_board", "1")
-DEPARTMENT_OWNER_FRAMEWORK_GUIDE = ("department_owner_framework", "1")
-DEPARTMENT_OWNER_PARENT_TASKS_GUIDE = ("department_owner_parent_tasks", "1")
-DEPARTMENT_OWNER_DEPARTMENT_TASKS_GUIDE = ("department_owner_department_tasks", "1")
-DEPARTMENT_OWNER_SUB_TASKS_GUIDE = ("department_owner_sub_tasks", "1")
-TASK_OWNER_FRAMEWORK_GUIDE = ("task_owner_framework", "1")
-TASK_OWNER_DEPARTMENT_TASKS_GUIDE = ("task_owner_department_tasks", "1")
-TASK_OWNER_SUB_TASKS_GUIDE = ("task_owner_sub_tasks", "1")
-EXECUTOR_FRAMEWORK_GUIDE = ("executor_framework", "1")
-EXECUTOR_SUB_TASKS_GUIDE = ("executor_sub_tasks", "1")
-OBSERVER_FRAMEWORK_GUIDE = ("observer_framework", "1")
-OBSERVER_MEETING_GUIDE = ("observer_meeting_board", "1")
-OBSERVER_PARENT_TASKS_GUIDE = ("observer_parent_tasks", "1")
-OBSERVER_DEPARTMENT_TASKS_GUIDE = ("observer_department_tasks", "1")
-OBSERVER_TIMELINE_GUIDE = ("observer_timeline", "1")
-OBSERVER_SUB_TASKS_GUIDE = ("observer_sub_tasks", "1")
+CURRENT_ONBOARDING_VERSION = "2"
+EXECUTIVE_FRAMEWORK_GUIDE = ("executive_framework", "2")
+EXECUTIVE_MEETING_GUIDE = ("executive_meeting_board", "2")
+DEPARTMENT_OWNER_FRAMEWORK_GUIDE = ("department_owner_framework", "2")
+DEPARTMENT_OWNER_PARENT_TASKS_GUIDE = ("department_owner_parent_tasks", "2")
+DEPARTMENT_OWNER_DEPARTMENT_TASKS_GUIDE = ("department_owner_department_tasks", "2")
+DEPARTMENT_OWNER_SUB_TASKS_GUIDE = ("department_owner_sub_tasks", "2")
+TASK_OWNER_FRAMEWORK_GUIDE = ("task_owner_framework", "2")
+TASK_OWNER_DEPARTMENT_TASKS_GUIDE = ("task_owner_department_tasks", "2")
+TASK_OWNER_SUB_TASKS_GUIDE = ("task_owner_sub_tasks", "2")
+EXECUTOR_FRAMEWORK_GUIDE = ("executor_framework", "2")
+EXECUTOR_SUB_TASKS_GUIDE = ("executor_sub_tasks", "2")
+OBSERVER_FRAMEWORK_GUIDE = ("observer_framework", "2")
+OBSERVER_MEETING_GUIDE = ("observer_meeting_board", "2")
+OBSERVER_PARENT_TASKS_GUIDE = ("observer_parent_tasks", "2")
+OBSERVER_DEPARTMENT_TASKS_GUIDE = ("observer_department_tasks", "2")
+OBSERVER_TIMELINE_GUIDE = ("observer_timeline", "2")
+OBSERVER_SUB_TASKS_GUIDE = ("observer_sub_tasks", "2")
 
 
 def feature_payload(db: Session, user: User) -> dict:
@@ -450,6 +459,12 @@ WORK_ITEM_EVENT_LABELS = {
     "converted_to_sub_task": "已转子任务",
     "cross_submitter_department_approved": "提交部门已确认",
     "cross_collaboration_department_approved": "协作部门已确认",
+    "auto_approved": "已自动同意",
+    "auto_approval_revoked": "已撤销自动同意",
+    "cross_submitter_department_auto_approved": "提交部门已自动确认",
+    "cross_collaboration_department_auto_approved": "协作部门已自动确认",
+    "work_item_review_notification": "已发送处理通知",
+    "work_item_auto_approved_notification": "已发送自动同意通知",
     "escalated_department_task": "历史上提记录",
     "escalated_parent_task": "历史上提记录",
 }
@@ -625,6 +640,10 @@ def weekly_update_attachments(db: Session, update_id: int | None) -> list[Attach
             .order_by(Attachment.id)
         ).all()
     )
+
+
+def can_manual_edit_history_weekly_update(user: User) -> bool:
+    return user.is_admin or "permission.manage" in user_permission_codes(user)
 
 
 def is_path_inside(path: Path, root: Path) -> bool:
@@ -959,10 +978,27 @@ def is_department_owner_for_department(user: User, department_id: int | None) ->
     return bool(department_id and user.department_id == department_id and "department_owner" in user_role_codes(user))
 
 
+def department_owner_users(db: Session, department_id: int | None) -> list[User]:
+    if not department_id:
+        return []
+    return list(
+        db.scalars(
+            select(User)
+            .join(User.roles)
+            .where(
+                Role.code == "department_owner",
+                User.department_id == department_id,
+                User.status != "disabled",
+            )
+            .order_by(User.id)
+        ).unique().all()
+    )
+
+
 def can_handle_work_item(user: User, item: WorkItem) -> bool:
     if item.category == WORK_ITEM_CATEGORY_DEPARTMENT_TASK:
         return bool(item.related_department_task and user.id in task_owner_ids(item.related_department_task))
-    if item.category == WORK_ITEM_CATEGORY_DEPARTMENT_ROUTINE:
+    if item.category in {WORK_ITEM_CATEGORY_DEPARTMENT_ROUTINE, WORK_ITEM_CATEGORY_WEEKLY_SUPPLEMENT}:
         return is_department_owner_for_department(user, item.department_id)
     if item.category == WORK_ITEM_CATEGORY_CROSS_DEPARTMENT:
         return (
@@ -974,6 +1010,64 @@ def can_handle_work_item(user: User, item: WorkItem) -> bool:
 
 def can_manage_any_work_item(user: User) -> bool:
     return user.is_admin or "permission.manage" in user_permission_codes(user)
+
+
+def can_configure_work_item_automation(user: User) -> bool:
+    roles = user_role_codes(user)
+    return bool(
+        can_manage_any_work_item(user)
+        or "department_owner" in roles
+        or "task_owner" in roles
+    )
+
+
+def work_item_setting_for_user(db: Session, user_id: int, category: str) -> WorkItemAutomationSetting | None:
+    return db.scalar(
+        select(WorkItemAutomationSetting).where(
+            WorkItemAutomationSetting.user_id == user_id,
+            WorkItemAutomationSetting.category == category,
+        )
+    )
+
+
+def work_item_setting_enabled(db: Session, user: User, category: str, field: str) -> bool:
+    setting = work_item_setting_for_user(db, user.id, category)
+    return bool(setting and getattr(setting, field, False))
+
+
+def work_item_responsible_users_by_side(db: Session, item: WorkItem) -> dict[str, list[User]]:
+    if item.category == WORK_ITEM_CATEGORY_DEPARTMENT_TASK:
+        return {"default": owner_people(item.related_department_task) if item.related_department_task else []}
+    if item.category in {WORK_ITEM_CATEGORY_DEPARTMENT_ROUTINE, WORK_ITEM_CATEGORY_WEEKLY_SUPPLEMENT}:
+        return {"default": department_owner_users(db, item.department_id)}
+    if item.category == WORK_ITEM_CATEGORY_CROSS_DEPARTMENT:
+        return {
+            WORK_ITEM_CROSS_SUBMITTER_SIDE: department_owner_users(db, item.department_id),
+            WORK_ITEM_CROSS_COLLABORATION_SIDE: department_owner_users(db, item.collaboration_department_id),
+        }
+    return {"default": []}
+
+
+def dedupe_users(users: list[User]) -> list[User]:
+    deduped: dict[int, User] = {}
+    for user in users:
+        if user and user.status != "disabled":
+            deduped[user.id] = user
+    return list(deduped.values())
+
+
+def work_item_responsible_users(db: Session, item: WorkItem) -> list[User]:
+    people: list[User] = []
+    for users in work_item_responsible_users_by_side(db, item).values():
+        people.extend(users)
+    return dedupe_users(people)
+
+
+def first_auto_approval_actor(db: Session, users: list[User], category: str) -> User | None:
+    for user in sorted(dedupe_users(users), key=lambda item: item.id):
+        if work_item_setting_enabled(db, user, category, "auto_approve_enabled"):
+            return user
+    return None
 
 
 def cross_department_missing_sides(item: WorkItem) -> list[str]:
@@ -1071,6 +1165,67 @@ def serialize_work_item_event(event: WorkItemEvent) -> dict:
     }
 
 
+def auto_approval_events(item: WorkItem) -> list[WorkItemEvent]:
+    return [
+        event for event in (item.events or [])
+        if event.action in {
+            "auto_approved",
+            "cross_submitter_department_auto_approved",
+            "cross_collaboration_department_auto_approved",
+        }
+    ]
+
+
+def active_auto_approval_events(item: WorkItem) -> list[WorkItemEvent]:
+    events = list(item.events or [])
+    last_revoke_index = -1
+    for index, event in enumerate(events):
+        if event.action == "auto_approval_revoked":
+            last_revoke_index = index
+    return [
+        event for event in events[last_revoke_index + 1:]
+        if event.action in {
+            "auto_approved",
+            "cross_submitter_department_auto_approved",
+            "cross_collaboration_department_auto_approved",
+        }
+    ]
+
+
+def can_revoke_auto_approval(user: User | None, item: WorkItem) -> bool:
+    if not user or item.status != WORK_ITEM_STATUS_APPROVED:
+        return False
+    if item.status in {
+        WORK_ITEM_STATUS_WITHDRAWN,
+        WORK_ITEM_STATUS_REJECTED,
+        WORK_ITEM_STATUS_CLOSED,
+        WORK_ITEM_STATUS_CONVERTED_TO_SUB_TASK,
+    }:
+        return False
+    events = active_auto_approval_events(item)
+    if not events:
+        return False
+    if can_manage_any_work_item(user):
+        return True
+    return any(event.actor_id == user.id for event in events)
+
+
+def serialize_auto_approval(item: WorkItem, viewer: User | None = None) -> dict | None:
+    events = active_auto_approval_events(item)
+    if not events:
+        return None
+    latest = events[-1]
+    return {
+        "source": serialize_user_brief(latest.actor),
+        "source_id": latest.actor_id,
+        "action": latest.action,
+        "action_label": WORK_ITEM_EVENT_LABELS.get(latest.action, latest.action),
+        "comment": latest.comment,
+        "created_at": latest.created_at.isoformat() if latest.created_at else None,
+        "can_revoke": can_revoke_auto_approval(viewer, item),
+    }
+
+
 def serialize_cross_department_approval(item: WorkItem, viewer: User | None = None) -> dict | None:
     if item.category != WORK_ITEM_CATEGORY_CROSS_DEPARTMENT:
         return None
@@ -1141,6 +1296,8 @@ def serialize_work_item(item: WorkItem, viewer: User | None = None) -> dict:
         "can_reject": bool(can_manage and is_pending),
         "can_close": bool(can_manage and is_pending),
         "can_convert_to_sub_task": can_convert,
+        "can_revoke_auto_approval": can_revoke_auto_approval(viewer, item) if viewer else False,
+        "auto_approval": serialize_auto_approval(item, viewer),
         "can_cross_department_approve": bool(cross_approval_sides),
         "cross_department_approval_sides": cross_approval_sides,
         "cross_department_approval": serialize_cross_department_approval(item, viewer),
@@ -1169,6 +1326,149 @@ def department_task_supplement_items(db: Session, task_ids: list[int]) -> list[W
             .order_by(WorkItem.created_at.desc(), WorkItem.id.desc())
         ).all()
     )
+
+
+def work_item_related_text(item: WorkItem) -> str:
+    if item.related_department_task:
+        task = item.related_department_task
+        return f"{task.code or '-'} {task.title or '-'}"
+    if item.collaboration_department:
+        return f"协作部门：{item.collaboration_department.name}"
+    if item.department:
+        return f"提交部门：{item.department.name}"
+    return "未关联对象"
+
+
+def serialize_work_item_automation_setting(
+    setting: WorkItemAutomationSetting | None,
+    category: str,
+) -> dict:
+    return {
+        "category": category,
+        "category_label": WORK_ITEM_CATEGORY_LABELS.get(category, category),
+        "notify_enabled": bool(setting.notify_enabled) if setting else False,
+        "auto_approve_enabled": bool(setting.auto_approve_enabled) if setting else False,
+        "updated_at": setting.updated_at.isoformat() if setting and setting.updated_at else None,
+    }
+
+
+def auto_approve_work_item_if_enabled(db: Session, item: WorkItem) -> list[User]:
+    if item.status != WORK_ITEM_STATUS_PENDING:
+        return []
+    now = datetime.now(timezone.utc)
+    actors: list[User] = []
+    if item.category == WORK_ITEM_CATEGORY_CROSS_DEPARTMENT:
+        if not item.department_id or not item.collaboration_department_id:
+            return []
+        users_by_side = work_item_responsible_users_by_side(db, item)
+        for side, action, default_comment in [
+            (WORK_ITEM_CROSS_SUBMITTER_SIDE, "cross_submitter_department_auto_approved", "提交部门按个人设置自动确认"),
+            (WORK_ITEM_CROSS_COLLABORATION_SIDE, "cross_collaboration_department_auto_approved", "协作部门按个人设置自动确认"),
+        ]:
+            if side not in cross_department_missing_sides(item):
+                continue
+            actor = first_auto_approval_actor(db, users_by_side.get(side, []), item.category)
+            if not actor:
+                continue
+            if side == WORK_ITEM_CROSS_SUBMITTER_SIDE:
+                item.submitter_department_approved_by_id = actor.id
+                item.submitter_department_approved_at = now
+                item.submitter_department_approval_comment = "按个人设置自动同意"
+            else:
+                item.collaboration_department_approved_by_id = actor.id
+                item.collaboration_department_approved_at = now
+                item.collaboration_department_approval_comment = "按个人设置自动同意"
+            actors.append(actor)
+            db.add(
+                WorkItemEvent(
+                    work_item_id=item.id,
+                    actor_id=actor.id,
+                    action=action,
+                    comment=default_comment,
+                )
+            )
+        if item.submitter_department_approved_by_id and item.collaboration_department_approved_by_id:
+            item.status = WORK_ITEM_STATUS_APPROVED
+            item.updated_at = now
+            actor = actors[-1] if actors else None
+            db.add(
+                WorkItemEvent(
+                    work_item_id=item.id,
+                    actor_id=actor.id if actor else None,
+                    action=WORK_ITEM_STATUS_APPROVED,
+                    comment="跨部门协作双确认完成",
+                )
+            )
+        elif actors:
+            item.updated_at = now
+        return actors
+
+    actor = first_auto_approval_actor(db, work_item_responsible_users(db, item), item.category)
+    if not actor:
+        return []
+    item.status = WORK_ITEM_STATUS_APPROVED
+    item.updated_at = now
+    db.add(
+        WorkItemEvent(
+            work_item_id=item.id,
+            actor_id=actor.id,
+            action="auto_approved",
+            comment="按个人设置自动同意",
+        )
+    )
+    return [actor]
+
+
+async def send_work_item_notifications(
+    db: Session,
+    item: WorkItem,
+    auto_approved_actor_ids: set[int] | None = None,
+) -> None:
+    auto_approved_actor_ids = auto_approved_actor_ids or set()
+    category_label = WORK_ITEM_CATEGORY_LABELS.get(item.category, item.category)
+    related = work_item_related_text(item)
+    for target in work_item_responsible_users(db, item):
+        if not work_item_setting_enabled(db, target, item.category, "notify_enabled"):
+            continue
+        is_auto = target.id in auto_approved_actor_ids
+        if item.status == WORK_ITEM_STATUS_APPROVED and not is_auto:
+            continue
+        notification_type = "work_item_auto_approved" if is_auto else "work_item_review_required"
+        dedupe_key = f"{notification_type}:{item.id}:{target.id}"
+        if notification_exists(db, dedupe_key):
+            continue
+        record = NotificationRecord(
+            target_user_id=target.id,
+            notification_type=notification_type,
+            related_type="work_item",
+            related_id=item.id,
+            title="待归类事项已自动同意" if is_auto else "待归类事项待处理",
+            send_status="pending",
+            dedupe_key=dedupe_key,
+        )
+        web_url = prepare_notification_link(db, record, target, "/workbench")
+        ok, send_status, result = await deliver_notification(
+            target,
+            card=build_work_item_card(
+                item,
+                web_url,
+                category_label=category_label,
+                related_text=related,
+                auto_approved=is_auto,
+                actor_name=target.name if is_auto else None,
+            ),
+        )
+        record.send_status = send_status
+        record.result = result
+        action = "work_item_auto_approved_notification" if is_auto else "work_item_review_notification"
+        db.add(
+            WorkItemEvent(
+                work_item_id=item.id,
+                actor_id=target.id,
+                action=action,
+                comment=f"飞书通知：{send_status} / {result}",
+            )
+        )
 
 
 def department_work_item_materials(
@@ -1631,6 +1931,168 @@ def weekly_report_snapshot_payload(report: WeeklyReport) -> dict:
     }
 
 
+def month_week_keys(month_text: str | None = None) -> tuple[str, list[str]]:
+    target_month = month_text or date.today().strftime("%Y-%m")
+    if not re.fullmatch(r"\d{4}-\d{2}", target_month):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="month 格式应为 YYYY-MM")
+    year_text, month_value_text = target_month.split("-", 1)
+    year_value = int(year_text)
+    month_value = int(month_value_text)
+    if month_value < 1 or month_value > 12:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="month 格式应为 YYYY-MM")
+    first_day = date(year_value, month_value, 1)
+    next_month = date(year_value + (1 if month_value == 12 else 0), 1 if month_value == 12 else month_value + 1, 1)
+    first_monday = first_day + timedelta(days=(7 - first_day.weekday()) % 7)
+    weeks: list[str] = []
+    current = first_monday
+    while current < next_month:
+        weeks.append(week_key_from_date(current))
+        current += timedelta(days=7)
+    return target_month, weeks
+
+
+def weekly_report_payload_for_export(db: Session, user: User, week_key: str) -> tuple[dict, bool]:
+    report = db.scalar(
+        select(WeeklyReport).where(
+            WeeklyReport.user_id == user.id,
+            WeeklyReport.week_key == week_key,
+            WeeklyReport.status == "confirmed",
+        )
+    )
+    if report:
+        return weekly_report_snapshot_payload(report), True
+    return weekly_report_draft_payload(db, user, week_key), False
+
+
+def monthly_export_prefix(lines: list[str], confirmed: bool) -> str:
+    if confirmed:
+        return "\n".join(lines) if lines else "-"
+    if lines:
+        return "[未确认草稿]\n" + "\n".join(lines)
+    return "[未确认草稿]\n-"
+
+
+def monthly_export_task_lines(payload: dict) -> list[str]:
+    lines = []
+    for item in payload.get("task_updates") or []:
+        this_week = (item.get("this_week") or "").strip()
+        if not this_week:
+            continue
+        task_label = weekly_report_task_label(item.get("sub_task"))
+        department_label = weekly_report_task_label(item.get("department_task"))
+        lines.append(f"- {task_label}：{this_week}（部门任务：{department_label}）")
+    return lines
+
+
+def monthly_export_work_item_lines(payload: dict) -> list[str]:
+    lines = []
+    for group in payload.get("work_items_by_category") or []:
+        category_label = group.get("category_label") or group.get("category") or "归类项"
+        for item in group.get("items") or []:
+            related_parts = []
+            related_task = item.get("related_department_task") or {}
+            collaboration_department = item.get("collaboration_department") or {}
+            if related_task:
+                related_parts.append(f"部门任务：{weekly_report_task_label(related_task)}")
+            if collaboration_department:
+                related_parts.append(f"协作部门：{collaboration_department.get('name') or '-'}")
+            status_text = item.get("status_label") or item.get("status") or "-"
+            suffix = f"（状态：{status_text}"
+            if related_parts:
+                suffix += "，" + "，".join(related_parts)
+            suffix += "）"
+            lines.append(f"- [{category_label}] {weekly_report_item_text(item.get('content'))}{suffix}")
+    return lines
+
+
+def monthly_export_next_plan_lines(payload: dict) -> list[str]:
+    return [
+        f"- {weekly_report_task_label(item.get('sub_task'))}：{weekly_report_item_text(item.get('next_week'))}"
+        for item in payload.get("next_plans") or []
+    ]
+
+
+def monthly_export_risk_lines(payload: dict) -> list[str]:
+    lines = []
+    for item in payload.get("risk_texts") or []:
+        risk_text = item.get("risk") or ("需协调，未填写具体说明" if item.get("needs_coordination") else None)
+        lines.append(f"- {weekly_report_task_label(item.get('sub_task'))}：{weekly_report_item_text(risk_text)}")
+    for item in payload.get("risk_items") or []:
+        lines.append(
+            f"- {item.get('title') or '-'}（来源：{item.get('sub_task') or '-'}，等级：{item.get('level') or '-'}，状态：{item.get('status') or '-'}）"
+        )
+    return lines
+
+
+def build_monthly_weekly_report_workbook(db: Session, month_text: str | None = None) -> tuple[str, BytesIO]:
+    target_month, week_keys = month_week_keys(month_text)
+    users = db.scalars(
+        select(User)
+        .where(User.status == "active")
+        .order_by(User.name, User.id)
+    ).all()
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "月度周报"
+    headers = ["姓名", "工作内容", *[f"W{key.split('-W', 1)[1]}" for key in week_keys]]
+    sheet.append(headers)
+
+    content_rows = ["任务线完成", "归类项完成", "下周计划", "遗留事项"]
+    row_index = 2
+    for user in users:
+        start_row = row_index
+        for content_row in content_rows:
+            sheet.cell(row=row_index, column=1, value=user.name)
+            sheet.cell(row=row_index, column=2, value=content_row)
+            for offset, week_key in enumerate(week_keys, start=3):
+                payload, confirmed = weekly_report_payload_for_export(db, user, week_key)
+                if content_row == "任务线完成":
+                    lines = monthly_export_task_lines(payload)
+                elif content_row == "归类项完成":
+                    lines = monthly_export_work_item_lines(payload)
+                elif content_row == "下周计划":
+                    lines = monthly_export_next_plan_lines(payload)
+                else:
+                    lines = monthly_export_risk_lines(payload)
+                sheet.cell(row=row_index, column=offset, value=monthly_export_prefix(lines, confirmed))
+            row_index += 1
+        sheet.merge_cells(start_row=start_row, start_column=1, end_row=row_index - 1, end_column=1)
+
+    header_fill = PatternFill("solid", fgColor="D9F2EF")
+    label_fill = PatternFill("solid", fgColor="F7FAFC")
+    border_side = Side(style="thin", color="A6A6A6")
+    border = Border(left=border_side, right=border_side, top=border_side, bottom=border_side)
+    for row in sheet.iter_rows(min_row=1, max_row=max(row_index - 1, 1), min_col=1, max_col=len(headers)):
+        for cell in row:
+            cell.border = border
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+            if cell.row == 1:
+                cell.fill = header_fill
+                cell.font = Font(bold=True)
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+            elif cell.column == 1:
+                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                cell.font = Font(bold=True)
+            elif cell.column == 2:
+                cell.fill = label_fill
+                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    sheet.column_dimensions["A"].width = 14
+    sheet.column_dimensions["B"].width = 14
+    for column_index in range(3, len(headers) + 1):
+        column_letter = sheet.cell(row=1, column=column_index).column_letter
+        sheet.column_dimensions[column_letter].width = 34
+    for row in range(2, max(row_index, 2)):
+        sheet.row_dimensions[row].height = 72
+    sheet.freeze_panes = "C2"
+
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    return target_month, output
+
+
 def weekly_report_copy_text_payload(report: WeeklyReport) -> str:
     if report.task_update_snapshot is not None and report.work_item_snapshot is not None:
         return build_weekly_report_export_text(weekly_report_snapshot_payload(report))
@@ -1945,6 +2407,7 @@ def build_department_board_payload(db: Session, user: User, week_key: str) -> di
 
 def build_timeline_matrix_payload(db: Session, user: User) -> dict:
     sub_tasks = visible_sub_tasks(db, user)
+    can_manual_edit = can_manual_edit_history_weekly_update(user)
     current_monday = monday_from_week_key(current_week_key())
     earliest_weeks = earliest_update_week_map(db, sub_tasks)
     start_dates = [task_start_date(task, earliest_weeks) for task in sub_tasks] or [current_monday]
@@ -1952,17 +2415,18 @@ def build_timeline_matrix_payload(db: Session, user: User) -> dict:
     if (current_monday - first_monday).days > 49:
         first_monday = current_monday - timedelta(days=49)
     weeks = week_keys_between(first_monday, current_monday)
-    updates = {
-        (update.sub_task_id, update.week_key): update
-        for update in db.scalars(
-            select(WeeklyUpdate).where(
-                WeeklyUpdate.sub_task_id.in_([task.id for task in sub_tasks] or [0]),
-                WeeklyUpdate.week_key.in_(weeks),
-            )
-        ).all()
-    }
+    updates_by_cell: dict[tuple[int, str], list[WeeklyUpdate]] = defaultdict(list)
+    for update in db.scalars(
+        select(WeeklyUpdate)
+        .where(
+            WeeklyUpdate.sub_task_id.in_([task.id for task in sub_tasks] or [0]),
+            WeeklyUpdate.week_key.in_(weeks),
+        )
+        .order_by(WeeklyUpdate.assignee_id, WeeklyUpdate.id)
+    ).all():
+        updates_by_cell[(update.sub_task_id, update.week_key)].append(update)
     attachments_by_update: dict[int, list[dict]] = defaultdict(list)
-    update_ids = [update.id for update in updates.values()]
+    update_ids = [update.id for updates in updates_by_cell.values() for update in updates]
     if update_ids:
         for attachment in db.scalars(
             select(Attachment).where(
@@ -1988,18 +2452,47 @@ def build_timeline_matrix_payload(db: Session, user: User) -> dict:
         )
         cells = {}
         for week in weeks:
-            update = updates.get((task.id, week))
+            cell_updates = updates_by_cell.get((task.id, week), [])
+            first_update = cell_updates[0] if cell_updates else None
+            attachments = [
+                attachment
+                for update in cell_updates
+                for attachment in attachments_by_update.get(update.id, [])
+            ]
             cells[week] = {
-                "this_week": update.this_week if update else None,
-                "risk": update.risk if update else None,
-                "attachments": attachments_by_update.get(update.id, []) if update else [],
+                "update_id": first_update.id if first_update else None,
+                "assignee_id": first_update.assignee_id if first_update else task.executor_id,
+                "status": first_update.status if first_update else "empty",
+                "progress": first_update.progress if first_update else 0,
+                "this_week": merge_weekly_update_field(cell_updates, "this_week"),
+                "next_week": merge_weekly_update_field(cell_updates, "next_week"),
+                "risk": merge_weekly_update_field(cell_updates, "risk"),
+                "needs_coordination": any(update.needs_coordination for update in cell_updates),
+                "attachments": attachments,
+                "updates": [
+                    {
+                        "id": update.id,
+                        "assignee_id": update.assignee_id,
+                        "assignee": update.assignee.name if update.assignee else None,
+                        "status": update.status,
+                        "progress": update.progress,
+                        "this_week": update.this_week,
+                        "next_week": update.next_week,
+                        "risk": update.risk,
+                        "needs_coordination": update.needs_coordination,
+                    }
+                    for update in cell_updates
+                ],
             }
+        executor_ids, executors, executor_names = people_payload(executor_people(task))
         department_node["sub_tasks"].append(
             {
                 "id": task.id,
                 "code": task.code,
                 "title": task.title,
-                "executor": people_payload(executor_people(task))[2],
+                "executor": executor_names,
+                "executor_ids": executor_ids,
+                "executors": executors,
                 "owner": people_payload(owner_people(task))[2],
                 "status": task.status,
                 "started_at": task_start_date(task, earliest_weeks).isoformat(),
@@ -2012,7 +2505,7 @@ def build_timeline_matrix_payload(db: Session, user: User) -> dict:
         for department_task in parent["department_tasks"]:
             department_task["sub_tasks"] = sorted(department_task["sub_tasks"], key=lambda item: item["code"])
         parents.append(parent)
-    return {"week_key": current_week_key(), "weeks": weeks, "parents": parents}
+    return {"week_key": current_week_key(), "weeks": weeks, "parents": parents, "can_manual_edit": can_manual_edit}
 
 
 @router.get("/health")
@@ -2604,6 +3097,60 @@ def work_item_options(
     }
 
 
+@router.get("/work-items/automation-settings")
+def get_work_item_automation_settings(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    if not can_configure_work_item_automation(current_user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="无权配置待归类事项审批与通知")
+    settings_by_category = {
+        setting.category: setting
+        for setting in db.scalars(
+            select(WorkItemAutomationSetting).where(WorkItemAutomationSetting.user_id == current_user.id)
+        ).all()
+    }
+    return {
+        "can_configure": True,
+        "settings": [
+            serialize_work_item_automation_setting(settings_by_category.get(option["value"]), option["value"])
+            for option in WORK_ITEM_CATEGORY_OPTIONS
+        ],
+    }
+
+
+@router.put("/work-items/automation-settings")
+def update_work_item_automation_settings(
+    payload: WorkItemAutomationSettingsUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    if not can_configure_work_item_automation(current_user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="无权配置待归类事项审批与通知")
+    incoming = {item.category: item for item in payload.settings}
+    invalid = set(incoming) - WORK_ITEM_CATEGORY_VALUES
+    if invalid:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="设置中包含不支持的事项类型")
+    now = datetime.now(timezone.utc)
+    for category in WORK_ITEM_CATEGORY_VALUES:
+        item = incoming.get(category)
+        existing = work_item_setting_for_user(db, current_user.id, category)
+        if not existing:
+            existing = WorkItemAutomationSetting(
+                user_id=current_user.id,
+                category=category,
+                notify_enabled=False,
+                auto_approve_enabled=False,
+            )
+            db.add(existing)
+        if item:
+            existing.notify_enabled = bool(item.notify_enabled)
+            existing.auto_approve_enabled = bool(item.auto_approve_enabled)
+        existing.updated_at = now
+    db.commit()
+    return get_work_item_automation_settings(db, current_user)
+
+
 @router.get("/work-items")
 def list_work_items(
     scope: str = "submitted",
@@ -2654,7 +3201,7 @@ def list_work_items(
 
 
 @router.post("/work-items", status_code=201)
-def create_work_item(
+async def create_work_item(
     payload: WorkItemCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -2714,6 +3261,9 @@ def create_work_item(
             comment=WORK_ITEM_CATEGORY_LABELS[item.category],
         )
     )
+    auto_approved_actors = auto_approve_work_item_if_enabled(db, item)
+    db.flush()
+    await send_work_item_notifications(db, item, {actor.id for actor in auto_approved_actors})
     db.commit()
     db.refresh(item)
     return serialize_work_item(item, current_user)
@@ -2742,6 +3292,63 @@ def withdraw_work_item(
             actor_id=current_user.id,
             action="withdrawn",
             comment="提交人撤回",
+        )
+    )
+    db.commit()
+    db.refresh(item)
+    return serialize_work_item(item, current_user)
+
+
+@router.post("/work-items/{work_item_id}/revoke-auto-approval")
+def revoke_work_item_auto_approval(
+    work_item_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    item = db.get(WorkItem, work_item_id)
+    if not item:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Work item not found")
+    if item.status != WORK_ITEM_STATUS_APPROVED:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="只有已自动同意且未转任务的事项可以撤销")
+    events = active_auto_approval_events(item)
+    if not events:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="该事项没有可撤销的自动同意记录")
+    is_admin_actor = can_manage_any_work_item(current_user)
+    if not is_admin_actor and not any(event.actor_id == current_user.id for event in events):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="只能由触发自动同意的责任人撤销")
+
+    now = datetime.now(timezone.utc)
+    revoked_parts: list[str] = []
+    if item.category == WORK_ITEM_CATEGORY_CROSS_DEPARTMENT:
+        auto_actions_by_actor = {
+            event.action for event in events
+            if is_admin_actor or event.actor_id == current_user.id
+        }
+        if "cross_submitter_department_auto_approved" in auto_actions_by_actor:
+            item.submitter_department_approved_by_id = None
+            item.submitter_department_approved_at = None
+            item.submitter_department_approval_comment = None
+            revoked_parts.append("提交部门自动确认")
+        if "cross_collaboration_department_auto_approved" in auto_actions_by_actor:
+            item.collaboration_department_approved_by_id = None
+            item.collaboration_department_approved_at = None
+            item.collaboration_department_approval_comment = None
+            revoked_parts.append("协作部门自动确认")
+        if not revoked_parts:
+            raise HTTPException(status.HTTP_409_CONFLICT, detail="没有可由当前用户撤销的自动确认侧")
+        item.status = WORK_ITEM_STATUS_PENDING
+    else:
+        if item.category == WORK_ITEM_CATEGORY_DEPARTMENT_TASK and item.converted_sub_task_id:
+            raise HTTPException(status.HTTP_409_CONFLICT, detail="已转正式子任务的事项不能撤销自动同意")
+        item.status = WORK_ITEM_STATUS_PENDING
+        revoked_parts.append("自动同意")
+    item.updated_at = now
+    db.add(
+        WorkItemEvent(
+            work_item_id=item.id,
+            actor_id=current_user.id,
+            action="auto_approval_revoked",
+            comment=f"撤销{'、'.join(revoked_parts)}",
         )
     )
     db.commit()
@@ -3030,6 +3637,25 @@ def weekly_report_draft_copy_text(
         "source": "draft",
         "text": build_weekly_report_export_text(draft),
     }
+
+
+@router.get("/weekly-reports/monthly-export")
+def monthly_weekly_report_export(
+    month: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    roles = user_role_codes(current_user)
+    permissions = user_permission_codes(current_user)
+    if "observer" not in roles and not current_user.is_admin and "permission.manage" not in permissions:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="无权导出月度周报")
+    target_month, output = build_monthly_weekly_report_workbook(db, month)
+    filename = f"weekly-report-{target_month}.xlsx"
+    return Response(
+        content=output.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
 
 
 @router.post("/weekly-reports/confirm")
@@ -4041,6 +4667,79 @@ def save_weekly_update(
         submit=payload.submit,
     )
     return serialize_weekly_update_for_user(db, update, current_user)
+
+
+@router.post("/weekly-updates/manual-history-upsert")
+def manual_history_weekly_update_upsert(
+    payload: ManualHistoryWeeklyUpdateUpsert,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    if not can_manual_edit_history_weekly_update(current_user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No manual history update access")
+    week_key = validate_week_key(payload.week_key)
+    sub_task = db.get(SubTask, payload.sub_task_id)
+    if (
+        not sub_task
+        or not sub_task.department_task
+        or sub_task.department_task.status == "archived"
+        or not sub_task.department_task.parent_task
+        or sub_task.department_task.parent_task.status == "archived"
+    ):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Sub task not found")
+    if not can_access_sub_task(db, current_user, sub_task):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to this sub task")
+    assignee = db.get(User, payload.assignee_id)
+    if not assignee:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Assignee not found")
+    if assignee.id not in sub_task_executor_ids(sub_task):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="请选择该子任务的执行人")
+    update_record = db.scalar(
+        select(WeeklyUpdate).where(
+            WeeklyUpdate.sub_task_id == sub_task.id,
+            WeeklyUpdate.week_key == week_key,
+            WeeklyUpdate.assignee_id == assignee.id,
+        )
+    )
+    if update_record:
+        db.add(
+            WeeklyUpdateRevision(
+                weekly_update_id=update_record.id,
+                editor_id=current_user.id,
+                snapshot=serialize_weekly_update(update_record),
+            )
+        )
+    else:
+        update_record = WeeklyUpdate(
+            sub_task_id=sub_task.id,
+            assignee_id=assignee.id,
+            week_key=week_key,
+            submitter_id=current_user.id,
+        )
+        db.add(update_record)
+    update_record.progress = payload.progress
+    update_record.this_week = payload.this_week
+    update_record.next_week = payload.next_week
+    update_record.risk = payload.risk
+    update_record.risk_level = None
+    update_record.needs_coordination = payload.needs_coordination
+    update_record.status = "submitted"
+    update_record.submitter_id = current_user.id
+    update_record.submitted_at = datetime.now(timezone.utc)
+    db.flush()
+    db.add(
+        TaskEvent(
+            object_type="sub_task",
+            object_id=sub_task.id,
+            event_type="manual_history_weekly_update_upsert",
+            title="临时补录历史周更新",
+            content=f"{week_key} / {assignee.name}",
+            actor_id=current_user.id,
+        )
+    )
+    db.commit()
+    db.refresh(update_record)
+    return serialize_weekly_update_for_user(db, update_record, current_user)
 
 
 @router.post("/weekly-updates/{weekly_update_id}/attachments")

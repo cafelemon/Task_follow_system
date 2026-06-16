@@ -16,6 +16,7 @@ from app.models.entities import (
     User,
     WeeklyUpdate,
     WeeklyUpdateRevision,
+    WorkItem,
 )
 from app.services.auth import create_lark_login_url
 from app.services.lark_client import lark_client
@@ -629,6 +630,39 @@ def build_risk_item_card(risk: RiskItem, trigger: str, web_url: str) -> dict:
         ],
         note="请由风险责任人牵头处理，并在系统中持续更新状态和关闭说明。",
         action_text="查看并处理风险",
+        web_url=web_url,
+    )
+
+
+def build_work_item_card(
+    item: WorkItem,
+    web_url: str,
+    *,
+    category_label: str,
+    related_text: str,
+    auto_approved: bool = False,
+    actor_name: str | None = None,
+) -> dict:
+    submitter_name = item.submitter.name if item.submitter else "-"
+    department_name = item.department.name if item.department else "-"
+    title = "待归类事项已自动同意" if auto_approved else "待归类事项待处理"
+    note = (
+        f"已按你的个人设置自动同意。触发人：{actor_name or '-'}。如需补救，可进入系统撤销自动同意。"
+        if auto_approved
+        else "请进入工作台查看事项详情，并按职责确认、退回、关闭或转为正式子任务。"
+    )
+    return _business_card(
+        template="green" if auto_approved else "blue",
+        title=title,
+        summary=f"**{category_label}**\n\n{item.content or '-'}",
+        fields=[
+            ("提交人", submitter_name),
+            ("提交部门", department_name),
+            ("关联对象", related_text),
+            ("统计周次", item.week_key or "-"),
+        ],
+        note=note,
+        action_text="查看待归类事项",
         web_url=web_url,
     )
 

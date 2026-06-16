@@ -1,129 +1,61 @@
-import {
-  Alert,
-  Button,
-  Card,
-  Col,
-  Empty,
-  Row,
-  Space,
-  Statistic,
-  Tag,
-  Typography
-} from 'antd';
-import { CheckCircleOutlined, RightOutlined, SafetyOutlined } from '@ant-design/icons';
+import { Alert, Button, Collapse, Space, Typography } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { getJson } from '../api/client';
 import type { AnyRecord } from '../api/client';
 import { PageShell } from '../components/PageShell';
-import { StatusTag } from '../components/StatusTag';
 import { DepartmentOwnerWorkbench } from '../features/workbench/DepartmentOwnerWorkbench';
+import { ExecutorWorkbenchCard } from '../features/workbench/ExecutorWorkbenchCard';
+import { ObserverWeeklyExportCard } from '../features/workbench/ObserverWeeklyExportCard';
+import { TaskOwnerWorkbenchCard } from '../features/workbench/TaskOwnerWorkbenchCard';
+import { WorkItemWorkbenchCard } from '../features/workbench/WorkItemWorkbenchCard';
+import { WorkItemAutomationSettingsModal } from '../features/workItems/WorkItemAutomationSettingsModal';
 import { WorkItemPanel } from '../features/workItems/WorkItemPanel';
 import { WorkItemSubmitModal } from '../features/workItems/WorkItemSubmitModal';
-import {
-  buildSubTaskUpdatePath,
-  daysUntil,
-  isDueSoonTask,
-  isExecutorTask,
-  relationLabels,
-  renderPeople
-} from '../ui/taskDisplay';
+import { isDueSoonTask, isExecutorTask } from '../ui/taskDisplay';
 
 type WorkbenchProps = {
   auth?: AnyRecord | null;
   onCreateRisk: (task: AnyRecord) => void;
 };
 
-function WorkbenchTaskCard({ task, onCreateRisk }: { task: AnyRecord; onCreateRisk: (task: AnyRecord) => void }) {
-  const relationMeta = relationLabels[String(task.viewer_relation)] || { label: '-', color: 'default' };
-  const dueDays = daysUntil(task.due_date);
-  return (
-    <div className="workbench-task-card">
-      <Space direction="vertical" size={10} className="full-width">
-        <div className="workbench-task-card-head">
-          <div>
-            <Typography.Text className="task-code">{task.code || '-'}</Typography.Text>
-            <Typography.Title level={5}>{task.title || '-'}</Typography.Title>
-          </div>
-          <Tag color={relationMeta.color}>{relationMeta.label}</Tag>
-        </div>
-        <div className="mobile-task-meta compact">
-          <span>部门任务</span><Typography.Text>{task.department_task || '-'}</Typography.Text>
-          <span>本周状态</span><div><StatusTag value={task.weekly_status} /></div>
-          <span>任务状态</span><div><StatusTag value={task.status} /></div>
-          <span>截止日期</span><Typography.Text>{task.due_date || '-'}</Typography.Text>
-          <span>负责人</span><div>{renderPeople(task.owners || task.owner)}</div>
-        </div>
-        {dueDays != null && dueDays >= 0 && dueDays <= 7 ? (
-          <Alert type={dueDays <= 1 ? 'warning' : 'info'} showIcon message={`距离截止还有 ${dueDays} 天`} />
-        ) : null}
-        <Space wrap className="workbench-task-actions">
-          {task.can_update_weekly ? (
-            <Link className="mobile-primary-link" to={buildSubTaskUpdatePath(task)}>填写本周更新</Link>
-          ) : task.can_reopen && task.status === 'completed' ? (
-            <Link className="mobile-primary-link" to={`/sub-tasks/${task.id}/update`}>处理完成状态</Link>
-          ) : (
-            <Tag>只读</Tag>
-          )}
-          {task.can_create_risk && task.status !== 'completed' ? (
-            <Button size="small" icon={<SafetyOutlined />} onClick={() => onCreateRisk(task)}>登记风险</Button>
-          ) : null}
-        </Space>
-      </Space>
-    </div>
-  );
+function userRoleCodes(auth?: AnyRecord | null) {
+  return new Set<string>((auth?.user?.roles || []).map((role: AnyRecord) => String(role.code)));
 }
 
-function WorkbenchTaskSection({
-  title,
-  description,
-  tasks,
-  emptyText,
-  onCreateRisk
-}: {
-  title: string;
-  description: string;
-  tasks: AnyRecord[];
-  emptyText: string;
-  onCreateRisk: (task: AnyRecord) => void;
-}) {
-  return (
-    <Card className="business-card workbench-section-card">
-      <div className="workbench-section-head">
-        <div>
-          <Typography.Title level={4}>{title}</Typography.Title>
-          <Typography.Text type="secondary">{description}</Typography.Text>
-        </div>
-        <Tag>{tasks.length}</Tag>
-      </div>
-      {tasks.length ? (
-        <div className="workbench-task-list">
-          {tasks.map((task) => <WorkbenchTaskCard key={task.id} task={task} onCreateRisk={onCreateRisk} />)}
-        </div>
-      ) : (
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={emptyText} />
-      )}
-    </Card>
-  );
+function userPermissionCodes(auth?: AnyRecord | null) {
+  return new Set<string>((auth?.user?.permissions || []).map((permission: AnyRecord | string) => (
+    typeof permission === 'string' ? permission : String(permission.code)
+  )));
 }
 
 export function Workbench({ auth, onCreateRisk }: WorkbenchProps) {
   const [tasks, setTasks] = useState<AnyRecord[]>([]);
+  const [submittedItems, setSubmittedItems] = useState<AnyRecord[]>([]);
+  const [receivedItems, setReceivedItems] = useState<AnyRecord[]>([]);
+  const [departmentTasks, setDepartmentTasks] = useState<AnyRecord[]>([]);
   const [departmentOwnerData, setDepartmentOwnerData] = useState<AnyRecord | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
   const [workItemOpen, setWorkItemOpen] = useState(false);
+  const [automationSettingsOpen, setAutomationSettingsOpen] = useState(false);
   const [workItemRefreshKey, setWorkItemRefreshKey] = useState(0);
+  const [openDetailKeys, setOpenDetailKeys] = useState<string[]>([]);
 
   const reload = async () => {
     setLoading(true);
     setError(false);
     try {
-      const [taskData, departmentOwnerPayload] = await Promise.all([
+      const [taskData, submittedData, receivedData, departmentTaskPayload, departmentOwnerPayload] = await Promise.all([
         getJson<AnyRecord[]>('/sub-tasks'),
+        getJson<AnyRecord[]>('/work-items?scope=submitted').catch(() => []),
+        getJson<AnyRecord[]>('/work-items?scope=received').catch(() => []),
+        getJson<AnyRecord>('/department-tasks/overview').catch(() => null),
         getJson<AnyRecord>('/workbench/department-owner').catch(() => null),
       ]);
       setTasks(taskData);
+      setSubmittedItems(submittedData);
+      setReceivedItems(receivedData);
+      setDepartmentTasks(departmentTaskPayload?.department_tasks || []);
       setDepartmentOwnerData(departmentOwnerPayload);
     } catch {
       setError(true);
@@ -136,90 +68,106 @@ export function Workbench({ auth, onCreateRisk }: WorkbenchProps) {
     reload();
   }, []);
 
+  const roles = useMemo(() => userRoleCodes(auth), [auth]);
+  const permissions = useMemo(() => userPermissionCodes(auth), [auth]);
   const executionTasks = useMemo(() => tasks.filter(isExecutorTask), [tasks]);
   const pendingTasks = executionTasks.filter((task) => task.status !== 'completed' && task.weekly_update_status !== 'submitted');
   const draftTasks = executionTasks.filter((task) => task.weekly_update_status === 'draft');
   const dueSoonTasks = executionTasks.filter(isDueSoonTask);
-  const completedTasks = executionTasks.filter((task) => task.status === 'completed');
   const riskReadyTasks = executionTasks.filter((task) => task.status !== 'completed' && task.can_create_risk);
+  const hasExecutorRole = roles.has('executor');
+  const hasTaskOwnerRole = roles.has('task_owner');
+  const hasObserverRole = roles.has('observer');
+  const canConfigureWorkItemAutomation = Boolean(
+    auth?.user?.is_admin
+    || roles.has('department_owner')
+    || roles.has('task_owner')
+    || permissions.has('permission.manage')
+  );
   const weekKey = auth?.week_key || '-';
   const userName = auth?.user?.name || '-';
+
+  const openWorkItemDetails = () => {
+    setOpenDetailKeys((current) => Array.from(new Set([...current, 'work-items'])));
+    requestAnimationFrame(() => document.getElementById('work-items')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  };
 
   return (
     <PageShell
       title="工作台"
-      subtitle="个人行动入口：按身份叠加展示本人正式任务、待归类事项、部门关注项和周报材料"
       extra={<Button onClick={reload} loading={loading}>刷新</Button>}
     >
       <Space direction="vertical" size={16} className="full-width workbench-page">
-        <Card className="business-card workbench-hero-card">
-          <div className="workbench-hero">
-            <div>
-              <Typography.Text type="secondary">当前人员</Typography.Text>
-              <Typography.Title level={3}>{userName}</Typography.Title>
-              <Typography.Text type="secondary">统计周次：{weekKey}</Typography.Text>
-            </div>
-            <Space wrap className="workbench-hero-actions">
-              <Link className="mobile-primary-link" to="/sub-tasks">进入子任务执行</Link>
-              <Link className="mobile-secondary-link" to="/weekly-report">查看/复制本周周报材料</Link>
-              <Button icon={<RightOutlined />} onClick={() => setWorkItemOpen(true)}>提交待归类事项</Button>
-            </Space>
-          </div>
-        </Card>
-        {error ? <Alert type="warning" showIcon message="工作台数据加载失败，请刷新重试。" /> : null}
-        <Row gutter={[16, 16]}>
-          <Col xs={12} md={6}><Card className="workbench-metric-card"><Statistic title="本周待更新" value={pendingTasks.length} /></Card></Col>
-          <Col xs={12} md={6}><Card className="workbench-metric-card"><Statistic title="草稿未提交" value={draftTasks.length} /></Card></Col>
-          <Col xs={12} md={6}><Card className="workbench-metric-card"><Statistic title="临近截止" value={dueSoonTasks.length} /></Card></Col>
-          <Col xs={12} md={6}><Card className="workbench-metric-card"><Statistic title="已完成" value={completedTasks.length} prefix={<CheckCircleOutlined />} /></Card></Col>
-        </Row>
-        {!executionTasks.length && !loading ? (
-          <Alert
-            type="info"
-            showIcon
-            message="当前没有需要你执行的子任务。"
-            description="你仍可提交待归类事项，或进入周报中心查看和复制本人材料；如果你同时是负责人，对应待处理事项会在工作台下方展示。"
-          />
-        ) : null}
-        <DepartmentOwnerWorkbench data={departmentOwnerData} />
-        <div id="work-items">
-          <WorkItemPanel refreshKey={workItemRefreshKey} />
+        <div className="workbench-compact-meta">
+          <Typography.Text type="secondary">当前人员：<Typography.Text strong>{userName}</Typography.Text></Typography.Text>
+          <Typography.Text type="secondary">统计周次：<Typography.Text strong>{weekKey}</Typography.Text></Typography.Text>
         </div>
-        <WorkbenchTaskSection
-          title="本周待更新"
-          description="正式提交后，本周提醒才会停止；保存草稿不算提交。"
-          tasks={pendingTasks}
-          emptyText="本周没有待提交的执行任务。"
-          onCreateRisk={onCreateRisk}
-        />
-        <WorkbenchTaskSection
-          title="草稿未提交"
-          description="这里显示已保存草稿但尚未正式提交的任务。"
-          tasks={draftTasks}
-          emptyText="没有草稿未提交任务。"
-          onCreateRisk={onCreateRisk}
-        />
-        <WorkbenchTaskSection
-          title="临近截止"
-          description="距离截止 7 天内的未完成执行任务。"
-          tasks={dueSoonTasks}
-          emptyText="当前没有临近截止的执行任务。"
-          onCreateRisk={onCreateRisk}
-        />
-        <WorkbenchTaskSection
-          title="风险与卡点入口"
-          description="遗留事项不等于风险；影响和可能性明确时，从这里登记风险。"
-          tasks={riskReadyTasks}
-          emptyText="当前没有可登记风险的执行任务。"
-          onCreateRisk={onCreateRisk}
+        {error ? <Alert type="warning" showIcon message="工作台数据加载失败，请刷新重试。" /> : null}
+        <div className="workbench-entry-grid">
+          <WorkItemWorkbenchCard
+            submittedItems={submittedItems}
+            receivedItems={receivedItems}
+            onSubmitWorkItem={() => setWorkItemOpen(true)}
+            onOpenWorkItems={openWorkItemDetails}
+            onOpenAutomationSettings={canConfigureWorkItemAutomation ? () => setAutomationSettingsOpen(true) : undefined}
+          />
+          {hasObserverRole ? <ObserverWeeklyExportCard /> : null}
+          <ExecutorWorkbenchCard
+            executionTasks={executionTasks}
+            pendingTasks={pendingTasks}
+            draftTasks={draftTasks}
+            dueSoonTasks={dueSoonTasks}
+            riskReadyTasks={riskReadyTasks}
+            hasExecutorRole={hasExecutorRole}
+            onCreateRisk={onCreateRisk}
+          />
+          <TaskOwnerWorkbenchCard
+            tasks={tasks}
+            receivedItems={receivedItems}
+            departmentTasks={departmentTasks}
+            hasTaskOwnerRole={hasTaskOwnerRole}
+            onOpenWorkItems={openWorkItemDetails}
+          />
+        </div>
+        <Collapse
+          className="workbench-detail-collapse"
+          activeKey={openDetailKeys}
+          onChange={(keys) => setOpenDetailKeys(Array.isArray(keys) ? keys.map(String) : [String(keys)])}
+          items={[
+            {
+              key: 'work-items',
+              label: '完整处理面板：待归类事项',
+              children: (
+                <div id="work-items">
+                  <WorkItemPanel refreshKey={workItemRefreshKey} />
+                </div>
+              )
+            },
+            ...(departmentOwnerData?.can_view ? [
+              {
+                key: 'department-owner',
+                label: '部门负责人详细面板：完整部门材料',
+                children: (
+                  <div id="department-owner-details">
+                    <DepartmentOwnerWorkbench data={departmentOwnerData} />
+                  </div>
+                )
+              }
+            ] : [])
+          ]}
         />
         <WorkItemSubmitModal
           open={workItemOpen}
           onCancel={() => setWorkItemOpen(false)}
-          onSubmitted={() => {
+          onSubmitted={async () => {
             setWorkItemOpen(false);
             setWorkItemRefreshKey((current) => current + 1);
+            await reload();
           }}
+        />
+        <WorkItemAutomationSettingsModal
+          open={automationSettingsOpen}
+          onClose={() => setAutomationSettingsOpen(false)}
         />
       </Space>
     </PageShell>
