@@ -1,4 +1,4 @@
-# 4.0.0 生产离线部署与升级操作手册
+# 5.0.0 生产离线部署与升级操作手册
 
 本手册适用于将离线包复制到生产机 `/data/jiafei/taskfollow` 后，从解压开始部署或升级。正式公网入口为 `https://task.citronmicrobot.com:4442`；NAT 将公网 `4442` 映射到生产机 `10.10.20.100:442`；生产机 Nginx 再反代到本系统 Docker 内网入口 `127.0.0.1:28081`。离线镜像包按生产机架构 `linux/amd64` 构建。
 
@@ -6,8 +6,8 @@
 
 ```bash
 cd /data/jiafei/taskfollow
-tar -xzf task-follow-system-4.0.0-prod-offline-YYYYMMDD.tar.gz
-cd task-follow-system-4.0.0
+tar -xzf task-follow-system-5.0.0-prod-offline-YYYYMMDD.tar.gz
+cd task-follow-system-5.0.0
 chmod 600 env_of
 ```
 
@@ -25,8 +25,16 @@ TASK_FOLLOW_DOCKER_HTTP_PORT=28081
 TASK_FOLLOW_ATTACHMENT_HOST_PATH=/data/jiafei/taskfollow/data/attachments
 TASK_FOLLOW_WEB_BASE_URL=https://task.citronmicrobot.com:4442
 TASK_FOLLOW_LARK_OAUTH_REDIRECT_URI=https://task.citronmicrobot.com:4442/api/auth/lark-oauth/callback
+TASK_FOLLOW_SCHEDULER_ENABLED=true
 TASK_FOLLOW_NOTIFICATION_DELIVERY_MODE=all
+TASK_FOLLOW_NOTIFICATION_ALLOWLIST_EMAILS=
 TASK_FOLLOW_COOKIE_SECURE=true
+```
+
+5.0.0 离线包包含当前本机数据库快照，文件位置形如：
+
+```text
+database/task_follow_5_0_0_prod_data_YYYYMMDD.dump
 ```
 
 创建稳定附件目录。数据库使用 Docker volume，不在版本目录里；附件使用宿主机目录，本版固定到 `/data/jiafei/taskfollow/data/attachments`，避免以后换版本目录时附件目录跟着变化。
@@ -44,7 +52,7 @@ cp -a /data/jiafei/taskfollow/task-follow-system-*/data/attachments/. /data/jiaf
 ## 2. 加载离线镜像
 
 ```bash
-docker load -i docker-images/task-follow-system-4.0.0-images.tar
+docker load -i docker-images/task-follow-system-5.0.0-images.tar
 docker images | grep task-follow-system
 docker images | grep -E 'postgres|nginx'
 ```
@@ -97,7 +105,7 @@ curl --noproxy '*' -sS http://127.0.0.1:28081/api/health
 期望返回：
 
 ```json
-{"status":"ok","version":"4.0.0"}
+{"status":"ok","version":"5.0.0"}
 ```
 
 如果本机之前已有同名服务，先不要删除 volume。需要重启时只执行：
@@ -162,7 +170,7 @@ curl --noproxy '*' -sS https://task.citronmicrobot.com:4442/api/health
 期望返回：
 
 ```json
-{"status":"ok","version":"4.0.0"}
+{"status":"ok","version":"5.0.0"}
 ```
 
 检查 OAuth redirect：
@@ -212,16 +220,16 @@ python3 scripts/preflight_prod_check.py --env-file env_of --base-url https://tas
 - `db:missing_open_id`：补齐相关人员 open_id 后再运行预检。
 - `compose:*`：检查是否使用 `docker compose --env-file env_of ...`，以及 `env_of` 是否包含生产值。
 
-## 8. 导入本机业务数据
+## 8. 恢复本机业务数据
 
-生产包只包含代码、配置和镜像。若生产数据库是新 volume，需要单独复制本机导出的 PostgreSQL dump，并在生产目录恢复。
+5.0.0 生产包已经包含本机导出的 PostgreSQL dump，用于同步本轮补齐后的历史周更新和当前业务数据。若本次需要以包内数据库覆盖生产数据库，先确认生产端已备份，再执行恢复。
 
-将 dump 文件复制到生产目录后执行：
+在解压后的版本目录执行：
 
 ```bash
-cd /data/jiafei/taskfollow/task-follow-system-4.0.0
+cd /data/jiafei/taskfollow/task-follow-system-5.0.0
 docker compose --env-file env_of -f deploy/docker-compose.yml stop backend
-docker compose --env-file env_of -f deploy/docker-compose.yml cp task_follow_prod_data_YYYYMMDD.dump postgres:/tmp/task_follow.dump
+docker compose --env-file env_of -f deploy/docker-compose.yml cp database/task_follow_5_0_0_prod_data_YYYYMMDD.dump postgres:/tmp/task_follow.dump
 docker compose --env-file env_of -f deploy/docker-compose.yml exec -T postgres pg_restore -U task_user -d task_follow --clean --if-exists --no-owner --no-acl --exit-on-error /tmp/task_follow.dump
 docker compose --env-file env_of -f deploy/docker-compose.yml start backend
 ```

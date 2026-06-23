@@ -11,7 +11,6 @@ import {
   Empty,
   Form,
   Input,
-  InputNumber,
   Layout,
   Menu,
   Modal,
@@ -1351,6 +1350,14 @@ function DepartmentTasks() {
   const [subTaskEditForm] = Form.useForm();
   const departmentTasks: AnyRecord[] = data?.department_tasks || [];
   const peopleOptions = personOptions(people);
+  const ownedDepartmentTasks = departmentTasks.filter((task) => task.viewer_is_direct_owner);
+  const departmentScopeTasks = departmentTasks.filter((task) => !task.viewer_is_direct_owner && task.viewer_is_department_scope);
+  const globalDepartmentTasks = departmentTasks.filter((task) => !task.viewer_is_direct_owner && !task.viewer_is_department_scope);
+  const departmentTaskGroups = [
+    { key: 'owned', title: '我负责', description: '本人是任务负责人的部门任务，优先拆解和跟进', items: ownedDepartmentTasks },
+    { key: 'department', title: '本部门任务汇总', description: '本部门相关重点工作，只展示后端允许的操作', items: departmentScopeTasks },
+    { key: 'global', title: '全公司查看', description: '全局权限下可查看的其它部门任务', items: globalDepartmentTasks },
+  ].filter((group) => group.items.length);
 
   useEffect(() => {
     if (!splitting) return;
@@ -1405,10 +1412,16 @@ function DepartmentTasks() {
     subTaskEditForm.resetFields();
     await reload();
   };
+  const relationTag = (row: AnyRecord) => (
+    <Tag color={row.viewer_is_direct_owner ? 'blue' : row.viewer_is_department_scope ? 'green' : 'default'}>
+      {row.viewer_relation_label || '-'}
+    </Tag>
+  );
   const departmentTaskColumns: ColumnsType<AnyRecord> = [
     { title: '任务编号', dataIndex: 'code', width: 106 },
     { title: '部门任务', dataIndex: 'title', width: 220, ellipsis: true, render: renderEllipsis },
     { title: '所属母任务', dataIndex: 'parent_task', width: 190, ellipsis: true, render: renderEllipsis },
+    { title: '范围', dataIndex: 'viewer_relation_label', width: 112, render: (_: unknown, row) => relationTag(row) },
     { title: '负责部门', dataIndex: 'departments', width: 160, responsive: ['lg'], render: renderDepartments },
     { title: '任务负责人', dataIndex: 'owners', width: 138, render: renderPeople },
     { title: '状态', dataIndex: 'status', width: 96, render: (value) => <StatusTag value={value} /> },
@@ -1484,6 +1497,8 @@ function DepartmentTasks() {
           <div className="mobile-task-meta">
             <span>母任务</span>
             <Typography.Text>{row.parent_task || '-'}</Typography.Text>
+            <span>范围</span>
+            <div>{relationTag(row)}</div>
             <span>负责部门</span>
             <div>{renderDepartments(row.departments || row.department)}</div>
             <span>负责人</span>
@@ -1514,6 +1529,71 @@ function DepartmentTasks() {
       </Card>
     );
   };
+  const renderMobileDepartmentTaskGroup = (group: { key: string; title: string; description: string; items: AnyRecord[] }) => (
+    <section key={group.key} className="mobile-department-task-list">
+      <div className="mobile-subtask-section-title">
+        {renderTableHeader(group.title, group.items.length, group.description)}
+      </div>
+      <Space direction="vertical" size={12} className="full-width">
+        {group.items.map(renderMobileDepartmentTask)}
+      </Space>
+    </section>
+  );
+  const renderDesktopDepartmentTaskGroup = (group: { key: string; title: string; description: string; items: AnyRecord[] }) => (
+    <Card key={group.key} className="business-card">
+      <Table
+        rowKey="id"
+        dataSource={group.items}
+        columns={departmentTaskColumns}
+        className="business-table"
+        tableLayout="fixed"
+        scroll={{ x: 978 }}
+        title={() => renderTableHeader(group.title, group.items.length, group.description)}
+        expandable={{
+          expandedRowRender: (row) => (
+            <Space direction="vertical" size={12} className="full-width">
+              <Table
+                rowKey="id"
+                size="small"
+                pagination={false}
+                dataSource={row.sub_tasks || []}
+                className="business-table nested-table"
+                columns={[
+                  { title: '子任务编号', dataIndex: 'code', width: 124 },
+                  { title: '具体任务', dataIndex: 'title', width: 210, ellipsis: true, render: renderEllipsis },
+                  { title: '执行人', dataIndex: 'executors', width: 124, render: renderPeople },
+                  { title: '本周完成内容', dataIndex: 'weekly_this_week', width: 190, render: renderBlankEllipsis },
+                  { title: '遗留事项', dataIndex: 'weekly_risk', width: 190, render: renderBlankEllipsis },
+                  { title: '截止日期', dataIndex: 'due_date', width: 104, responsive: ['lg'] },
+                  {
+                    title: '操作',
+                    width: 82,
+                    render: (_: unknown, subTask: AnyRecord) => (
+                      <Button size="small" disabled={!row.can_split} onClick={() => openSubTaskEdit(subTask)}>
+                        编辑
+                      </Button>
+                    )
+                  }
+                ]}
+                tableLayout="fixed"
+                scroll={{ x: 1112 }}
+              />
+              <Card size="small" title={`部门任务补充记录（${(row.work_item_supplements || []).length}）`}>
+                {(row.work_item_supplements || []).length ? (
+                  <Space direction="vertical" size={10} className="full-width">
+                    {(row.work_item_supplements || []).map(renderWorkItemSupplement)}
+                  </Space>
+                ) : (
+                  <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无部门任务补充记录" />
+                )}
+              </Card>
+            </Space>
+          ),
+          rowExpandable: (row) => Boolean((row.sub_tasks || []).length || (row.work_item_supplements || []).length)
+        }}
+      />
+    </Card>
+  );
   return (
     <PageShell title="部门任务总览" subtitle="按部门直接查看部门级任务，展开后查看有效子任务">
       <div className={data?.can_switch_department ? 'department-task-layout' : 'department-task-layout no-sidebar'}>
@@ -1542,70 +1622,18 @@ function DepartmentTasks() {
             />
           </aside>
         )}
-        <Space direction="vertical" size={16} className="full-width">
+        <Space id="department-owner-department-task-table" direction="vertical" size={16} className="full-width">
           {mobileLayout ? (
-            <section id="department-owner-department-task-table" className="mobile-department-task-list">
-              <div className="mobile-subtask-section-title">
-                {renderTableHeader('部门级任务', departmentTasks.length, '按负责部门和母任务快速扫描')}
-              </div>
-              <Space direction="vertical" size={12} className="full-width">
-                {departmentTasks.map(renderMobileDepartmentTask)}
-              </Space>
+            <>
+              {departmentTaskGroups.map(renderMobileDepartmentTaskGroup)}
               {!departmentTasks.length ? <Alert type="info" showIcon message="当前没有可查看的部门任务。" /> : null}
-            </section>
-          ) : <Card id="department-owner-department-task-table" className="business-card">
-            <Table
-              rowKey="id"
-              dataSource={departmentTasks}
-              columns={departmentTaskColumns}
-              className="business-table"
-              tableLayout="fixed"
-              scroll={{ x: 866 }}
-              title={() => renderTableHeader('部门级任务', departmentTasks.length, '按负责部门和母任务快速扫描')}
-              expandable={{
-                expandedRowRender: (row) => (
-                  <Space direction="vertical" size={12} className="full-width">
-                    <Table
-                      rowKey="id"
-                      size="small"
-                      pagination={false}
-                      dataSource={row.sub_tasks || []}
-                      className="business-table nested-table"
-                      columns={[
-                        { title: '子任务编号', dataIndex: 'code', width: 124 },
-                        { title: '具体任务', dataIndex: 'title', width: 210, ellipsis: true, render: renderEllipsis },
-                        { title: '执行人', dataIndex: 'executors', width: 124, render: renderPeople },
-                        { title: '本周完成内容', dataIndex: 'weekly_this_week', width: 190, render: renderBlankEllipsis },
-                        { title: '遗留事项', dataIndex: 'weekly_risk', width: 190, render: renderBlankEllipsis },
-                        { title: '截止日期', dataIndex: 'due_date', width: 104, responsive: ['lg'] },
-                        {
-                          title: '操作',
-                          width: 82,
-                          render: (_: unknown, subTask: AnyRecord) => (
-                            <Button size="small" disabled={!row.can_split} onClick={() => openSubTaskEdit(subTask)}>
-                              编辑
-                            </Button>
-                          )
-                        }
-                      ]}
-                      tableLayout="fixed"
-                      scroll={{ x: 1112 }}
-                    />
-                    <Card size="small" title={`部门任务补充记录（${(row.work_item_supplements || []).length}）`}>
-                      {(row.work_item_supplements || []).length ? (
-                        <Space direction="vertical" size={10} className="full-width">
-                          {(row.work_item_supplements || []).map(renderWorkItemSupplement)}
-                        </Space>
-                      ) : (
-                        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无部门任务补充记录" />
-                      )}
-                    </Card>
-                  </Space>
-                ),
-                rowExpandable: (row) => Boolean((row.sub_tasks || []).length || (row.work_item_supplements || []).length)
-              }}
-            />
-          </Card>}
+            </>
+          ) : (
+            <>
+              {departmentTaskGroups.map(renderDesktopDepartmentTaskGroup)}
+              {!departmentTasks.length ? <Alert type="info" showIcon message="当前没有可查看的部门任务。" /> : null}
+            </>
+          )}
         </Space>
       </div>
       <Modal
@@ -2640,101 +2668,17 @@ function MeetingBoardDepartment() {
 
 function TimelinePage() {
   const mobileLayout = useIsMobileLayout();
-  const { data, loading, reload } = useApi<AnyRecord>('/timeline/matrix', []);
+  const { data, loading } = useApi<AnyRecord>('/timeline/matrix', []);
   const weeks: string[] = data?.weeks || [];
-  const canManualEdit = Boolean(data?.can_manual_edit);
   const [selectedWeek, setSelectedWeek] = useState<string | undefined>();
-  const [manualForm] = Form.useForm();
-  const [manualTarget, setManualTarget] = useState<AnyRecord | null>(null);
-  const [manualSaving, setManualSaving] = useState(false);
   useEffect(() => {
     if (!weeks.length) return;
     if (!selectedWeek || !weeks.includes(selectedWeek)) setSelectedWeek(weeks[weeks.length - 1]);
   }, [weeks.join('|'), selectedWeek]);
   const timelineColumns = `240px 132px repeat(${weeks.length}, 156px)`;
   const renderCell = (value?: string | null) => renderTimelineText(value);
-  const findManualUpdate = (cell: AnyRecord | undefined, assigneeId?: number) =>
-    (cell?.updates || []).find((item: AnyRecord) => Number(item.assignee_id) === Number(assigneeId));
-  const fillManualFormForAssignee = (cell: AnyRecord | undefined, assigneeId?: number) => {
-    const update = findManualUpdate(cell, assigneeId);
-    manualForm.setFieldsValue({
-      progress: update?.progress ?? cell?.progress ?? 0,
-      this_week: update?.this_week ?? '',
-      next_week: update?.next_week ?? '',
-      risk: update?.risk ?? '',
-      needs_coordination: update?.needs_coordination ?? cell?.needs_coordination ?? false,
-    });
-  };
-  const openManualEditor = (subTask: AnyRecord, week: string, cell: AnyRecord | undefined) => {
-    const executors = subTask.executors || [];
-    const defaultAssigneeId = cell?.assignee_id || executors[0]?.id;
-    setManualTarget({ subTask, week, cell, executors });
-    manualForm.setFieldsValue({
-      assignee_id: defaultAssigneeId,
-      progress: 0,
-      this_week: '',
-      next_week: '',
-      risk: '',
-      needs_coordination: false,
-    });
-    fillManualFormForAssignee(cell, defaultAssigneeId);
-  };
-  const saveManualUpdate = async () => {
-    if (!manualTarget) return;
-    const values = await manualForm.validateFields();
-    Modal.confirm({
-      title: `确认补录 ${manualTarget.week}？`,
-      content: '这是 4.8.1 临时历史补录，会直接写入正式已提交周更新。保存后会影响历史时间线、周报和导出数据。',
-      okText: '确认写入',
-      cancelText: '取消',
-      okButtonProps: { danger: true },
-      onOk: async () => {
-        setManualSaving(true);
-        try {
-          await postJson('/weekly-updates/manual-history-upsert', {
-            sub_task_id: manualTarget.subTask.id,
-            assignee_id: values.assignee_id,
-            week_key: manualTarget.week,
-            progress: values.progress ?? 0,
-            this_week: values.this_week || null,
-            next_week: values.next_week || null,
-            risk: values.risk || null,
-            needs_coordination: Boolean(values.needs_coordination),
-          });
-          message.success('历史周更新已补录');
-          setManualTarget(null);
-          reload();
-        } finally {
-          setManualSaving(false);
-        }
-      },
-    });
-  };
-  const renderManualEditButton = (subTask: AnyRecord, week: string, cell: AnyRecord | undefined) => {
-    if (!canManualEdit) return null;
-    const hasExecutor = Boolean((subTask.executors || []).length);
-    return (
-      <Button
-        size="small"
-        type={cell?.update_id ? 'default' : 'dashed'}
-        disabled={!hasExecutor || !week}
-        onClick={() => openManualEditor(subTask, week, cell)}
-      >
-        {cell?.update_id ? '编辑' : '补录'}
-      </Button>
-    );
-  };
   return (
     <PageShell title="历史时间线" subtitle="按任务层级展开，以周为主轴查看完成内容、遗留事项和附件">
-      {canManualEdit ? (
-        <Alert
-          className="mb16"
-          type="warning"
-          showIcon
-          message="临时历史补录功能仅用于 4.8.1 数据修复，下个版本将关闭。"
-          description="保存会直接写入正式已提交周更新，不会导入历史附件，也不会发送飞书通知。"
-        />
-      ) : null}
       <Card id="timeline-guide-card" loading={loading} className="timeline-card">
         {mobileLayout ? (
           <div id="timeline-guide-matrix" className="mobile-timeline">
@@ -2763,16 +2707,12 @@ function TimelinePage() {
                             </div>
                             <Typography.Text strong>{subTask.title}</Typography.Text>
                             <div className="mobile-task-meta compact">
+                              <span>执行人</span><Typography.Text>{subTask.executor || '-'}</Typography.Text>
                               <span>开始时间</span><Typography.Text>{subTask.started_at || '-'}</Typography.Text>
                               <span>完成内容</span><Typography.Text>{cell?.this_week || '-'}</Typography.Text>
                               <span>遗留事项</span><Typography.Text>{cell?.risk || '-'}</Typography.Text>
                               <span>附件</span><Typography.Text>{renderAttachmentLinks(attachments)}</Typography.Text>
                             </div>
-                            {canManualEdit ? (
-                              <div className="mobile-card-actions">
-                                {renderManualEditButton(subTask, selectedWeek || '', cell)}
-                              </div>
-                            ) : null}
                           </div>
                         );
                       })}
@@ -2797,16 +2737,12 @@ function TimelinePage() {
                   {(departmentTask.sub_tasks || []).map((subTask: AnyRecord) => (
                     <div key={subTask.id} className="timeline-subtask">
                       <div className="timeline-grid timeline-subtask-title" style={{ gridTemplateColumns: timelineColumns }}>
-                        <strong><span className="timeline-code">{subTask.code}</span>{renderTimelineText(subTask.title)}</strong>
+                        <strong>
+                          <span className="timeline-code">{subTask.code}</span>{renderTimelineText(subTask.title)}
+                          <Typography.Text type="secondary" className="timeline-executor-label">执行人：{subTask.executor || '-'}</Typography.Text>
+                        </strong>
                         <span>{subTask.started_at || '-'}</span>
-                        {weeks.map((week) => (
-                          <span key={week}>
-                            <Space direction="vertical" size={4}>
-                              <StatusTag value={subTask.cells?.[week]?.status || subTask.status} />
-                              {renderManualEditButton(subTask, week, subTask.cells?.[week])}
-                            </Space>
-                          </span>
-                        ))}
+                        {weeks.map((week) => <span key={week}><StatusTag value={subTask.status} /></span>)}
                       </div>
                       {[
                         ['完成内容', 'this_week'],
@@ -2834,48 +2770,6 @@ function TimelinePage() {
           ))}
         </div>}
       </Card>
-      <Modal
-        title={manualTarget ? `${manualTarget.subTask.code} ${manualTarget.subTask.title} / ${manualTarget.week}` : '补录历史周更新'}
-        open={Boolean(manualTarget)}
-        onCancel={() => setManualTarget(null)}
-        onOk={saveManualUpdate}
-        okText="保存为已提交"
-        cancelText="取消"
-        confirmLoading={manualSaving}
-        width={720}
-        destroyOnClose
-      >
-        <Alert
-          className="mb16"
-          type="warning"
-          showIcon
-          message="临时补录"
-          description="本功能只用于补齐历史周数据，保存后会作为正式已提交周更新落库。"
-        />
-        <Form form={manualForm} layout="vertical">
-          <Form.Item name="assignee_id" label="执行人" rules={[{ required: true, message: '请选择执行人' }]}>
-            <Select
-              options={(manualTarget?.executors || []).map((person: AnyRecord) => ({ value: person.id, label: person.name }))}
-              onChange={(value) => fillManualFormForAssignee(manualTarget?.cell, value)}
-            />
-          </Form.Item>
-          <Form.Item name="progress" label="进度" rules={[{ required: true, message: '请填写进度' }]}>
-            <InputNumber min={0} max={100} addonAfter="%" className="full-width-control" />
-          </Form.Item>
-          <Form.Item name="this_week" label="本周完成内容">
-            <Input.TextArea rows={4} placeholder="补录该周实际完成内容" />
-          </Form.Item>
-          <Form.Item name="next_week" label="下周计划">
-            <Input.TextArea rows={3} placeholder="补录下一步计划" />
-          </Form.Item>
-          <Form.Item name="risk" label="遗留事项">
-            <Input.TextArea rows={3} placeholder="补录遗留事项或风险说明" />
-          </Form.Item>
-          <Form.Item name="needs_coordination" valuePropName="checked">
-            <Checkbox>需要协调</Checkbox>
-          </Form.Item>
-        </Form>
-      </Modal>
     </PageShell>
   );
 }
@@ -2889,6 +2783,7 @@ function Notifications() {
   const [notificationType, setNotificationType] = useState<string | undefined>();
   const notificationTypeLabels: Record<string, string> = {
     weekly_update_digest: '周更新汇总提醒',
+    weekly_report_entry: '周报补充入口提醒',
     department_task_split_required: '部门任务拆解提醒',
     department_task_due_soon: '部门任务临期提醒',
     risk_item_alert: '风险项提醒',
@@ -2911,13 +2806,18 @@ function Notifications() {
     });
   };
   const sendLark = () => runOfficialNotification(
-    '确认发送本周更新提醒？',
-    '系统将向所有符合条件且尚未提交本周更新的执行人正式发送飞书卡片；同一周已发送对象会按去重规则跳过。',
+    '确认发送本周周更新入口卡片？',
+    '系统会向有待更新子任务的人发送周更新卡，向本周没有待更新子任务的活跃人员发送周报补充入口卡；同一周同一人按去重规则跳过。',
     async () => {
     setLoading(true);
     try {
       const result = await postJson('/notifications/lark-weekly-reminders', { week_key: currentIsoWeekKey() });
-      message.success(`周更新汇总：生成 ${result.created || 0} 条，成功 ${result.sent || 0} 条，抑制 ${result.suppressed || 0} 条，跳过 ${result.skipped || 0} 条`);
+      const taskResult = result.task_reminders || {};
+      const entryResult = result.entry_reminders || {};
+      message.success(
+        `子任务周更新：生成 ${taskResult.created || 0} 条，成功 ${taskResult.sent || 0} 条，跳过 ${taskResult.skipped || 0} 条；` +
+        `补充入口：生成 ${entryResult.created || 0} 条，成功 ${entryResult.sent || 0} 条，跳过 ${entryResult.skipped || 0} 条`
+      );
       reload();
     } finally {
       setLoading(false);
@@ -3040,7 +2940,7 @@ function Notifications() {
             </Checkbox>
           </Space>
           <Space wrap className="admin-toolbar primary-toolbar">
-            <Button type="primary" onClick={sendLark} loading={loading}>发送飞书提醒</Button>
+            <Button type="primary" onClick={sendLark} loading={loading}>发送本周周提醒</Button>
             <Button icon={<ScheduleOutlined />} onClick={sendDepartmentDue} loading={loading}>部门任务临期提醒</Button>
             <Button danger icon={<SafetyOutlined />} onClick={sendRiskOverdue} loading={loading}>风险逾期提醒</Button>
           </Space>

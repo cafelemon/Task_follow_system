@@ -11,6 +11,10 @@ STAGING="/private/tmp/${PACKAGE_DIR}"
 ARCHIVE="${RELEASE_DIR}/${ARCHIVE_NAME}.tar.gz"
 IMAGE_TAR="${STAGING}/docker-images/task-follow-system-${VERSION}-images.tar"
 PLATFORM="${TASK_FOLLOW_PACKAGE_PLATFORM:-linux/amd64}"
+INCLUDE_DB_DUMP="${TASK_FOLLOW_INCLUDE_DB_DUMP:-false}"
+VERSION_SAFE="${VERSION//./_}"
+DB_DUMP_NAME="task_follow_${VERSION_SAFE}_prod_data_${STAMP}.dump"
+DB_DUMP="${STAGING}/database/${DB_DUMP_NAME}"
 
 mkdir -p "${RELEASE_DIR}"
 
@@ -28,6 +32,7 @@ fi
 echo "==> Version: ${VERSION}"
 echo "==> Platform: ${PLATFORM}"
 echo "==> Staging: ${STAGING}"
+echo "==> Include database dump: ${INCLUDE_DB_DUMP}"
 
 cd "${ROOT}"
 
@@ -101,6 +106,18 @@ rsync -a \
 
 chmod 600 "${STAGING}/env_of"
 
+if [[ "${INCLUDE_DB_DUMP}" == "true" || "${INCLUDE_DB_DUMP}" == "1" ]]; then
+  echo "==> Export PostgreSQL database"
+  mkdir -p "${STAGING}/database"
+  docker compose --env-file env_of -f deploy/docker-compose.yml up -d postgres
+  docker compose --env-file env_of -f deploy/docker-compose.yml exec -T postgres \
+    pg_dump -U task_user -d task_follow -Fc > "${DB_DUMP}"
+  if [[ ! -s "${DB_DUMP}" ]]; then
+    echo "Database dump is empty: ${DB_DUMP}" >&2
+    exit 1
+  fi
+fi
+
 echo "==> Save Docker images"
 docker save -o "${IMAGE_TAR}" \
   task-follow-system-backend:latest \
@@ -115,3 +132,7 @@ find "${RELEASE_DIR}" -maxdepth 1 -type f -name 'task-follow-system-*-prod-offli
 
 echo "Package ready:"
 echo "${ARCHIVE}"
+if [[ "${INCLUDE_DB_DUMP}" == "true" || "${INCLUDE_DB_DUMP}" == "1" ]]; then
+  echo "Database dump in archive:"
+  echo "${PACKAGE_DIR}/database/${DB_DUMP_NAME}"
+fi

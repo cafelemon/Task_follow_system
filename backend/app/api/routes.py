@@ -39,7 +39,6 @@ from app.models.entities import (
     User,
     UserGuideProgress,
     WeeklyUpdate,
-    WeeklyUpdateRevision,
     WeeklyReport,
     WorkItem,
     WorkItemAutomationSetting,
@@ -53,7 +52,6 @@ from app.schemas.dto import (
     GoalCreate,
     GuideProgressUpdate,
     LoginRequest,
-    ManualHistoryWeeklyUpdateUpsert,
     OnboardingUpdate,
     OpenIdLoginRequest,
     ParentTaskCreate,
@@ -110,6 +108,8 @@ from app.services.permissions import (
     can_access_attachment,
     can_delete_attachment,
     can_split_sub_task,
+    department_owner_manages_task,
+    department_task_department_ids,
     can_access_sub_task,
     can_reopen_sub_task,
     can_update_sub_task_weekly,
@@ -642,10 +642,6 @@ def weekly_update_attachments(db: Session, update_id: int | None) -> list[Attach
     )
 
 
-def can_manual_edit_history_weekly_update(user: User) -> bool:
-    return user.is_admin or "permission.manage" in user_permission_codes(user)
-
-
 def is_path_inside(path: Path, root: Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())
@@ -706,11 +702,25 @@ def resolve_departments(db: Session, department_id: int | None, department_ids: 
 
 
 def serialize_department_task_for_user(db: Session, user: User, task: DepartmentTask) -> dict:
+    is_direct_owner = user.id in task_owner_ids(task)
+    is_department_scope = bool(
+        user.department_id
+        and (user.department_id in department_task_department_ids(task) or department_owner_manages_task(user, task))
+    )
+    if is_direct_owner:
+        relation_label = "我负责"
+    elif is_department_scope:
+        relation_label = "本部门任务"
+    else:
+        relation_label = "全公司查看"
     return {
         **serialize_department_task(task),
         "can_edit": can_edit_department_task(db, user, task),
         "can_delete": can_edit_department_task(db, user, task),
         "can_split": can_split_sub_task(db, user, task),
+        "viewer_is_direct_owner": is_direct_owner,
+        "viewer_is_department_scope": is_department_scope,
+        "viewer_relation_label": relation_label,
     }
 
 
@@ -2407,7 +2417,6 @@ def build_department_board_payload(db: Session, user: User, week_key: str) -> di
 
 def build_timeline_matrix_payload(db: Session, user: User) -> dict:
     sub_tasks = visible_sub_tasks(db, user)
-    can_manual_edit = can_manual_edit_history_weekly_update(user)
     current_monday = monday_from_week_key(current_week_key())
     earliest_weeks = earliest_update_week_map(db, sub_tasks)
     start_dates = [task_start_date(task, earliest_weeks) for task in sub_tasks] or [current_monday]
@@ -2453,36 +2462,15 @@ def build_timeline_matrix_payload(db: Session, user: User) -> dict:
         cells = {}
         for week in weeks:
             cell_updates = updates_by_cell.get((task.id, week), [])
-            first_update = cell_updates[0] if cell_updates else None
             attachments = [
                 attachment
                 for update in cell_updates
                 for attachment in attachments_by_update.get(update.id, [])
             ]
             cells[week] = {
-                "update_id": first_update.id if first_update else None,
-                "assignee_id": first_update.assignee_id if first_update else task.executor_id,
-                "status": first_update.status if first_update else "empty",
-                "progress": first_update.progress if first_update else 0,
                 "this_week": merge_weekly_update_field(cell_updates, "this_week"),
-                "next_week": merge_weekly_update_field(cell_updates, "next_week"),
                 "risk": merge_weekly_update_field(cell_updates, "risk"),
-                "needs_coordination": any(update.needs_coordination for update in cell_updates),
                 "attachments": attachments,
-                "updates": [
-                    {
-                        "id": update.id,
-                        "assignee_id": update.assignee_id,
-                        "assignee": update.assignee.name if update.assignee else None,
-                        "status": update.status,
-                        "progress": update.progress,
-                        "this_week": update.this_week,
-                        "next_week": update.next_week,
-                        "risk": update.risk,
-                        "needs_coordination": update.needs_coordination,
-                    }
-                    for update in cell_updates
-                ],
             }
         executor_ids, executors, executor_names = people_payload(executor_people(task))
         department_node["sub_tasks"].append(
@@ -2505,7 +2493,7 @@ def build_timeline_matrix_payload(db: Session, user: User) -> dict:
         for department_task in parent["department_tasks"]:
             department_task["sub_tasks"] = sorted(department_task["sub_tasks"], key=lambda item: item["code"])
         parents.append(parent)
-    return {"week_key": current_week_key(), "weeks": weeks, "parents": parents, "can_manual_edit": can_manual_edit}
+    return {"week_key": current_week_key(), "weeks": weeks, "parents": parents}
 
 
 @router.get("/health")
@@ -4669,79 +4657,6 @@ def save_weekly_update(
     return serialize_weekly_update_for_user(db, update, current_user)
 
 
-@router.post("/weekly-updates/manual-history-upsert")
-def manual_history_weekly_update_upsert(
-    payload: ManualHistoryWeeklyUpdateUpsert,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> dict:
-    if not can_manual_edit_history_weekly_update(current_user):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No manual history update access")
-    week_key = validate_week_key(payload.week_key)
-    sub_task = db.get(SubTask, payload.sub_task_id)
-    if (
-        not sub_task
-        or not sub_task.department_task
-        or sub_task.department_task.status == "archived"
-        or not sub_task.department_task.parent_task
-        or sub_task.department_task.parent_task.status == "archived"
-    ):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Sub task not found")
-    if not can_access_sub_task(db, current_user, sub_task):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="No access to this sub task")
-    assignee = db.get(User, payload.assignee_id)
-    if not assignee:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Assignee not found")
-    if assignee.id not in sub_task_executor_ids(sub_task):
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="请选择该子任务的执行人")
-    update_record = db.scalar(
-        select(WeeklyUpdate).where(
-            WeeklyUpdate.sub_task_id == sub_task.id,
-            WeeklyUpdate.week_key == week_key,
-            WeeklyUpdate.assignee_id == assignee.id,
-        )
-    )
-    if update_record:
-        db.add(
-            WeeklyUpdateRevision(
-                weekly_update_id=update_record.id,
-                editor_id=current_user.id,
-                snapshot=serialize_weekly_update(update_record),
-            )
-        )
-    else:
-        update_record = WeeklyUpdate(
-            sub_task_id=sub_task.id,
-            assignee_id=assignee.id,
-            week_key=week_key,
-            submitter_id=current_user.id,
-        )
-        db.add(update_record)
-    update_record.progress = payload.progress
-    update_record.this_week = payload.this_week
-    update_record.next_week = payload.next_week
-    update_record.risk = payload.risk
-    update_record.risk_level = None
-    update_record.needs_coordination = payload.needs_coordination
-    update_record.status = "submitted"
-    update_record.submitter_id = current_user.id
-    update_record.submitted_at = datetime.now(timezone.utc)
-    db.flush()
-    db.add(
-        TaskEvent(
-            object_type="sub_task",
-            object_id=sub_task.id,
-            event_type="manual_history_weekly_update_upsert",
-            title="临时补录历史周更新",
-            content=f"{week_key} / {assignee.name}",
-            actor_id=current_user.id,
-        )
-    )
-    db.commit()
-    db.refresh(update_record)
-    return serialize_weekly_update_for_user(db, update_record, current_user)
-
-
 @router.post("/weekly-updates/{weekly_update_id}/attachments")
 async def upload_weekly_update_attachment(
     weekly_update_id: int,
@@ -5214,7 +5129,7 @@ async def lark_weekly_reminders(
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("notification.nudge")),
 ) -> dict:
-    return await send_weekly_update_reminders(db, payload.week_key)
+    return await send_weekly_update_reminders(db, payload.week_key, include_entry_cards=True)
 
 
 @router.post("/notifications/department-task-due-reminders")

@@ -124,7 +124,13 @@ def department_owner_manages_task(user: User, task: DepartmentTask) -> bool:
 
 def can_view_department_directory(user: User) -> bool:
     roles = user_role_codes(user)
-    return user.is_admin or "permission.manage" in user_permission_codes(user) or "general_manager" in roles
+    codes = user_permission_codes(user)
+    return (
+        user.is_admin
+        or "permission.manage" in codes
+        or "dashboard.view_all" in codes
+        or "general_manager" in roles
+    )
 
 
 def has_full_parent_task_access(user: User) -> bool:
@@ -190,7 +196,11 @@ def can_split_sub_task(db: Session, user: User, task: DepartmentTask) -> bool:
     parent_task = db.get(ParentTask, task.parent_task_id)
     if not parent_task or parent_task.status == "archived":
         return False
-    return user.id in task_owner_ids(task)
+    return (
+        can_manage_parent_tasks(user)
+        or user.id in task_owner_ids(task)
+        or department_owner_manages_task(user, task)
+    )
 
 
 def can_view_parent_task_page(db: Session, user: User) -> bool:
@@ -296,10 +306,13 @@ def can_delete_attachment(user: User, attachment: Attachment) -> bool:
 def can_access_department_task(db: Session, user: User, task: DepartmentTask) -> bool:
     if task.status == "archived":
         return False
+    roles = user_role_codes(user)
     codes = user_permission_codes(user)
     if "dashboard.view_all" in codes or "permission.manage" in codes:
         return True
     if user.id in task_owner_ids(task):
+        return True
+    if {"task_owner", "executor"} & roles and user.department_id in department_task_department_ids(task):
         return True
     parent_task = db.get(ParentTask, task.parent_task_id)
     if parent_task and user.id in task_owner_ids(parent_task):

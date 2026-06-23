@@ -572,6 +572,21 @@ def build_weekly_update_digest_card(
     )
 
 
+def build_weekly_report_entry_card(week_key: str, web_url: str) -> dict:
+    return _business_card(
+        template="blue",
+        title=f"{week_key} 周报补充入口",
+        summary=(
+            "本周没有待提交的子任务周更新时，也可以进入系统补充临时工作、"
+            "本部门常态化、跨部门协作或周报补充记录。"
+        ),
+        fields=[("统计周期", week_key), ("入口类型", "待归类事项 / 周报补充")],
+        note="补充内容会进入个人周报材料，不会直接进入正式任务统计。",
+        action_text="进入工作台填写",
+        web_url=web_url,
+    )
+
+
 def build_department_task_split_card(task: DepartmentTask, web_url: str) -> dict:
     parent = task.parent_task
     return _business_card(
@@ -829,14 +844,33 @@ async def send_risk_overdue_reminders(db: Session, *, today: date | None = None)
     return {**totals, "results": results}
 
 
-async def send_weekly_update_reminders(db: Session, week_key: str) -> dict:
-    created = 0
-    sent = 0
-    failed = 0
-    blocked = 0
-    results = []
-    suppressed = 0
-    skipped = 0
+def empty_notification_summary() -> dict:
+    return {
+        "created": 0,
+        "sent": 0,
+        "failed": 0,
+        "blocked": 0,
+        "suppressed": 0,
+        "skipped": 0,
+        "results": [],
+    }
+
+
+def add_notification_result(summary: dict, ok: bool, delivery_status: str) -> None:
+    summary["sent"] += 1 if ok else 0
+    summary["failed"] += 1 if delivery_status == "failed" else 0
+    summary["blocked"] += 1 if delivery_status == "blocked" else 0
+    summary["suppressed"] += 1 if delivery_status == "suppressed" else 0
+
+
+async def send_weekly_update_reminders(
+    db: Session,
+    week_key: str,
+    *,
+    include_entry_cards: bool = False,
+) -> dict:
+    task_summary = empty_notification_summary()
+    entry_summary = empty_notification_summary()
     grouped: dict[int, tuple[User, list[SubTask]]] = {}
     task_groups: dict[int, list[SubTask]] = defaultdict(list)
     targets: dict[int, User] = {}
@@ -848,8 +882,9 @@ async def send_weekly_update_reminders(db: Session, week_key: str) -> dict:
 
     for target, tasks in grouped.values():
         dedupe_key = f"weekly_update_digest:{week_key}:{target.id}"
-        if notification_exists(db, dedupe_key):
-            skipped += 1
+        entry_dedupe_key = f"weekly_report_entry:{week_key}:{target.id}"
+        if notification_exists(db, dedupe_key) or notification_exists(db, entry_dedupe_key):
+            task_summary["skipped"] += 1
             continue
         next_path = "/weekly-updates"
         record = NotificationRecord(
@@ -862,7 +897,7 @@ async def send_weekly_update_reminders(db: Session, week_key: str) -> dict:
             dedupe_key=dedupe_key,
         )
         web_url = prepare_notification_link(db, record, target, next_path)
-        created += 1
+        task_summary["created"] += 1
 
         ok, delivery_status, message = await deliver_notification(
             target,
@@ -870,11 +905,8 @@ async def send_weekly_update_reminders(db: Session, week_key: str) -> dict:
         )
         record.send_status = delivery_status
         record.result = message[:200]
-        sent += 1 if ok else 0
-        failed += 1 if delivery_status == "failed" else 0
-        blocked += 1 if delivery_status == "blocked" else 0
-        suppressed += 1 if delivery_status == "suppressed" else 0
-        results.append(
+        add_notification_result(task_summary, ok, delivery_status)
+        task_summary["results"].append(
             {
                 "record_id": record.id,
                 "target_user": target.name,
@@ -883,15 +915,54 @@ async def send_weekly_update_reminders(db: Session, week_key: str) -> dict:
                 "result": record.result,
             }
         )
+    if include_entry_cards:
+        task_target_ids = set(grouped)
+        entry_targets = list(
+            db.scalars(
+                select(User)
+                .where(User.status == "active", User.id.not_in(task_target_ids or {-1}))
+                .order_by(User.id)
+            ).all()
+        )
+        for target in entry_targets:
+            dedupe_key = f"weekly_report_entry:{week_key}:{target.id}"
+            task_dedupe_key = f"weekly_update_digest:{week_key}:{target.id}"
+            if notification_exists(db, dedupe_key) or notification_exists(db, task_dedupe_key):
+                entry_summary["skipped"] += 1
+                continue
+            record = NotificationRecord(
+                target_user_id=target.id,
+                notification_type="weekly_report_entry",
+                related_type="weekly_report",
+                related_id=None,
+                title=f"{week_key} 周报补充入口",
+                send_status="pending",
+                dedupe_key=dedupe_key,
+            )
+            web_url = prepare_notification_link(db, record, target, "/workbench")
+            entry_summary["created"] += 1
+            ok, delivery_status, message = await deliver_notification(
+                target,
+                card=build_weekly_report_entry_card(week_key, web_url),
+            )
+            record.send_status = delivery_status
+            record.result = message[:200]
+            add_notification_result(entry_summary, ok, delivery_status)
+            entry_summary["results"].append(
+                {
+                    "record_id": record.id,
+                    "target_user": target.name,
+                    "send_status": record.send_status,
+                    "result": record.result,
+                }
+            )
     db.commit()
+    total_keys = ("created", "sent", "failed", "blocked", "suppressed", "skipped")
     return {
-        "created": created,
-        "sent": sent,
-        "failed": failed,
-        "blocked": blocked,
-        "suppressed": suppressed,
-        "skipped": skipped,
-        "results": results,
+        **{key: task_summary[key] + entry_summary[key] for key in total_keys},
+        "results": [*task_summary["results"], *entry_summary["results"]],
+        "task_reminders": task_summary,
+        "entry_reminders": entry_summary,
     }
 
 

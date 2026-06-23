@@ -125,6 +125,7 @@ export function Workbench({ auth, onCreateRisk }: WorkbenchProps) {
             tasks={tasks}
             receivedItems={receivedItems}
             departmentTasks={departmentTasks}
+            currentUserId={auth?.user?.id}
             hasTaskOwnerRole={hasTaskOwnerRole}
             onOpenWorkItems={openWorkItemDetails}
           />

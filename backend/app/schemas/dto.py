@@ -83,17 +83,6 @@ class WeeklyUpdateUpsert(BaseModel):
     submit: bool = False
 
 
-class ManualHistoryWeeklyUpdateUpsert(BaseModel):
-    sub_task_id: int
-    assignee_id: int
-    week_key: str
-    progress: int = Field(default=0, ge=0, le=100)
-    this_week: str | None = None
-    next_week: str | None = None
-    risk: str | None = None
-    needs_coordination: bool = False
-
-
 class RiskItemCreate(BaseModel):
     sub_task_id: int
     source_weekly_update_id: int | None = None
